@@ -355,12 +355,45 @@ impl PipelineCoordinator {
         job.stage_message = "Running PP-OCRv5 Thai & English neural OCR worker.".to_string();
         self.db.update_job(&job).ok();
 
+        let memories = if settings.self_learning_enabled {
+            self.db.get_learning_memories().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let neg_phrases: Vec<String> = memories
+            .iter()
+            .filter(|m| m.signal_type == "negative_phrase")
+            .map(|m| m.signal_value.clone())
+            .collect();
+
+        let (zone_sum, zone_weight) = memories
+            .iter()
+            .filter(|m| m.signal_type == "layout_zone")
+            .filter_map(|m| m.signal_value.parse::<f64>().ok().map(|v| (v, m.hit_count.max(1) as f64)))
+            .fold((0.0_f64, 0.0_f64), |(acc_v, acc_w), (v, w)| (acc_v + v * w, acc_w + w));
+        let preferred_y_band = if zone_weight > 0.0 {
+            Some((zone_sum / zone_weight).clamp(0.0, 1.0))
+        } else {
+            None
+        };
+
+        let ocr_hints = crate::ocr::OcrHints {
+            negative_phrases: neg_phrases,
+            preferred_y_band,
+            local_vision_enabled: settings.local_vision_enabled,
+            local_vision_provider: settings.local_vision_provider.clone(),
+            local_vision_endpoint: settings.local_vision_endpoint.clone(),
+            local_vision_model: settings.local_vision_model.clone(),
+        };
+
         let mut all_supplier_candidates = Vec::new();
         let mut all_po_numbers = Vec::new();
         let mut all_extracted_emails: Vec<String> = Vec::new();
+        let mut all_tax_ids: Vec<String> = Vec::new();
 
         for doc in &documents {
-            match self.ocr_manager.process_file(&doc.absolute_path).await {
+            match self.ocr_manager.process_file_with_hints(&doc.absolute_path, Some(&ocr_hints)).await {
                 Ok(resp) => {
                     if let Some(pages) = resp.pages {
                         for page in pages {
@@ -387,6 +420,15 @@ impl PipelineCoordinator {
                             for po in page.parsed.po_numbers {
                                 if po.chars().filter(|c| c.is_ascii_digit()).count() >= 4 && !all_po_numbers.contains(&po) {
                                     all_po_numbers.push(po);
+                                }
+                            }
+                            for tid in page.parsed.tax_ids {
+                                let digits: String = tid.chars().filter(|c| c.is_ascii_digit()).collect();
+                                if digits.len() == 13
+                                    && !ThaiNormalizer::is_ignored_self_company(&digits)
+                                    && !all_tax_ids.contains(&digits)
+                                {
+                                    all_tax_ids.push(digits);
                                 }
                             }
                             for em in page.parsed.emails {
@@ -442,10 +484,13 @@ impl PipelineCoordinator {
         }
         let aliases = self.db.get_company_aliases().unwrap_or_default();
 
-        let match_result = CompanyMatcher::match_candidates(
+        let match_result = CompanyMatcher::match_candidates_with_memory(
             &all_supplier_candidates,
+            &all_tax_ids,
+            &all_extracted_emails,
             &directory,
             &aliases,
+            &memories,
             settings.ocr_confidence_threshold_verified,
             settings.ocr_confidence_threshold_high,
             settings.ocr_confidence_threshold_review,
@@ -565,14 +610,16 @@ impl PipelineCoordinator {
             return Ok(());
         }
 
-        // Auto-learn Thai<->English company mapping into alias knowledge base on verified/high match
-        if !query_name.is_empty()
-            && query_name != approved_company_name
-            && !ThaiNormalizer::is_ignored_self_company(&query_name)
-        {
-            self.db
-                .add_company_alias(&query_name, &approved_company_name, "AUTO_LEARN")
-                .ok();
+        // Self-learning loop: reinforce Thai<->English names, Tax ID, email domain, and layout zone
+        if settings.self_learning_enabled {
+            if let Ok(signals_count) = self.db.learn_from_approved_job(&job, &approved_company_name, &recipient_email) {
+                if signals_count > 0 {
+                    self.ocr_manager.push_log(format!(
+                        "[self-learn] Reinforced {} memory signal(s) for '{}'",
+                        signals_count, approved_company_name
+                    ));
+                }
+            }
         }
 
         self.deliver_po_package(

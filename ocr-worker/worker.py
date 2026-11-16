@@ -11,6 +11,10 @@ import json
 import base64
 import traceback
 import re
+import importlib.util
+import urllib.request
+import urllib.parse
+import urllib.error
 from typing import List, Dict, Any, Optional
 
 # Imaging & PDF libraries
@@ -45,6 +49,209 @@ except ImportError:
 
 _paddle_ocr_instance: Optional[Any] = None
 _paddle_ocr_attempted: bool = False
+_smolvlm_cache: Dict[str, Any] = {}
+
+
+def is_strictly_localhost(endpoint: str) -> bool:
+    """Security guard: allow only on-device loopback endpoints so sensitive PO images never leave this PC."""
+    try:
+        parsed = urllib.parse.urlparse((endpoint or "").strip())
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = (parsed.hostname or "").lower()
+        return host in ("127.0.0.1", "localhost", "::1")
+    except Exception:
+        return False
+
+
+def _extract_json_object(raw: str) -> Dict[str, Any]:
+    if not raw:
+        return {}
+    raw_s = raw.strip()
+    try:
+        val = json.loads(raw_s)
+        return val if isinstance(val, dict) else {}
+    except Exception:
+        m = re.search(r"\{[\s\S]*\}", raw_s)
+        if m:
+            try:
+                val = json.loads(m.group(0))
+                return val if isinstance(val, dict) else {}
+            except Exception:
+                return {}
+    return {}
+
+
+def query_local_vision_model(
+    img_np: np.ndarray,
+    provider: str,
+    endpoint: str,
+    model: str,
+) -> Dict[str, Any]:
+    """Queries 100% offline on-device Vision AI (SmolVLM2-2.2B / Qwen2.5-VL-3B via Ollama or Python transformers)."""
+    prompt = (
+        "Analyze this Purchase Order or Tax Invoice image. "
+        "Note: QTC ENERGY PUBLIC COMPANY LIMITED is the BUYER, so ignore QTC completely. "
+        "Extract ONLY the EXTERNAL SUPPLIER / VENDOR details as JSON with these exact keys: "
+        '{"supplier_th": "", "supplier_en": "", "po_number": "", "tax_id": "", "email": ""}. '
+        "Return ONLY valid JSON."
+    )
+
+    try:
+        if (provider or "ollama").lower() == "transformers":
+            if (
+                importlib.util.find_spec("transformers") is None
+                or importlib.util.find_spec("torch") is None
+                or importlib.util.find_spec("PIL") is None
+            ):
+                return {}
+            import torch
+            from PIL import Image
+            from transformers import AutoProcessor, AutoModelForImageTextToText
+
+            model_id = (model or "HuggingFaceTB/SmolVLM2-2.2B-Instruct").strip()
+            if "/" not in model_id:
+                model_id = "HuggingFaceTB/SmolVLM2-2.2B-Instruct"
+
+            if model_id not in _smolvlm_cache:
+                processor = AutoProcessor.from_pretrained(model_id, local_files_only=False)
+                dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+                vlm = AutoModelForImageTextToText.from_pretrained(
+                    model_id,
+                    torch_dtype=dtype,
+                    low_cpu_mem_usage=True,
+                )
+                if torch.cuda.is_available():
+                    vlm = vlm.to("cuda")
+                _smolvlm_cache[model_id] = (processor, vlm)
+
+            processor, vlm = _smolvlm_cache[model_id]
+            rgb = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(rgb)
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": pil_img},
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ]
+            inputs = processor.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            ).to(vlm.device)
+            generated = vlm.generate(**inputs, max_new_tokens=220)
+            decoded = processor.batch_decode(generated, skip_special_tokens=True)[0]
+            return _extract_json_object(decoded)
+
+        # Default: local Ollama HTTP server locked strictly to 127.0.0.1 / localhost
+        if not is_strictly_localhost(endpoint):
+            sys.stderr.write(f"Blocked non-localhost vision endpoint: {endpoint}\n")
+            return {}
+
+        ok, buf = cv2.imencode(".png", img_np)
+        if not ok:
+            return {}
+        b64_img = base64.b64encode(buf.tobytes()).decode("ascii")
+        url = endpoint.rstrip("/") + "/api/generate"
+        body = json.dumps({
+            "model": (model or "hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF").strip(),
+            "prompt": prompt,
+            "images": [b64_img],
+            "stream": False,
+            "format": "json",
+            "options": {"temperature": 0.1},
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            return _extract_json_object(data.get("response", ""))
+    except Exception as e:
+        sys.stderr.write(f"Local vision fallback skipped: {e}\n")
+        return {}
+
+
+def test_local_vision_request(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Tests local Vision AI readiness without sending any external network traffic."""
+    provider = (request.get("provider") or "ollama").strip().lower()
+    endpoint = (request.get("endpoint") or "http://127.0.0.1:11434").strip()
+    model = (request.get("model") or "hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF").strip()
+
+    if provider == "transformers":
+        has_tf = importlib.util.find_spec("transformers") is not None
+        has_torch = importlib.util.find_spec("torch") is not None
+        has_pil = importlib.util.find_spec("PIL") is not None
+        if has_tf and has_torch and has_pil:
+            return {
+                "status": "ok",
+                "reachable": True,
+                "endpoint": "on-device://python-transformers",
+                "configured_model": model,
+                "available_models": [model],
+                "message": f"Embedded Python transformers + PyTorch detected. Ready to run {model} offline.",
+            }
+        missing = [name for name, ok in [("transformers", has_tf), ("torch", has_torch), ("Pillow", has_pil)] if not ok]
+        return {
+            "status": "ok",
+            "reachable": False,
+            "endpoint": "on-device://python-transformers",
+            "configured_model": model,
+            "available_models": [],
+            "message": f"Missing Python package(s): {', '.join(missing)}. Run: pip install transformers torch accelerate Pillow",
+        }
+
+    if not is_strictly_localhost(endpoint):
+        return {
+            "status": "ok",
+            "reachable": False,
+            "endpoint": endpoint,
+            "configured_model": model,
+            "available_models": [],
+            "message": "Security block: only 127.0.0.1 / localhost endpoints are permitted for PO documents.",
+        }
+
+    try:
+        tags_url = endpoint.rstrip("/") + "/api/tags"
+        req = urllib.request.Request(tags_url, method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            models = [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+            has_model = any(
+                m == model or m.split(":")[0] == model.split(":")[0]
+                for m in models
+            )
+            msg = (
+                f"Connected to offline Ollama ({len(models)} local model(s)). Model '{model}' is ready."
+                if has_model
+                else f"Offline Ollama running on localhost, but '{model}' is not pulled yet. Run: ollama pull {model}"
+            )
+            return {
+                "status": "ok",
+                "reachable": True,
+                "endpoint": endpoint,
+                "configured_model": model,
+                "available_models": models,
+                "message": msg,
+            }
+    except Exception as e:
+        return {
+            "status": "ok",
+            "reachable": False,
+            "endpoint": endpoint,
+            "configured_model": model,
+            "available_models": [],
+            "message": f"Offline Ollama not reachable at {endpoint} ({e}). Install Ollama and run: ollama pull {model}",
+        }
 
 # Self-company / Buyer identity (QTC Energy PCL) — always ignored during vendor extraction
 SELF_COMPANY_KEYWORDS = [
@@ -472,11 +679,39 @@ def _normalize_po_token(raw_token: str) -> List[str]:
     return variants
 
 
-def parse_supplier_and_po(text: str, boxes: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _normalize_for_neg_check(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+
+def _is_negative_phrase(candidate: str, negative_phrases: List[str]) -> bool:
+    if not negative_phrases:
+        return False
+    norm_cand = _normalize_for_neg_check(candidate)
+    if not norm_cand:
+        return False
+    for neg in negative_phrases:
+        norm_neg = _normalize_for_neg_check(neg)
+        if not norm_neg:
+            continue
+        if norm_cand == norm_neg or (len(norm_neg) >= 5 and norm_neg in norm_cand):
+            return True
+        if HAS_RAPIDFUZZ and fuzz.ratio(norm_cand, norm_neg) >= 90.0:
+            return True
+    return False
+
+
+def parse_supplier_and_po(
+    text: str,
+    boxes: List[Dict[str, Any]],
+    negative_phrases: Optional[List[str]] = None,
+    preferred_y_band: Optional[float] = None,
+) -> Dict[str, Any]:
     """
     Distinguishes supplier vs buyer (ignoring QTC Energy PCL), repairs Thai text,
-    pairs spatial labels, and enforces Thai-first -> English fallback ordering.
+    pairs spatial labels, applies self-learned negative filters & layout zone boosts,
+    and enforces Thai-first -> English fallback ordering.
     """
+    neg_list = negative_phrases or []
     text = repair_thai_encoding(text)
     lines = [re.sub(r"\s+", " ", line).strip() for line in text.split("\n") if line.strip()]
 
@@ -626,14 +861,33 @@ def parse_supplier_and_po(text: str, boxes: List[Dict[str, Any]]) -> Dict[str, A
     # Thai-first ordering: language=='th' ALWAYS sorts ahead of 'en', then highest confidence, then earliest line
     supplier_candidates.sort(key=lambda c: (0 if c["language"] == "th" else 1, -c["confidence"], c["line_index"]))
 
-    # Deduplicate while preserving Thai-first & highest confidence order
+    # Deduplicate while preserving Thai-first & filtering learned negative phrases
+    max_y = 842.0
+    for b in boxes:
+        rect = _box_rect(b)
+        if rect and rect[3] > max_y:
+            max_y = rect[3]
+
     seen_names = set()
     unique_candidates: List[Dict[str, Any]] = []
     for c in supplier_candidates:
+        if _is_negative_phrase(c["name"], neg_list):
+            continue
+        if preferred_y_band is not None and boxes:
+            for b in boxes:
+                if c["name"] in b.get("text", ""):
+                    rect = _box_rect(b)
+                    if rect:
+                        y_norm = rect[1] / max_y
+                        if abs(y_norm - float(preferred_y_band)) <= 0.08:
+                            c["confidence"] = round(min(100.0, c["confidence"] + 3.5), 1)
+                            break
         norm = re.sub(r"\s+", "", c["name"].lower())
         if norm not in seen_names:
             seen_names.add(norm)
             unique_candidates.append(c)
+
+    unique_candidates.sort(key=lambda c: (0 if c["language"] == "th" else 1, -c["confidence"], c["line_index"]))
 
     primary_th = next((c["name"] for c in unique_candidates if c["language"] == "th"), None)
     primary_en = next((c["name"] for c in unique_candidates if c["language"] == "en"), None)
@@ -650,16 +904,70 @@ def parse_supplier_and_po(text: str, boxes: List[Dict[str, Any]]) -> Dict[str, A
     }
 
 
+def _merge_local_vision_into_parsed(parsed: Dict[str, Any], vision: Dict[str, Any], neg_list: List[str]) -> None:
+    if not vision or not isinstance(vision, dict):
+        return
+
+    cands = parsed.setdefault("supplier_candidates", [])
+    for key, lang in (("supplier_th", "th"), ("supplier_en", "en")):
+        raw_name = str(vision.get(key) or "").strip()
+        if raw_name and not is_ignored_self_company(raw_name) and not _is_negative_phrase(raw_name, neg_list):
+            detected_lang = "th" if re.search(r"[\u0E00-\u0E7F]", raw_name) else lang
+            cands.append({
+                "name": repair_thai_encoding(raw_name),
+                "confidence": 91.0,
+                "language": detected_lang,
+                "line_index": 0,
+                "source": "local_vision_ai",
+            })
+
+    cands.sort(key=lambda c: (0 if c["language"] == "th" else 1, -c["confidence"], c.get("line_index") or 0))
+    if cands:
+        parsed["primary_supplier"] = cands[0]["name"]
+        parsed["primary_confidence"] = cands[0]["confidence"]
+        parsed["primary_supplier_th"] = next((c["name"] for c in cands if c["language"] == "th"), parsed.get("primary_supplier_th"))
+        parsed["primary_supplier_en"] = next((c["name"] for c in cands if c["language"] == "en"), parsed.get("primary_supplier_en"))
+
+    po_raw = str(vision.get("po_number") or "").strip()
+    if po_raw:
+        po_list = parsed.setdefault("po_numbers", [])
+        for v in _normalize_po_token(po_raw):
+            if v not in po_list:
+                po_list.append(v)
+
+    tid_digits = re.sub(r"\D", "", str(vision.get("tax_id") or ""))
+    if len(tid_digits) == 13 and tid_digits not in SELF_TAX_IDS:
+        tid_list = parsed.setdefault("tax_ids", [])
+        if tid_digits not in tid_list:
+            tid_list.append(tid_digits)
+
+    v_email = str(vision.get("email") or "").strip().lower()
+    if v_email and re.match(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$", v_email) and "qtc-energy" not in v_email:
+        em_list = parsed.setdefault("emails", [])
+        if v_email not in em_list:
+            em_list.append(v_email)
+
+
 def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
     """Processes a single file (PDF, Image, or DOCX) end-to-end."""
     file_path = request.get("file_path", "")
     if not os.path.exists(file_path):
         return {"status": "error", "message": f"File not found: {file_path}"}
 
+    hints = request.get("hints") or {}
+    neg_phrases = [str(x) for x in (hints.get("negative_phrases") or []) if x]
+    pref_y_raw = hints.get("preferred_y_band")
+    pref_y = float(pref_y_raw) if pref_y_raw is not None else None
+    local_vision_enabled = bool(hints.get("local_vision_enabled", False))
+    local_vision_provider = str(hints.get("local_vision_provider") or "ollama")
+    local_vision_endpoint = str(hints.get("local_vision_endpoint") or "http://127.0.0.1:11434")
+    local_vision_model = str(hints.get("local_vision_model") or "hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF")
+
     ext = os.path.splitext(file_path)[1].lower()
     page_results = []
     overall_text_parts = []
     all_boxes: List[Dict[str, Any]] = []
+    first_page_img: Optional[np.ndarray] = None
 
     try:
         if ext == ".pdf":
@@ -676,6 +984,8 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                     ocr_engine = get_paddle_ocr()
                     if ocr_engine is not None:
                         img = render_pdf_page_to_image(file_path, page_num, dpi=200)
+                        if page_num == 1:
+                            first_page_img = img
                         enhanced_img = Preprocessor.deskew_and_enhance(img)
                         method = "paddleocr_ppocrv5"
                         ocr_res = ocr_engine.ocr(enhanced_img, cls=True)
@@ -702,7 +1012,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                             raw_text = "\n".join(ocr_lines)
                             confidence = (total_conf / count) if count > 0 else 0.0
 
-                parsed = parse_supplier_and_po(raw_text, boxes)
+                parsed = parse_supplier_and_po(raw_text, boxes, neg_phrases, pref_y)
                 overall_text_parts.append(raw_text)
                 if page_num == 1:
                     all_boxes.extend(boxes)
@@ -721,6 +1031,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
             if img is None:
                 return {"status": "error", "message": f"Could not read image (or unsupported format): {file_path}"}
 
+            first_page_img = img
             enhanced = Preprocessor.deskew_and_enhance(img)
             ocr_engine = get_paddle_ocr()
             boxes = []
@@ -747,7 +1058,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 confidence = (total_conf / count) if count > 0 else 0.0
 
             raw_text = "\n".join(ocr_lines)
-            parsed = parse_supplier_and_po(raw_text, boxes)
+            parsed = parse_supplier_and_po(raw_text, boxes, neg_phrases, pref_y)
             overall_text_parts.append(raw_text)
             all_boxes.extend(boxes)
 
@@ -770,7 +1081,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                         lines.append(row_text)
 
             raw_text = "\n".join(lines)
-            parsed = parse_supplier_and_po(raw_text, [])
+            parsed = parse_supplier_and_po(raw_text, [], neg_phrases, pref_y)
             overall_text_parts.append(raw_text)
 
             page_results.append({
@@ -786,7 +1097,34 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
             return {"status": "error", "message": f"Unsupported file extension: {ext}"}
 
         all_text = "\n".join(overall_text_parts)
-        agg_parsed = parse_supplier_and_po(all_text, all_boxes)
+        agg_parsed = parse_supplier_and_po(all_text, all_boxes, neg_phrases, pref_y)
+
+        # Optional 100% Offline Local Vision AI fallback (SmolVLM2-2.2B / Qwen2.5-VL-3B)
+        needs_vision_fallback = (
+            local_vision_enabled
+            and ext != ".docx"
+            and (
+                not agg_parsed.get("supplier_candidates")
+                or float(agg_parsed.get("primary_confidence") or 0.0) < 85.0
+            )
+        )
+        if needs_vision_fallback:
+            if first_page_img is None and ext == ".pdf":
+                try:
+                    first_page_img = render_pdf_page_to_image(file_path, 1, dpi=150)
+                except Exception:
+                    first_page_img = None
+            if first_page_img is not None:
+                vision_out = query_local_vision_model(
+                    first_page_img,
+                    local_vision_provider,
+                    local_vision_endpoint,
+                    local_vision_model,
+                )
+                if vision_out:
+                    _merge_local_vision_into_parsed(agg_parsed, vision_out, neg_phrases)
+                    if page_results:
+                        _merge_local_vision_into_parsed(page_results[0]["parsed"], vision_out, neg_phrases)
 
         return {
             "status": "ok",
@@ -890,6 +1228,8 @@ def main():
                 resp = process_file_request(req)
             elif cmd == "render_preview":
                 resp = render_preview_request(req)
+            elif cmd == "test_local_vision":
+                resp = test_local_vision_request(req)
             elif cmd == "shutdown":
                 sys.stdout.write(json.dumps({"status": "ok", "message": "shutting down"}) + "\n")
                 sys.stdout.flush()

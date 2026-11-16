@@ -187,7 +187,59 @@ pub async fn approve_and_send_job(
         .or_else(|| job.po_number.clone())
         .unwrap_or_else(|| job.po_folder_name.clone());
 
-    if save_alias.unwrap_or(true) {
+    if settings.self_learning_enabled {
+        let learned_count = state
+            .db
+            .learn_from_approved_job(&job, &clean_company, &clean_email)
+            .unwrap_or(0);
+        if learned_count > 0 {
+            state.ocr_manager.push_log(format!(
+                "[self-learn] Learned {} signal(s) from manual approval of '{}' -> {}",
+                learned_count, clean_company, clean_email
+            ));
+        }
+
+        if settings.auto_sync_learned_suppliers_to_sheets
+            && !settings.gas_webhook_url.trim().is_empty()
+            && !settings.google_sheets_id.trim().is_empty()
+        {
+            let matched_entry = state
+                .db
+                .get_companies_cache()
+                .ok()
+                .and_then(|list| {
+                    list.into_iter()
+                        .find(|c| c.company_name.eq_ignore_ascii_case(&clean_company))
+                });
+            let alt_name = matched_entry.as_ref().and_then(|c| c.alternative_name.clone());
+            let tax_id = matched_entry.as_ref().and_then(|c| c.tax_id.clone());
+            let webhook = settings.gas_webhook_url.clone();
+            let secret = settings.gas_auth_secret.clone();
+            let sheet_id = settings.google_sheets_id.clone();
+            let tab_name = settings.google_sheets_tab_name.clone();
+            let comp_clone = clean_company.clone();
+            let email_clone = clean_email.clone();
+
+            tokio::spawn(async move {
+                if let Ok(client) = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(15))
+                    .build()
+                {
+                    let payload = serde_json::json!({
+                        "action": "upsert_supplier",
+                        "auth_secret": secret,
+                        "sheet_id": sheet_id,
+                        "tab_name": tab_name,
+                        "company_name": comp_clone,
+                        "alternative_name": alt_name.unwrap_or_default(),
+                        "email": email_clone,
+                        "tax_id": tax_id.unwrap_or_default(),
+                    });
+                    let _ = client.post(&webhook).json(&payload).send().await;
+                }
+            });
+        }
+    } else if save_alias.unwrap_or(true) {
         if let Some(ref detected) = job.detected_company_raw {
             let det_clean = detected.trim();
             if !det_clean.is_empty()
@@ -895,6 +947,8 @@ pub async fn run_developer_command(
             "  test-sheets  - Live-fetch Google Sheet supplier directory & print parsed entries",
             "  reset-stuck  - Unlock any jobs stuck in processing/uploading_drive and move to needs_review",
             "  ping-ocr     - Ping managed Python OCR worker sidecar and measure latency",
+            "  learning     - Show Self-Learning Memory statistics (learned names, Tax IDs, negative filters)",
+            "  test-vision  - Test 100% offline Local Vision AI (SmolVLM2-2.2B / Ollama 127.0.0.1)",
             "  scan         - Immediately scan Incoming folder and enqueue waiting PO directories",
         ]
         .join("\n"),
@@ -1067,6 +1121,42 @@ pub async fn run_developer_command(
             format!("Scanned incoming directory; queued/active folders count = {}", count)
         }
 
+        "learning" => {
+            let stats = state.db.get_learning_stats().map_err(|e| e.to_string())?;
+            format!(
+                "SELF-LEARNING MEMORY ENGINE (enabled={}):\n  Learned Name Variants : {}\n  Learned 13-Digit Tax IDs: {}\n  Learned Email Domains   : {}\n  Blacklist Neg Phrases   : {}\n  Spatial Layout Zones    : {}\n  Company Aliases         : {}\n  Total Approvals Learned : {}",
+                settings.self_learning_enabled,
+                stats.learned_name_variants,
+                stats.learned_tax_ids,
+                stats.learned_email_domains,
+                stats.negative_phrases_count,
+                stats.learned_zones_count,
+                stats.total_aliases,
+                stats.total_approvals_learned
+            )
+        }
+
+        "test-vision" => {
+            let res = state
+                .ocr_manager
+                .test_local_vision(
+                    &settings.local_vision_provider,
+                    &settings.local_vision_endpoint,
+                    &settings.local_vision_model,
+                )
+                .await?;
+            format!(
+                "LOCAL VISION AI (100% On-Device):\n  Enabled    : {}\n  Provider   : {}\n  Endpoint   : {}\n  Model      : {}\n  Reachable  : {}\n  Available  : {}\n  Message    : {}",
+                settings.local_vision_enabled,
+                settings.local_vision_provider,
+                res.endpoint,
+                res.configured_model,
+                res.reachable,
+                if res.available_models.is_empty() { "<none>".to_string() } else { res.available_models.join(", ") },
+                res.message
+            )
+        }
+
         _ => format!("Unknown command '{}'. Type 'help' to see available diagnostic commands.", trimmed),
     };
 
@@ -1074,6 +1164,32 @@ pub async fn run_developer_command(
         state.ocr_manager.push_log(line.to_string());
     }
     Ok(output)
+}
+
+#[tauri::command]
+pub fn get_learning_stats(state: State<'_, AppState>) -> Result<LearningStats, String> {
+    state.db.get_learning_stats().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn test_local_vision_ai(
+    state: State<'_, AppState>,
+    provider: Option<String>,
+    endpoint: Option<String>,
+    model: Option<String>,
+) -> Result<LocalVisionStatus, String> {
+    let settings = state.db.get_settings().map_err(|e| e.to_string())?;
+    let prov = provider
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(settings.local_vision_provider);
+    let ep = endpoint
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(settings.local_vision_endpoint);
+    let mdl = model
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(settings.local_vision_model);
+
+    state.ocr_manager.test_local_vision(&prov, &ep, &mdl).await
 }
 
 const DEFAULT_GITHUB_REPO: &str = "oscarpooper-lang/po-autoflow-enterprise";

@@ -12,6 +12,8 @@ import type {
   GoogleAccountInfo,
   PagePreviewResponse,
   DeveloperConsoleSnapshot,
+  LearningStats,
+  LocalVisionStatus,
 } from '../types';
 
 export interface GitHubUpdateStatus {
@@ -104,6 +106,12 @@ export const defaultSettings: AppSettings = {
   allow_pdf_email_fallback: false,
   require_drive_backup_for_auto_send: false,
   email_attachment_mode: 'individual_files',
+  self_learning_enabled: true,
+  auto_sync_learned_suppliers_to_sheets: true,
+  local_vision_enabled: false,
+  local_vision_provider: 'ollama',
+  local_vision_endpoint: 'http://127.0.0.1:11434',
+  local_vision_model: 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF',
 };
 
 let mockSettings: AppSettings = { ...defaultSettings };
@@ -662,6 +670,42 @@ export const api = {
       return await invoke<string>('run_developer_command', { command });
     }
     return `Preview mode command: ${command}`;
+  },
+
+  getLearningStats: async (): Promise<LearningStats> => {
+    if (isTauriEnvironment()) {
+      return await invoke<LearningStats>('get_learning_stats');
+    }
+    return {
+      total_aliases: mockAliases.length,
+      learned_tax_ids: 0,
+      learned_email_domains: 0,
+      learned_name_variants: 0,
+      negative_phrases_count: 0,
+      learned_zones_count: 0,
+      total_approvals_learned: 0,
+    };
+  },
+
+  testLocalVisionAi: async (
+    provider?: string,
+    endpoint?: string,
+    model?: string
+  ): Promise<LocalVisionStatus> => {
+    if (isTauriEnvironment()) {
+      return await invoke<LocalVisionStatus>('test_local_vision_ai', {
+        provider: provider || null,
+        endpoint: endpoint || null,
+        model: model || null,
+      });
+    }
+    return {
+      reachable: false,
+      endpoint: endpoint || 'http://127.0.0.1:11434',
+      configured_model: model || 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF',
+      available_models: [],
+      message: 'Local Vision AI test requires desktop Tauri runtime.',
+    };
   },
 
   checkGitHubUpdate,

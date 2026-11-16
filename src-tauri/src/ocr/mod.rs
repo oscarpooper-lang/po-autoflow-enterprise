@@ -77,6 +77,16 @@ pub struct OcrFileResponse {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OcrHints {
+    pub negative_phrases: Vec<String>,
+    pub preferred_y_band: Option<f64>,
+    pub local_vision_enabled: bool,
+    pub local_vision_provider: String,
+    pub local_vision_endpoint: String,
+    pub local_vision_model: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PagePreviewResponse {
     pub status: String,
@@ -203,6 +213,14 @@ impl OcrManager {
     }
 
     pub async fn process_file(&self, file_path: &Path) -> Result<OcrFileResponse, OcrError> {
+        self.process_file_with_hints(file_path, None).await
+    }
+
+    pub async fn process_file_with_hints(
+        &self,
+        file_path: &Path,
+        hints: Option<&OcrHints>,
+    ) -> Result<OcrFileResponse, OcrError> {
         self.ensure_process_running().await?;
         self.push_log(format!(
             "[python-ocr] Processing file: {}",
@@ -215,10 +233,17 @@ impl OcrManager {
             None => return Err(OcrError::ProcessTerminated),
         };
 
-        let req = serde_json::json!({
-            "command": "process_file",
-            "file_path": file_path.to_string_lossy(),
-        });
+        let req = match hints {
+            Some(h) => serde_json::json!({
+                "command": "process_file",
+                "file_path": file_path.to_string_lossy(),
+                "hints": h,
+            }),
+            None => serde_json::json!({
+                "command": "process_file",
+                "file_path": file_path.to_string_lossy(),
+            }),
+        };
 
         let mut req_str = serde_json::to_string(&req)?;
         req_str.push('\n');
@@ -374,6 +399,110 @@ impl OcrManager {
             Err(e) => {
                 *lock = None;
                 Err(OcrError::Io(e))
+            }
+        }
+    }
+
+    pub async fn test_local_vision(
+        &self,
+        provider: &str,
+        endpoint: &str,
+        model: &str,
+    ) -> Result<crate::database::models::LocalVisionStatus, String> {
+        let ep_trim = endpoint.trim();
+        let prov_clean = if provider.trim().is_empty() { "ollama" } else { provider.trim() };
+
+        // Enforce strict localhost security policy in Rust as well when using Ollama
+        if prov_clean.eq_ignore_ascii_case("ollama") {
+            let lower = ep_trim.to_lowercase();
+            let valid_host = lower.starts_with("http://127.0.0.1")
+                || lower.starts_with("http://localhost")
+                || lower.starts_with("https://127.0.0.1")
+                || lower.starts_with("https://localhost")
+                || lower.starts_with("http://[::1]");
+            if !valid_host {
+                return Ok(crate::database::models::LocalVisionStatus {
+                    reachable: false,
+                    endpoint: ep_trim.to_string(),
+                    configured_model: model.trim().to_string(),
+                    available_models: Vec::new(),
+                    message: "Security block: only 127.0.0.1 / localhost endpoints are allowed so sensitive PO data never leaves this computer.".to_string(),
+                });
+            }
+        }
+
+        self.ensure_process_running().await.map_err(|e| e.to_string())?;
+        let mut lock = self.process.lock().await;
+        let worker = match lock.as_mut() {
+            Some(w) => w,
+            None => return Err("OCR worker process not running".to_string()),
+        };
+
+        let req = serde_json::json!({
+            "command": "test_local_vision",
+            "provider": prov_clean,
+            "endpoint": ep_trim,
+            "model": model.trim(),
+        });
+
+        let mut req_str = serde_json::to_string(&req).map_err(|e| e.to_string())?;
+        req_str.push('\n');
+
+        if let Err(e) = worker.stdin.write_all(req_str.as_bytes()).await {
+            *lock = None;
+            return Err(e.to_string());
+        }
+        if let Err(e) = worker.stdin.flush().await {
+            *lock = None;
+            return Err(e.to_string());
+        }
+
+        let mut resp_line = String::new();
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            worker.reader.read_line(&mut resp_line),
+        )
+        .await
+        {
+            Ok(Ok(bytes)) if bytes > 0 => {
+                let val: serde_json::Value = serde_json::from_str(&resp_line).map_err(|e| e.to_string())?;
+                let available_models = val
+                    .get("available_models")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                Ok(crate::database::models::LocalVisionStatus {
+                    reachable: val.get("reachable").and_then(|v| v.as_bool()).unwrap_or(false),
+                    endpoint: val.get("endpoint").and_then(|v| v.as_str()).unwrap_or(ep_trim).to_string(),
+                    configured_model: val
+                        .get("configured_model")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(model)
+                        .to_string(),
+                    available_models,
+                    message: val
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Local vision check completed")
+                        .to_string(),
+                })
+            }
+            Ok(Ok(_)) => {
+                *lock = None;
+                Err("OCR worker process closed unexpectedly".to_string())
+            }
+            Ok(Err(e)) => {
+                *lock = None;
+                Err(e.to_string())
+            }
+            Err(_) => {
+                *lock = None;
+                Err("Local vision check timed out".to_string())
             }
         }
     }

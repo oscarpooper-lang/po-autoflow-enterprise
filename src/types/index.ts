@@ -37,6 +37,12 @@ export interface AppSettings {
   allow_pdf_email_fallback?: boolean;
   require_drive_backup_for_auto_send?: boolean;
   email_attachment_mode?: 'individual_files' | 'zip_archive' | 'both';
+  self_learning_enabled?: boolean;
+  auto_sync_learned_suppliers_to_sheets?: boolean;
+  local_vision_enabled?: boolean;
+  local_vision_provider?: 'ollama' | 'transformers';
+  local_vision_endpoint?: string;
+  local_vision_model?: string;
 }
 
 export interface GoogleAccountInfo {
@@ -217,5 +223,23 @@ export interface DeveloperConsoleSnapshot {
   recent_events: ApplicationEvent[];
   audit_logs: AuditLog[];
   timestamp: string;
+}
+
+export interface LearningStats {
+  total_aliases: number;
+  learned_tax_ids: number;
+  learned_email_domains: number;
+  learned_name_variants: number;
+  negative_phrases_count: number;
+  learned_zones_count: number;
+  total_approvals_learned: number;
+}
+
+export interface LocalVisionStatus {
+  reachable: boolean;
+  endpoint: string;
+  configured_model: string;
+  available_models: string[];
+  message: string;
 }
 

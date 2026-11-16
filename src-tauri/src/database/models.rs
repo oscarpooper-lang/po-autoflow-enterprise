@@ -58,6 +58,20 @@ pub struct AppSettings {
     pub require_drive_backup_for_auto_send: bool,
     #[serde(default = "default_attachment_mode")]
     pub email_attachment_mode: String, // "individual_files" | "zip_archive" | "both"
+
+    // Self-Learning Memory & 100% Offline Local Vision AI
+    #[serde(default = "default_true")]
+    pub self_learning_enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_sync_learned_suppliers_to_sheets: bool,
+    #[serde(default)]
+    pub local_vision_enabled: bool,
+    #[serde(default = "default_local_vision_provider")]
+    pub local_vision_provider: String, // "ollama" | "transformers"
+    #[serde(default = "default_local_vision_endpoint")]
+    pub local_vision_endpoint: String,
+    #[serde(default = "default_local_vision_model")]
+    pub local_vision_model: String,
 }
 
 fn default_true() -> bool {
@@ -70,6 +84,18 @@ fn default_auto_send_mode() -> String {
 
 fn default_attachment_mode() -> String {
     "individual_files".to_string()
+}
+
+fn default_local_vision_provider() -> String {
+    "ollama".to_string()
+}
+
+fn default_local_vision_endpoint() -> String {
+    "http://127.0.0.1:11434".to_string()
+}
+
+fn default_local_vision_model() -> String {
+    "hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +151,12 @@ impl Default for AppSettings {
             allow_pdf_email_fallback: false,
             require_drive_backup_for_auto_send: false,
             email_attachment_mode: "individual_files".to_string(),
+            self_learning_enabled: true,
+            auto_sync_learned_suppliers_to_sheets: true,
+            local_vision_enabled: false,
+            local_vision_provider: "ollama".to_string(),
+            local_vision_endpoint: "http://127.0.0.1:11434".to_string(),
+            local_vision_model: "hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF".to_string(),
         }
     }
 }
@@ -271,5 +303,37 @@ pub struct DashboardStats {
     pub failed_transactions: i64,
     pub success_rate_percent: f64,
     pub avg_ocr_confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearningMemoryEntry {
+    pub id: String,
+    pub signal_type: String,
+    pub signal_value: String,
+    pub canonical_company_name: String,
+    pub recipient_email: Option<String>,
+    pub hit_count: i64,
+    pub confidence_boost: f64,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearningStats {
+    pub total_aliases: usize,
+    pub learned_tax_ids: usize,
+    pub learned_email_domains: usize,
+    pub learned_name_variants: usize,
+    pub negative_phrases_count: usize,
+    pub learned_zones_count: usize,
+    pub total_approvals_learned: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalVisionStatus {
+    pub reachable: bool,
+    pub endpoint: String,
+    pub configured_model: String,
+    pub available_models: Vec<String>,
+    pub message: String,
 }
 

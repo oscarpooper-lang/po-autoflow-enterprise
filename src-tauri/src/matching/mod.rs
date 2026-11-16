@@ -2,7 +2,7 @@ pub mod thai_normalizer;
 
 use std::collections::HashSet;
 use thai_normalizer::ThaiNormalizer;
-use crate::database::models::{CompanyAlias, CompanyCacheEntry};
+use crate::database::models::{CompanyAlias, CompanyCacheEntry, LearningMemoryEntry};
 
 #[derive(Debug, Clone)]
 pub struct MatchResult {
@@ -80,6 +80,31 @@ impl CompanyMatcher {
         Self::similarity_ratio(&sorted1, &sorted2)
     }
 
+    /// Computes character N-gram Dice similarity (0.0 to 100.0) to tolerate minor OCR typos/drops.
+    pub fn char_ngram_similarity(s1: &str, s2: &str, n: usize) -> f64 {
+        let a: Vec<char> = s1.chars().filter(|c| !c.is_whitespace()).collect();
+        let b: Vec<char> = s2.chars().filter(|c| !c.is_whitespace()).collect();
+        if a == b {
+            return 100.0;
+        }
+        if a.is_empty() || b.is_empty() {
+            return 0.0;
+        }
+        if a.len() < n || b.len() < n {
+            return Self::similarity_ratio(s1, s2);
+        }
+
+        let grams_a: HashSet<String> = a.windows(n).map(|w| w.iter().collect()).collect();
+        let grams_b: HashSet<String> = b.windows(n).map(|w| w.iter().collect()).collect();
+        let denom = grams_a.len() + grams_b.len();
+        if denom == 0 {
+            return 0.0;
+        }
+        let inter = grams_a.intersection(&grams_b).count();
+        let dice = (2.0 * inter as f64) / (denom as f64);
+        (dice * 100.0).min(100.0)
+    }
+
     /// Computes Token Set Ratio (handles common intersection of words).
     pub fn token_set_ratio(s1: &str, s2: &str) -> f64 {
         let set1: HashSet<&str> = s1.split_whitespace().collect();
@@ -155,7 +180,8 @@ impl CompanyMatcher {
                 return 0.0;
             }
             let same_script_score = Self::token_sort_ratio(&clean_query, &clean_target)
-                .max(Self::token_set_ratio(&clean_query, &clean_target));
+                .max(Self::token_set_ratio(&clean_query, &clean_target))
+                .max(Self::char_ngram_similarity(&clean_query, &clean_target, 3));
 
             let target_has_thai = ThaiNormalizer::contains_thai(&clean_target);
             if query_has_thai != target_has_thai && query_skel.len() >= 4 {
@@ -258,21 +284,55 @@ impl CompanyMatcher {
         high_threshold: f64,
         review_threshold: f64,
     ) -> MatchResult {
+        Self::match_candidates_with_memory(
+            candidates,
+            &[],
+            &[],
+            directory,
+            aliases,
+            &[],
+            verified_threshold,
+            high_threshold,
+            review_threshold,
+        )
+    }
+
+    /// Multi-signal self-learning matcher combining negative-phrase suppression, 13-digit Tax ID exact lookup,
+    /// learned name variants, approval-frequency priors, corporate email domains, and character 3-gram similarity.
+    pub fn match_candidates_with_memory(
+        candidates: &[crate::ocr::SupplierCandidate],
+        extracted_tax_ids: &[String],
+        extracted_emails: &[String],
+        directory: &[CompanyCacheEntry],
+        aliases: &[CompanyAlias],
+        memories: &[LearningMemoryEntry],
+        verified_threshold: f64,
+        high_threshold: f64,
+        review_threshold: f64,
+    ) -> MatchResult {
+        const GENERIC_DOMAINS: &[&str] = &[
+            "gmail.com", "googlemail.com", "hotmail.com", "outlook.com", "live.com",
+            "msn.com", "yahoo.com", "yahoo.co.th", "icloud.com", "me.com",
+            "protonmail.com", "mail.com", "qtc-energy.com",
+        ];
+
+        let neg_phrases: Vec<String> = memories
+            .iter()
+            .filter(|m| m.signal_type == "negative_phrase")
+            .map(|m| ThaiNormalizer::clean_company_name(&m.signal_value))
+            .filter(|s| !s.is_empty())
+            .collect();
+
         let valid: Vec<&crate::ocr::SupplierCandidate> = candidates
             .iter()
             .filter(|c| !ThaiNormalizer::is_ignored_self_company(&c.name))
+            .filter(|c| {
+                let clean_c = ThaiNormalizer::clean_company_name(&c.name);
+                !neg_phrases.iter().any(|neg| {
+                    &clean_c == neg || Self::similarity_ratio(&clean_c, neg) >= 90.0
+                })
+            })
             .collect();
-
-        if valid.is_empty() {
-            return MatchResult {
-                query: String::new(),
-                matched_company: None,
-                confidence: 0.0,
-                category: "no_match".to_string(),
-                is_ambiguous: false,
-                matched_by: "none".to_string(),
-            };
-        }
 
         // Preserve Thai name first for display/learning if any Thai candidate exists
         let preferred_query = valid
@@ -282,9 +342,111 @@ impl CompanyMatcher {
             .map(|c| ThaiNormalizer::normalize_unicode(&c.name))
             .unwrap_or_default();
 
+        // Helper to match an active company by canonical name or email
+        let find_active_company = |canonical_name: &str| -> Option<&CompanyCacheEntry> {
+            let clean_canon = ThaiNormalizer::clean_company_name(canonical_name);
+            directory.iter().find(|c| {
+                c.active
+                    && !ThaiNormalizer::is_ignored_self_company(&c.company_name)
+                    && (c.company_name.eq_ignore_ascii_case(canonical_name.trim())
+                        || ThaiNormalizer::clean_company_name(&c.company_name) == clean_canon)
+            })
+        };
+
+        // Signal 1: Exact 13-Digit Tax ID Match (Directory cache or Learned Memory)
+        for raw_tid in extracted_tax_ids {
+            let tid: String = raw_tid.chars().filter(|c| c.is_ascii_digit()).collect();
+            if tid.len() != 13 || ThaiNormalizer::is_ignored_self_company(&tid) {
+                continue;
+            }
+            if let Some(comp) = directory.iter().find(|c| {
+                c.active
+                    && c.tax_id
+                        .as_deref()
+                        .map(|t| t.chars().filter(|ch| ch.is_ascii_digit()).collect::<String>() == tid)
+                        .unwrap_or(false)
+            }) {
+                return MatchResult {
+                    query: if !preferred_query.is_empty() {
+                        preferred_query
+                    } else {
+                        comp.company_name.clone()
+                    },
+                    matched_company: Some(comp.clone()),
+                    confidence: 99.5,
+                    category: "verified".to_string(),
+                    is_ambiguous: false,
+                    matched_by: "learned_tax_id".to_string(),
+                };
+            }
+            if let Some(mem) = memories
+                .iter()
+                .find(|m| m.signal_type == "tax_id" && m.signal_value == tid)
+            {
+                if let Some(comp) = find_active_company(&mem.canonical_company_name) {
+                    return MatchResult {
+                        query: if !preferred_query.is_empty() {
+                            preferred_query
+                        } else {
+                            comp.company_name.clone()
+                        },
+                        matched_company: Some(comp.clone()),
+                        confidence: 99.5,
+                        category: "verified".to_string(),
+                        is_ambiguous: false,
+                        matched_by: "learned_tax_id".to_string(),
+                    };
+                }
+            }
+        }
+
+        // Collect non-generic corporate email domains extracted from the document
+        let doc_domains: HashSet<String> = extracted_emails
+            .iter()
+            .filter_map(|e| e.split('@').nth(1).map(|d| d.trim().to_lowercase()))
+            .filter(|d| !d.is_empty() && !GENERIC_DOMAINS.contains(&d.as_str()))
+            .collect();
+
+        // Check Signal 2: Learned Name Variants directly in learning_memory
+        for cand in &valid {
+            let clean_cand = ThaiNormalizer::clean_company_name(&cand.name);
+            if clean_cand.is_empty() {
+                continue;
+            }
+            for mem in memories.iter().filter(|m| {
+                m.signal_type == "thai_name" || m.signal_type == "english_name"
+            }) {
+                let clean_sig = ThaiNormalizer::clean_company_name(&mem.signal_value);
+                if clean_sig.is_empty() {
+                    continue;
+                }
+                let sim = Self::similarity_ratio(&clean_cand, &clean_sig)
+                    .max(Self::char_ngram_similarity(&clean_cand, &clean_sig, 3));
+                if sim >= 93.0 {
+                    if let Some(comp) = find_active_company(&mem.canonical_company_name) {
+                        let boost = ((mem.hit_count.min(4)) as f64) * 0.5;
+                        let conf = (sim + boost).clamp(98.0, 100.0);
+                        return MatchResult {
+                            query: if !preferred_query.is_empty() {
+                                preferred_query
+                            } else {
+                                ThaiNormalizer::normalize_unicode(&cand.name)
+                            },
+                            matched_company: Some(comp.clone()),
+                            confidence: (conf * 10.0).round() / 10.0,
+                            category: "verified".to_string(),
+                            is_ambiguous: false,
+                            matched_by: "learned_memory".to_string(),
+                        };
+                    }
+                }
+            }
+        }
+
+        // Standard multi-candidate fuzzy & alias matching
         let mut best_result: Option<(MatchResult, bool)> = None;
         for cand in &valid {
-            let res = Self::match_company(
+            let mut res = Self::match_company(
                 &cand.name,
                 directory,
                 aliases,
@@ -292,6 +454,63 @@ impl CompanyMatcher {
                 high_threshold,
                 review_threshold,
             );
+
+            // Apply learned email domain & approval frequency priors on matched candidate
+            if let Some(ref matched_comp) = res.matched_company {
+                let mut extra_boost = 0.0_f64;
+
+                if let Some(comp_domain) = matched_comp
+                    .email
+                    .split('@')
+                    .nth(1)
+                    .map(|d| d.trim().to_lowercase())
+                {
+                    if !GENERIC_DOMAINS.contains(&comp_domain.as_str())
+                        && doc_domains.contains(&comp_domain)
+                    {
+                        extra_boost += 8.0;
+                    }
+                }
+
+                let learned_email_hit = memories.iter().any(|m| {
+                    m.signal_type == "email_domain"
+                        && doc_domains.contains(&m.signal_value.to_lowercase())
+                        && m.canonical_company_name
+                            .eq_ignore_ascii_case(&matched_comp.company_name)
+                });
+                if learned_email_hit && extra_boost < 8.0 {
+                    extra_boost += 8.0;
+                }
+
+                let freq_hits: i64 = memories
+                    .iter()
+                    .filter(|m| {
+                        (m.signal_type == "thai_name" || m.signal_type == "english_name")
+                            && m.canonical_company_name
+                                .eq_ignore_ascii_case(&matched_comp.company_name)
+                    })
+                    .map(|m| m.hit_count)
+                    .sum();
+                if freq_hits > 0 {
+                    extra_boost += (freq_hits as f64 * 1.5).min(4.5);
+                }
+
+                if extra_boost > 0.0 && res.confidence > 0.0 {
+                    res.confidence = ((res.confidence + extra_boost).min(100.0) * 10.0).round() / 10.0;
+                    if !res.is_ambiguous {
+                        res.category = if res.confidence >= verified_threshold {
+                            "verified".to_string()
+                        } else if res.confidence >= high_threshold {
+                            "high".to_string()
+                        } else if res.confidence >= review_threshold {
+                            "review".to_string()
+                        } else {
+                            "no_match".to_string()
+                        };
+                    }
+                }
+            }
+
             let is_th = cand.language == "th";
             let replace = match &best_result {
                 None => true,
@@ -305,11 +524,79 @@ impl CompanyMatcher {
             }
         }
 
-        let mut chosen = best_result.map(|(r, _)| r).unwrap();
-        if !preferred_query.is_empty() {
-            chosen.query = preferred_query;
+        let match_by_email_domain = |preferred_q: &str| -> Option<MatchResult> {
+            if doc_domains.is_empty() {
+                return None;
+            }
+            let mut domain_matches: Vec<&CompanyCacheEntry> = directory
+                .iter()
+                .filter(|c| c.active && !ThaiNormalizer::is_ignored_self_company(&c.company_name))
+                .filter(|c| {
+                    let comp_dom = c
+                        .email
+                        .split('@')
+                        .nth(1)
+                        .map(|d| d.trim().to_lowercase())
+                        .unwrap_or_default();
+                    let direct = !GENERIC_DOMAINS.contains(&comp_dom.as_str())
+                        && doc_domains.contains(&comp_dom);
+                    let mem = memories.iter().any(|m| {
+                        m.signal_type == "email_domain"
+                            && doc_domains.contains(&m.signal_value.to_lowercase())
+                            && m.canonical_company_name.eq_ignore_ascii_case(&c.company_name)
+                    });
+                    direct || mem
+                })
+                .collect();
+
+            domain_matches.dedup_by(|a, b| a.company_name == b.company_name);
+            if domain_matches.len() == 1 {
+                let comp = domain_matches[0];
+                return Some(MatchResult {
+                    query: if !preferred_q.is_empty() {
+                        preferred_q.to_string()
+                    } else {
+                        comp.company_name.clone()
+                    },
+                    matched_company: Some(comp.clone()),
+                    confidence: 92.0,
+                    category: if 92.0 >= verified_threshold {
+                        "verified".to_string()
+                    } else {
+                        "high".to_string()
+                    },
+                    is_ambiguous: false,
+                    matched_by: "learned_email_domain".to_string(),
+                });
+            }
+            None
+        };
+
+        if let Some((mut chosen, _)) = best_result {
+            if chosen.category == "no_match" {
+                if let Some(domain_res) = match_by_email_domain(&preferred_query) {
+                    chosen = domain_res;
+                }
+            }
+
+            if !preferred_query.is_empty() {
+                chosen.query = preferred_query;
+            }
+            return chosen;
         }
-        chosen
+
+        if let Some(domain_res) = match_by_email_domain(&preferred_query) {
+            return domain_res;
+        }
+
+        MatchResult {
+            query: preferred_query,
+            matched_company: None,
+            confidence: 0.0,
+            category: "no_match".to_string(),
+            is_ambiguous: false,
+            matched_by: "none".to_string(),
+        }
     }
 }
 

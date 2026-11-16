@@ -19,8 +19,11 @@ import {
   Download,
   ExternalLink,
   GitBranch,
+  BrainCircuit,
+  Sparkles,
+  Lock,
 } from 'lucide-react';
-import type { AppSettings, GoogleAccountInfo } from '../types';
+import type { AppSettings, GoogleAccountInfo, LearningStats, LocalVisionStatus } from '../types';
 import { api, checkGitHubUpdate, installGitHubUpdate, type GitHubUpdateStatus } from '../services/tauri';
 
 interface SettingsProps {
@@ -52,6 +55,31 @@ export const Settings: React.FC<SettingsProps> = ({
   const [installingUpdate, setInstallingUpdate] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [updateActionMsg, setUpdateActionMsg] = useState<string | null>(null);
+  const [learningStats, setLearningStats] = useState<LearningStats | null>(null);
+  const [visionStatus, setVisionStatus] = useState<LocalVisionStatus | null>(null);
+  const [testingVision, setTestingVision] = useState(false);
+
+  const handleTestLocalVision = async () => {
+    setTestingVision(true);
+    try {
+      const res = await api.testLocalVisionAi(
+        formData.local_vision_provider || 'ollama',
+        formData.local_vision_endpoint || 'http://127.0.0.1:11434',
+        formData.local_vision_model || 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF'
+      );
+      setVisionStatus(res);
+    } catch (err: any) {
+      setVisionStatus({
+        reachable: false,
+        endpoint: formData.local_vision_endpoint || 'http://127.0.0.1:11434',
+        configured_model: formData.local_vision_model || 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF',
+        available_models: [],
+        message: typeof err === 'string' ? err : err?.message || 'Test failed',
+      });
+    } finally {
+      setTestingVision(false);
+    }
+  };
 
   const handleCheckUpdates = async () => {
     setCheckingUpdate(true);
@@ -100,6 +128,10 @@ export const Settings: React.FC<SettingsProps> = ({
   useEffect(() => {
     checkGitHubUpdate()
       .then((res) => setUpdateStatus(res))
+      .catch(() => {});
+    api
+      .getLearningStats()
+      .then((stats) => setLearningStats(stats))
       .catch(() => {});
   }, []);
 
@@ -558,6 +590,229 @@ export const Settings: React.FC<SettingsProps> = ({
                 </div>
 
                 {renderAutoSendOptionsPanel()}
+
+                {/* Self-Learning Memory Engine Card */}
+                <div className="p-4 rounded-xl bg-zinc-950/70 border border-zinc-800 space-y-3 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h4 className="font-semibold text-white flex items-center gap-1.5">
+                        <BrainCircuit className="w-4 h-4 text-purple-400" />
+                        <span>Self-Learning Memory Engine (Gets Smarter Every PO)</span>
+                      </h4>
+                      <p className="text-[11px] text-zinc-400 mt-0.5">
+                        Learns from every approved PO: links Thai + English names, 13-digit Tax IDs, email domains, page zones, and blacklists false OCR guesses.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => api.getLearningStats().then(setLearningStats).catch(() => {})}
+                      className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 flex items-center gap-1 text-[11px]"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>Refresh Stats</span>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                    <div className="p-2.5 rounded-lg bg-zinc-900/90 border border-zinc-800">
+                      <span className="text-zinc-500 block text-[10px]">Name Variants</span>
+                      <span className="text-zinc-100 font-mono font-semibold text-sm">
+                        {learningStats?.learned_name_variants ?? 0}
+                      </span>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-zinc-900/90 border border-zinc-800">
+                      <span className="text-zinc-500 block text-[10px]">13-Digit Tax IDs</span>
+                      <span className="text-zinc-100 font-mono font-semibold text-sm">
+                        {learningStats?.learned_tax_ids ?? 0}
+                      </span>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-zinc-900/90 border border-zinc-800">
+                      <span className="text-zinc-500 block text-[10px]">Email Domains</span>
+                      <span className="text-zinc-100 font-mono font-semibold text-sm">
+                        {learningStats?.learned_email_domains ?? 0}
+                      </span>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-zinc-900/90 border border-zinc-800">
+                      <span className="text-zinc-500 block text-[10px]">Negative Filters</span>
+                      <span className="text-amber-300 font-mono font-semibold text-sm">
+                        {learningStats?.negative_phrases_count ?? 0}
+                      </span>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-zinc-900/90 border border-zinc-800">
+                      <span className="text-zinc-500 block text-[10px]">Total Reinforced</span>
+                      <span className="text-emerald-400 font-mono font-semibold text-sm">
+                        {learningStats?.total_approvals_learned ?? 0}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 pt-1">
+                    <label className="flex items-start gap-2.5 text-zinc-300 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={formData.self_learning_enabled !== false}
+                        onChange={(e) => handleChange('self_learning_enabled', e.target.checked)}
+                        className="mt-0.5 h-4 w-4 rounded border-zinc-700 bg-zinc-800 text-purple-500 cursor-pointer"
+                      />
+                      <span>
+                        <span className="font-medium text-zinc-200 block">
+                          Enable Self-Learning Memory Loop
+                        </span>
+                        <span className="text-[11px] text-zinc-400">
+                          Automatically harvest Tax IDs, bilingual supplier names, email domains, and layout zones after each PO approval.
+                        </span>
+                      </span>
+                    </label>
+
+                    <label className="flex items-start gap-2.5 text-zinc-300 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={formData.auto_sync_learned_suppliers_to_sheets !== false}
+                        onChange={(e) =>
+                          handleChange('auto_sync_learned_suppliers_to_sheets', e.target.checked)
+                        }
+                        className="mt-0.5 h-4 w-4 rounded border-zinc-700 bg-zinc-800 text-purple-500 cursor-pointer"
+                      />
+                      <span>
+                        <span className="font-medium text-zinc-200 block">
+                          Auto-Save New Approved Suppliers Back to Google Sheet
+                        </span>
+                        <span className="text-[11px] text-zinc-400">
+                          When you approve an unknown vendor once, automatically insert/update their name, email &amp; Tax ID in your Google Sheet via Apps Script.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* 100% Offline Local Vision AI Card */}
+                <div className="p-4 rounded-xl bg-zinc-950/70 border border-zinc-800 space-y-3 text-xs">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <h4 className="font-semibold text-white flex items-center gap-1.5">
+                        <Sparkles className="w-4 h-4 text-emerald-400" />
+                        <span>100% Offline Local Vision AI (SmolVLM2-2.2B / Qwen2.5-VL-3B)</span>
+                      </h4>
+                      <p className="text-[11px] text-zinc-400 mt-0.5 flex items-center gap-1">
+                        <Lock className="w-3 h-3 text-emerald-400 shrink-0" />
+                        <span>
+                          Zero cloud data leakage: strictly runs on-device (`127.0.0.1` / local Python) only when OCR confidence is below 85%.
+                        </span>
+                      </p>
+                    </div>
+                    <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={!!formData.local_vision_enabled}
+                        onChange={(e) => handleChange('local_vision_enabled', e.target.checked)}
+                        className="h-4 w-4 rounded border-zinc-700 bg-zinc-800 text-emerald-500 cursor-pointer"
+                      />
+                      <span className="font-semibold text-zinc-200">
+                        {formData.local_vision_enabled ? 'Enabled' : 'Disabled'}
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-zinc-300 font-medium block mb-1">Local AI Runtime:</label>
+                      <select
+                        value={formData.local_vision_provider || 'ollama'}
+                        onChange={(e) => {
+                          const prov = e.target.value as 'ollama' | 'transformers';
+                          setFormData((prev) => ({
+                            ...prev,
+                            local_vision_provider: prov,
+                            local_vision_model:
+                              prov === 'transformers'
+                                ? 'HuggingFaceTB/SmolVLM2-2.2B-Instruct'
+                                : prev.local_vision_model?.includes('HuggingFaceTB/')
+                                ? 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF'
+                                : prev.local_vision_model || 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF',
+                          }));
+                        }}
+                        className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2"
+                      >
+                        <option value="ollama">Local Ollama Server (127.0.0.1:11434 — Recommended)</option>
+                        <option value="transformers">Embedded Python Transformers (On-Device PyTorch)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-zinc-300 font-medium block mb-1">Lightweight Vision Model:</label>
+                      <select
+                        value={
+                          [
+                            'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF',
+                            'qwen2.5vl:3b',
+                            'moondream',
+                            'HuggingFaceTB/SmolVLM2-2.2B-Instruct',
+                          ].includes(formData.local_vision_model || '')
+                            ? formData.local_vision_model
+                            : 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF'
+                        }
+                        onChange={(e) => handleChange('local_vision_model', e.target.value)}
+                        className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2"
+                      >
+                        <option value="hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF">
+                          SmolVLM2-2.2B-Instruct (GGUF via Ollama — ~1.3 GB, Ultra Light)
+                        </option>
+                        <option value="qwen2.5vl:3b">
+                          Qwen2.5-VL-3B (via Ollama — ~3.2 GB, Best for Thai + English POs)
+                        </option>
+                        <option value="moondream">
+                          Moondream 1.8B (via Ollama — ~1.7 GB, Fast CPU Fallback)
+                        </option>
+                        <option value="HuggingFaceTB/SmolVLM2-2.2B-Instruct">
+                          HuggingFaceTB/SmolVLM2-2.2B-Instruct (Embedded Python Transformers)
+                        </option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {formData.local_vision_provider !== 'transformers' && (
+                    <div>
+                      <label className="text-zinc-300 font-medium block mb-1">
+                        Localhost Endpoint (Locked to 127.0.0.1 / localhost):
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.local_vision_endpoint || 'http://127.0.0.1:11434'}
+                        onChange={(e) => handleChange('local_vision_endpoint', e.target.value)}
+                        className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 font-mono"
+                      />
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleTestLocalVision}
+                      disabled={testingVision}
+                      className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold border border-zinc-700 flex items-center gap-1.5"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${testingVision ? 'animate-spin' : ''}`} />
+                      <span>{testingVision ? 'Checking...' : 'Test Local Vision AI'}</span>
+                    </button>
+                    <code className="text-[11px] text-zinc-400 font-mono bg-zinc-900 px-2 py-1 rounded border border-zinc-800">
+                      {formData.local_vision_provider === 'transformers'
+                        ? 'pip install transformers torch accelerate Pillow'
+                        : `ollama pull ${formData.local_vision_model || 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF'}`}
+                    </code>
+                  </div>
+
+                  {visionStatus && (
+                    <div
+                      className={`p-2.5 rounded-lg border text-xs ${
+                        visionStatus.reachable
+                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                          : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                      }`}
+                    >
+                      {visionStatus.message}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}

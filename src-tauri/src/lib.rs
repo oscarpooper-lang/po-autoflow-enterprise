@@ -305,7 +305,9 @@ pub fn run() {
             get_developer_console_snapshot,
             run_developer_command,
             check_github_update,
-            install_github_update
+            install_github_update,
+            get_learning_stats,
+            test_local_vision_ai
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -288,4 +288,172 @@ fn test_headerless_one_row_sheet_parsing() {
     assert!(parsed[0].alternative_name.is_none());
 }
 
+#[test]
+fn test_self_learning_memory_and_ngram_matching() {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("learning_test.db");
+    let db = Database::new(&db_path).unwrap();
+
+    // 1. Character 3-gram Dice similarity handles OCR typos robustly while separating unrelated strings
+    let typo_sim = CompanyMatcher::char_ngram_similarity("สยามซัพพลายเอบีซี", "สยามซัพพลายเอซีซี", 3);
+    assert!(typo_sim >= 70.0, "Expected high 3-gram similarity for minor typo, got {}", typo_sim);
+    let diff_sim = CompanyMatcher::char_ngram_similarity("สยามซัพพลาย", "กสิกรไทย", 3);
+    assert!(diff_sim < 20.0, "Unrelated names should score low, got {}", diff_sim);
+
+    // 2. Simulate a job where OCR wrongly guessed a bank line before manual approval
+    let job = Job {
+        id: "job-learn-1".to_string(),
+        po_folder_name: "PO-26009999".to_string(),
+        source_path: "C:\\PO-AutoFlow\\Review\\PO-26009999".to_string(),
+        status: "needs_review".to_string(),
+        stage_message: "Needs review".to_string(),
+        po_number: Some("PO-26009999".to_string()),
+        detected_company_raw: Some("ธนาคารกสิกรไทย จำกัด".to_string()),
+        matched_company_name: None,
+        matched_email: None,
+        match_confidence: Some(0.0),
+        match_category: Some("no_match".to_string()),
+        archive_path: None,
+        archive_sha256: None,
+        archive_size_bytes: None,
+        drive_file_id: None,
+        drive_web_link: None,
+        email_transaction_id: None,
+        retry_count: 0,
+        error_details: None,
+        created_at: "2026-11-16T00:00:00Z".to_string(),
+        updated_at: "2026-11-16T00:00:00Z".to_string(),
+        completed_at: None,
+    };
+    db.insert_job(&job).unwrap();
+
+    let ocr_rec = OcrResultRecord {
+        id: "ocr-learn-1".to_string(),
+        job_id: job.id.clone(),
+        file_path: "PO-Invoice.pdf".to_string(),
+        page_number: 1,
+        raw_text: "บริษัท เอเพ็กซ์ ซัพพลาย จำกัด Tax ID 0105559008899".to_string(),
+        normalized_text: "บริษัท เอเพ็กซ์ ซัพพลาย จำกัด Tax ID 0105559008899".to_string(),
+        confidence: 96.0,
+        engine: "native_pdf".to_string(),
+        bounding_boxes_json: serde_json::json!([
+            {
+                "box": [[40.0, 120.0], [320.0, 120.0], [320.0, 140.0], [40.0, 140.0]],
+                "text": "บริษัท เอเพ็กซ์ ซัพพลาย จำกัด",
+                "confidence": 1.0,
+                "type": "native"
+            },
+            {
+                "box": [[40.0, 800.0], [320.0, 800.0], [320.0, 820.0], [40.0, 820.0]],
+                "text": "Footer",
+                "confidence": 1.0,
+                "type": "native"
+            }
+        ])
+        .to_string(),
+        detected_entities_json: serde_json::json!({
+            "po_numbers": ["PO-26009999"],
+            "tax_ids": ["0105559008899"],
+            "emails": ["sales@apex-supply.co.th"],
+            "supplier_candidates": [
+                {
+                    "name": "บริษัท เอเพ็กซ์ ซัพพลาย จำกัด",
+                    "confidence": 96.0,
+                    "language": "th",
+                    "line_index": 2,
+                    "source": "regex_th"
+                }
+            ],
+            "primary_supplier": "บริษัท เอเพ็กซ์ ซัพพลาย จำกัด",
+            "primary_confidence": 96.0,
+            "primary_supplier_th": "บริษัท เอเพ็กซ์ ซัพพลาย จำกัด",
+            "primary_supplier_en": "APEX SUPPLY CO., LTD."
+        })
+        .to_string(),
+        created_at: "2026-11-16T00:00:00Z".to_string(),
+    };
+    db.record_ocr_result(&ocr_rec).unwrap();
+
+    // Approve job -> triggers self-learning
+    let learned = db
+        .learn_from_approved_job(&job, "บริษัท เอเพ็กซ์ ซัพพลาย จำกัด", "sales@apex-supply.co.th")
+        .unwrap();
+    assert!(learned >= 4, "Expected at least 4 signals learned, got {}", learned);
+
+    let directory = db.get_companies_cache().unwrap();
+    let aliases = db.get_company_aliases().unwrap();
+    let memories = db.get_learning_memories().unwrap();
+    let stats = db.get_learning_stats().unwrap();
+
+    assert_eq!(directory.len(), 1);
+    assert_eq!(directory[0].company_name, "บริษัท เอเพ็กซ์ ซัพพลาย จำกัด");
+    assert_eq!(directory[0].email, "sales@apex-supply.co.th");
+    assert_eq!(directory[0].tax_id.as_deref(), Some("0105559008899"));
+    assert_eq!(stats.learned_tax_ids, 1);
+    assert_eq!(stats.learned_email_domains, 1);
+    assert_eq!(stats.negative_phrases_count, 1);
+    assert!(stats.learned_zones_count >= 1);
+
+    // 3a. Blacklisted false positive alone must now be suppressed (no_match)
+    let neg_only = vec![app_lib::ocr::SupplierCandidate {
+        name: "ธนาคารกสิกรไทย จำกัด".to_string(),
+        confidence: 95.0,
+        language: "th".to_string(),
+        line_index: Some(1),
+        source: Some("regex_th".to_string()),
+    }];
+    let res_neg = CompanyMatcher::match_candidates_with_memory(
+        &neg_only,
+        &[],
+        &[],
+        &directory,
+        &aliases,
+        &memories,
+        98.0,
+        90.0,
+        75.0,
+    );
+    assert_eq!(res_neg.category, "no_match");
+    assert!(res_neg.matched_company.is_none());
+
+    // 3b. Subsequent PO with only the 13-digit Tax ID matches at 99.5% verified
+    let res_tax = CompanyMatcher::match_candidates_with_memory(
+        &neg_only,
+        &["0105559008899".to_string()],
+        &[],
+        &directory,
+        &aliases,
+        &memories,
+        98.0,
+        90.0,
+        75.0,
+    );
+    assert_eq!(res_tax.category, "verified");
+    assert!(res_tax.confidence >= 99.5);
+    assert_eq!(res_tax.matched_by, "learned_tax_id");
+    assert_eq!(res_tax.matched_company.unwrap().email, "sales@apex-supply.co.th");
+
+    // 3c. Subsequent PO with noisy OCR spacing/character variant matches at verified level
+    let noisy_cand = vec![app_lib::ocr::SupplierCandidate {
+        name: "บริษัท เอเพ็กช์ ซัพพลาย จำกัด".to_string(),
+        confidence: 88.0,
+        language: "th".to_string(),
+        line_index: Some(2),
+        source: Some("ocr".to_string()),
+    }];
+    let res_noisy = CompanyMatcher::match_candidates_with_memory(
+        &noisy_cand,
+        &[],
+        &["billing@apex-supply.co.th".to_string()],
+        &directory,
+        &aliases,
+        &memories,
+        98.0,
+        90.0,
+        75.0,
+    );
+    assert!(res_noisy.confidence >= 98.0, "Expected verified confidence, got {}", res_noisy.confidence);
+    assert_eq!(res_noisy.category, "verified");
+}
+
 

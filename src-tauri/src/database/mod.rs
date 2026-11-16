@@ -185,6 +185,20 @@ impl Database {
                 message TEXT NOT NULL,
                 timestamp TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS learning_memory (
+                id TEXT PRIMARY KEY,
+                signal_type TEXT NOT NULL,
+                signal_value TEXT NOT NULL,
+                canonical_company_name TEXT NOT NULL,
+                recipient_email TEXT,
+                hit_count INTEGER NOT NULL DEFAULT 1,
+                confidence_boost REAL NOT NULL DEFAULT 10.0,
+                updated_at TEXT NOT NULL,
+                UNIQUE(signal_type, signal_value, canonical_company_name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_learning_signal ON learning_memory(signal_type, signal_value);
             "#,
         )?;
 
@@ -701,8 +715,38 @@ impl Database {
     // --- Companies Directory & Cache ---
     pub fn sync_companies_cache(&self, entries: &[CompanyCacheEntry]) -> Result<(), DbError> {
         let mut conn = self.conn.lock();
-        let tx = conn.transaction()?;
 
+        // Preserve locally auto-learned suppliers not yet reflected in the incoming Google Sheet
+        let existing_learned: Vec<CompanyCacheEntry> = {
+            let mut stmt = conn.prepare(
+                "SELECT id, company_name, alternative_name, email, active, tax_id, notes, synced_at FROM companies_cache WHERE notes LIKE 'AUTO_LEARNED%'",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                let active_int: i32 = row.get(4)?;
+                Ok(CompanyCacheEntry {
+                    id: row.get(0)?,
+                    company_name: row.get(1)?,
+                    alternative_name: row.get(2)?,
+                    email: row.get(3)?,
+                    active: active_int == 1,
+                    tax_id: row.get(5)?,
+                    notes: row.get(6)?,
+                    synced_at: row.get(7)?,
+                })
+            })?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            out
+        };
+
+        let incoming_names: std::collections::HashSet<String> = entries
+            .iter()
+            .map(|e| crate::matching::thai_normalizer::ThaiNormalizer::clean_company_name(&e.company_name))
+            .collect();
+
+        let tx = conn.transaction()?;
         tx.execute("DELETE FROM companies_cache", [])?;
 
         for c in entries {
@@ -726,8 +770,113 @@ impl Database {
             )?;
         }
 
+        for learned in existing_learned {
+            let clean = crate::matching::thai_normalizer::ThaiNormalizer::clean_company_name(&learned.company_name);
+            if !incoming_names.contains(&clean) {
+                tx.execute(
+                    r#"
+                    INSERT OR IGNORE INTO companies_cache (
+                        id, company_name, alternative_name, email,
+                        active, tax_id, notes, synced_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    "#,
+                    params![
+                        learned.id,
+                        learned.company_name,
+                        learned.alternative_name,
+                        learned.email,
+                        if learned.active { 1 } else { 0 },
+                        learned.tax_id,
+                        learned.notes,
+                        learned.synced_at
+                    ],
+                )?;
+            }
+        }
+
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn upsert_company_cache_entry(
+        &self,
+        company_name: &str,
+        alternative_name: Option<&str>,
+        email: &str,
+        tax_id: Option<&str>,
+        notes: Option<&str>,
+    ) -> Result<CompanyCacheEntry, DbError> {
+        let existing = self.get_companies_cache()?;
+        let clean_target = crate::matching::thai_normalizer::ThaiNormalizer::clean_company_name(company_name);
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = self.conn.lock();
+
+        if let Some(found) = existing.into_iter().find(|c| {
+            crate::matching::thai_normalizer::ThaiNormalizer::clean_company_name(&c.company_name) == clean_target
+                || c.company_name.eq_ignore_ascii_case(company_name.trim())
+        }) {
+            let final_alt = found
+                .alternative_name
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| alternative_name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+            let final_tax = found
+                .tax_id
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| tax_id.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+            let final_email = if !email.trim().is_empty() {
+                email.trim().to_string()
+            } else {
+                found.email.clone()
+            };
+
+            conn.execute(
+                "UPDATE companies_cache SET alternative_name = ?2, email = ?3, tax_id = ?4, active = 1, synced_at = ?5 WHERE id = ?1",
+                params![found.id, final_alt, final_email, final_tax, now],
+            )?;
+
+            Ok(CompanyCacheEntry {
+                id: found.id,
+                company_name: found.company_name,
+                alternative_name: final_alt,
+                email: final_email,
+                active: true,
+                tax_id: final_tax,
+                notes: found.notes,
+                synced_at: now,
+            })
+        } else {
+            let entry = CompanyCacheEntry {
+                id: format!("learned_{}", uuid::Uuid::new_v4()),
+                company_name: company_name.trim().to_string(),
+                alternative_name: alternative_name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+                email: email.trim().to_string(),
+                active: true,
+                tax_id: tax_id.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+                notes: notes.map(|s| s.to_string()),
+                synced_at: now.clone(),
+            };
+            conn.execute(
+                r#"
+                INSERT INTO companies_cache (
+                    id, company_name, alternative_name, email,
+                    active, tax_id, notes, synced_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "#,
+                params![
+                    entry.id,
+                    entry.company_name,
+                    entry.alternative_name,
+                    entry.email,
+                    1,
+                    entry.tax_id,
+                    entry.notes,
+                    entry.synced_at
+                ],
+            )?;
+            Ok(entry)
+        }
     }
 
     pub fn get_companies_cache(&self) -> Result<Vec<CompanyCacheEntry>, DbError> {
@@ -972,6 +1121,346 @@ impl Database {
             success_rate_percent: (success_rate * 10.0).round() / 10.0,
             avg_ocr_confidence: avg_confidence.unwrap_or(95.0),
         })
+    }
+
+    // --- Self-Learning Memory Engine ---
+    pub fn record_learning_signal(
+        &self,
+        signal_type: &str,
+        signal_value: &str,
+        canonical_company: &str,
+        recipient_email: Option<&str>,
+        boost: f64,
+    ) -> Result<(), DbError> {
+        let clean_val = signal_value.trim();
+        if clean_val.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock();
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            r#"
+            INSERT INTO learning_memory (
+                id, signal_type, signal_value, canonical_company_name,
+                recipient_email, hit_count, confidence_boost, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)
+            ON CONFLICT(signal_type, signal_value, canonical_company_name) DO UPDATE SET
+                hit_count = learning_memory.hit_count + 1,
+                recipient_email = COALESCE(excluded.recipient_email, learning_memory.recipient_email),
+                confidence_boost = MAX(learning_memory.confidence_boost, excluded.confidence_boost),
+                updated_at = excluded.updated_at
+            "#,
+            params![id, signal_type, clean_val, canonical_company.trim(), recipient_email, boost, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_learning_memories(&self) -> Result<Vec<LearningMemoryEntry>, DbError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, signal_type, signal_value, canonical_company_name,
+                   recipient_email, hit_count, confidence_boost, updated_at
+            FROM learning_memory
+            ORDER BY hit_count DESC, updated_at DESC
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(LearningMemoryEntry {
+                id: row.get(0)?,
+                signal_type: row.get(1)?,
+                signal_value: row.get(2)?,
+                canonical_company_name: row.get(3)?,
+                recipient_email: row.get(4)?,
+                hit_count: row.get(5)?,
+                confidence_boost: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn get_learning_stats(&self) -> Result<LearningStats, DbError> {
+        let aliases = self.get_company_aliases()?.len();
+        let memories = self.get_learning_memories()?;
+
+        let mut learned_tax_ids = 0;
+        let mut learned_email_domains = 0;
+        let mut learned_name_variants = 0;
+        let mut negative_phrases_count = 0;
+        let mut learned_zones_count = 0;
+        let mut total_approvals_learned: i64 = 0;
+
+        for m in &memories {
+            total_approvals_learned += m.hit_count;
+            match m.signal_type.as_str() {
+                "tax_id" => learned_tax_ids += 1,
+                "email_domain" => learned_email_domains += 1,
+                "thai_name" | "english_name" => learned_name_variants += 1,
+                "negative_phrase" => negative_phrases_count += 1,
+                "layout_zone" => learned_zones_count += 1,
+                _ => {}
+            }
+        }
+
+        Ok(LearningStats {
+            total_aliases: aliases,
+            learned_tax_ids,
+            learned_email_domains,
+            learned_name_variants,
+            negative_phrases_count,
+            learned_zones_count,
+            total_approvals_learned,
+        })
+    }
+
+    /// Harvests verified supplier identity signals (Thai/English names, 13-digit Tax ID,
+    /// non-generic email domain, false-positive negative phrases, and vertical layout zone)
+    /// from an approved PO job so future scans continuously improve.
+    pub fn learn_from_approved_job(
+        &self,
+        job: &Job,
+        approved_company: &str,
+        approved_email: &str,
+    ) -> Result<usize, DbError> {
+        use crate::matching::thai_normalizer::ThaiNormalizer;
+        use crate::matching::CompanyMatcher;
+
+        let clean_comp = approved_company.trim();
+        let clean_email = approved_email.trim();
+        if clean_comp.is_empty()
+            || clean_email.is_empty()
+            || ThaiNormalizer::is_ignored_self_company(clean_comp)
+        {
+            return Ok(0);
+        }
+
+        let ocr_records = self.get_ocr_results_for_job(&job.id).unwrap_or_default();
+        let mut extracted_tax_ids: Vec<String> = Vec::new();
+        let mut th_names: Vec<String> = Vec::new();
+        let mut en_names: Vec<String> = Vec::new();
+
+        for rec in &ocr_records {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&rec.detected_entities_json) {
+                if let Some(arr) = parsed.get("tax_ids").and_then(|v| v.as_array()) {
+                    for item in arr {
+                        if let Some(tid) = item.as_str() {
+                            let digits: String = tid.chars().filter(|c| c.is_ascii_digit()).collect();
+                            if digits.len() == 13
+                                && !ThaiNormalizer::is_ignored_self_company(&digits)
+                                && !extracted_tax_ids.contains(&digits)
+                            {
+                                extracted_tax_ids.push(digits);
+                            }
+                        }
+                    }
+                }
+                if let Some(th) = parsed.get("primary_supplier_th").and_then(|v| v.as_str()) {
+                    if !th.trim().is_empty()
+                        && !ThaiNormalizer::is_ignored_self_company(th)
+                        && !th_names.contains(&th.trim().to_string())
+                    {
+                        th_names.push(th.trim().to_string());
+                    }
+                }
+                if let Some(en) = parsed.get("primary_supplier_en").and_then(|v| v.as_str()) {
+                    if !en.trim().is_empty()
+                        && !ThaiNormalizer::is_ignored_self_company(en)
+                        && !en_names.contains(&en.trim().to_string())
+                    {
+                        en_names.push(en.trim().to_string());
+                    }
+                }
+                if let Some(cands) = parsed.get("supplier_candidates").and_then(|v| v.as_array()) {
+                    for c in cands {
+                        if let (Some(name), Some(lang)) = (
+                            c.get("name").and_then(|v| v.as_str()),
+                            c.get("language").and_then(|v| v.as_str()),
+                        ) {
+                            let n_trim = name.trim().to_string();
+                            if n_trim.is_empty() || ThaiNormalizer::is_ignored_self_company(&n_trim) {
+                                continue;
+                            }
+                            if lang == "th" && !th_names.contains(&n_trim) {
+                                th_names.push(n_trim);
+                            } else if lang != "th" && !en_names.contains(&n_trim) {
+                                en_names.push(n_trim);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let app_is_thai = ThaiNormalizer::contains_thai(clean_comp);
+        let alt_name = if app_is_thai {
+            en_names.first().cloned()
+        } else {
+            th_names.first().cloned()
+        };
+        let first_tax = extracted_tax_ids.first().cloned();
+
+        // 1. Upsert into local supplier directory cache
+        self.upsert_company_cache_entry(
+            clean_comp,
+            alt_name.as_deref(),
+            clean_email,
+            first_tax.as_deref(),
+            Some("AUTO_LEARNED"),
+        )?;
+
+        let mut signals_learned = 1usize;
+
+        // 2. Record approved name signal & frequency prior
+        let comp_signal_type = if app_is_thai { "thai_name" } else { "english_name" };
+        self.record_learning_signal(comp_signal_type, clean_comp, clean_comp, Some(clean_email), 8.0)?;
+        signals_learned += 1;
+
+        // 3. Link 13-digit Tax IDs
+        for tid in &extracted_tax_ids {
+            self.record_learning_signal("tax_id", tid, clean_comp, Some(clean_email), 25.0)?;
+            signals_learned += 1;
+        }
+
+        // 4. Link corporate vendor email domain (ignore generic webmail providers)
+        if let Some(domain) = clean_email.split('@').nth(1).map(|d| d.trim().to_lowercase()) {
+            const GENERIC_DOMAINS: &[&str] = &[
+                "gmail.com", "googlemail.com", "hotmail.com", "outlook.com", "live.com",
+                "msn.com", "yahoo.com", "yahoo.co.th", "icloud.com", "me.com",
+                "protonmail.com", "mail.com", "qtc-energy.com",
+            ];
+            if !domain.is_empty() && !GENERIC_DOMAINS.contains(&domain.as_str()) {
+                self.record_learning_signal("email_domain", &domain, clean_comp, Some(clean_email), 8.0)?;
+                signals_learned += 1;
+            }
+        }
+
+        // Helper to test whether two supplier names represent the same entity (same or cross-script)
+        let is_same_entity = |a: &str, b: &str| -> bool {
+            let ca = ThaiNormalizer::clean_company_name(a);
+            let cb = ThaiNormalizer::clean_company_name(b);
+            if ca.is_empty() || cb.is_empty() {
+                return false;
+            }
+            if ca == cb || ca.contains(&cb) || cb.contains(&ca) {
+                return true;
+            }
+            let sk_a = ThaiNormalizer::phonetic_skeleton(&ca);
+            let sk_b = ThaiNormalizer::phonetic_skeleton(&cb);
+            if !sk_a.is_empty() && sk_a == sk_b {
+                return true;
+            }
+            let rom_a = ThaiNormalizer::romanize_thai(&ca);
+            let rom_b = ThaiNormalizer::romanize_thai(&cb);
+            CompanyMatcher::similarity_ratio(&ca, &cb) >= 50.0
+                || CompanyMatcher::similarity_ratio(&rom_a, &rom_b) >= 50.0
+        };
+
+        // 5. Analyze detected raw company: positive alias or negative false-positive blacklist
+        let was_auto_matched = job
+            .matched_company_name
+            .as_deref()
+            .map(|m| m.eq_ignore_ascii_case(clean_comp))
+            .unwrap_or(false);
+
+        if let Some(ref det_raw) = job.detected_company_raw {
+            let det_trim = det_raw.trim();
+            if !det_trim.is_empty() && !ThaiNormalizer::is_ignored_self_company(det_trim) {
+                if is_same_entity(det_trim, clean_comp) {
+                    let det_type = if ThaiNormalizer::contains_thai(det_trim) {
+                        "thai_name"
+                    } else {
+                        "english_name"
+                    };
+                    self.record_learning_signal(det_type, det_trim, clean_comp, Some(clean_email), 12.0)?;
+                    if !det_trim.eq_ignore_ascii_case(clean_comp) {
+                        self.add_company_alias(det_trim, clean_comp, "SELF_LEARN")?;
+                    }
+                    signals_learned += 1;
+                } else {
+                    // Overridden wrong guess -> blacklist so OCR stops picking this line as a supplier
+                    self.record_learning_signal("negative_phrase", det_trim, "", None, 0.0)?;
+                    signals_learned += 1;
+                }
+            }
+        }
+
+        // Link bilingual counterpart (Thai <-> English) when same entity or confirmed match
+        if let Some(ref alt) = alt_name {
+            if is_same_entity(alt, clean_comp) || was_auto_matched {
+                let alt_type = if ThaiNormalizer::contains_thai(alt) {
+                    "thai_name"
+                } else {
+                    "english_name"
+                };
+                self.record_learning_signal(alt_type, alt, clean_comp, Some(clean_email), 10.0)?;
+                if !alt.eq_ignore_ascii_case(clean_comp) {
+                    self.add_company_alias(alt, clean_comp, "SELF_LEARN")?;
+                }
+                signals_learned += 1;
+            }
+        }
+
+        // 6. Spatial vertical layout zone memory from bounding boxes
+        let clean_app_tokens: Vec<String> = ThaiNormalizer::clean_company_name(clean_comp)
+            .split_whitespace()
+            .filter(|w| w.chars().count() >= 3)
+            .map(|w| w.to_lowercase())
+            .collect();
+
+        'box_search: for rec in &ocr_records {
+            if let Ok(boxes) = serde_json::from_str::<Vec<serde_json::Value>>(&rec.bounding_boxes_json) {
+                let max_y = boxes
+                    .iter()
+                    .filter_map(|b| b.get("box").and_then(|v| v.as_array()))
+                    .flat_map(|pts| pts.iter())
+                    .filter_map(|p| p.get(1).and_then(|y| y.as_f64()))
+                    .fold(842.0_f64, f64::max);
+
+                for b in &boxes {
+                    let b_text = b.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    let b_clean = ThaiNormalizer::clean_company_name(b_text).to_lowercase();
+                    if b_clean.is_empty() {
+                        continue;
+                    }
+                    let hit = (!clean_app_tokens.is_empty()
+                        && clean_app_tokens.iter().any(|tok| b_clean.contains(tok)))
+                        || job
+                            .detected_company_raw
+                            .as_ref()
+                            .map(|d| !d.is_empty() && b_text.contains(d.trim()))
+                            .unwrap_or(false);
+                    if hit {
+                        if let Some(y0) = b
+                            .get("box")
+                            .and_then(|v| v.as_array())
+                            .and_then(|pts| pts.first())
+                            .and_then(|pt| pt.get(1))
+                            .and_then(|y| y.as_f64())
+                        {
+                            let y_norm = (y0 / max_y.max(1.0)).clamp(0.0, 1.0);
+                            let band = format!("{:.2}", y_norm);
+                            self.record_learning_signal(
+                                "layout_zone",
+                                &band,
+                                clean_comp,
+                                Some(clean_email),
+                                5.0,
+                            )?;
+                            signals_learned += 1;
+                            break 'box_search;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(signals_learned)
     }
 }
 

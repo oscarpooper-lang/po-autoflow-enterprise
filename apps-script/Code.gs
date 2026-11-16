@@ -173,6 +173,15 @@ function doPost(e) {
     }
 
     // =========================================================================
+    // ACTION 1B: Auto-Learn & Upsert New Supplier into Google Sheet
+    // =========================================================================
+    if (action === "upsert_supplier") {
+      const sheetId = payload.sheet_id || (e.parameter && e.parameter.sheet_id) || PropertiesService.getScriptProperties().getProperty("SHEET_ID");
+      const tabName = payload.tab_name || (e.parameter && e.parameter.tab_name) || "Suppliers";
+      return handleUpsertSupplier(sheetId, tabName, payload);
+    }
+
+    // =========================================================================
     // ACTION 2: Upload Archive to Private Google Drive (DriveApp)
     // =========================================================================
     if (action === "upload_drive") {
@@ -490,6 +499,113 @@ function handleGetSuppliers(sheetId, tabName) {
     }
 
     return jsonError("Failed to open or read spreadsheet: " + err.message + ". Verify the Sheet ID is correct and permissions granted.", 500);
+  }
+}
+
+function handleUpsertSupplier(sheetId, tabName, payload) {
+  if (!sheetId) {
+    return jsonError("Missing sheet_id for upsert_supplier", 400);
+  }
+  const companyName = String(payload.company_name || "").trim();
+  const email = String(payload.email || "").trim();
+  const altName = String(payload.alternative_name || "").trim();
+  const taxId = String(payload.tax_id || "").trim();
+  if (!companyName || !email) {
+    return jsonError("Missing company_name or email for upsert_supplier", 400);
+  }
+
+  try {
+    const ss = SpreadsheetApp.openById(sheetId);
+    let sheet = tabName ? ss.getSheetByName(tabName) : null;
+    if (!sheet) {
+      const allSheets = ss.getSheets();
+      sheet = allSheets[0];
+    }
+
+    const values = sheet.getDataRange().getValues();
+    if (!values || values.length === 0 || (values.length === 1 && values[0].every(c => String(c).trim() === ""))) {
+      sheet.appendRow(["Company Name", "Alternative Name", "Email", "Active", "Tax ID", "Notes"]);
+      sheet.appendRow([companyName, altName, email, "TRUE", taxId, "Auto-learned by PO AutoFlow"]);
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "ok",
+        mode: "created_with_headers",
+        company_name: companyName,
+        email: email
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    const firstRow = values[0].map(h => String(h).trim());
+    const firstRowLow = firstRow.map(h => h.toLowerCase());
+    const hasHeaderKeyword = firstRowLow.some(h =>
+      h.includes("company") || h.includes("ชื่อ") || h.includes("supplier") || h.includes("email") || h.includes("อีเมล")
+    );
+    const firstRowHasEmail = firstRow.some(h => h.indexOf("@") > 0);
+    const isHeaderless = !hasHeaderKeyword && firstRowHasEmail;
+
+    let compCol, emailCol, aliasCol, taxCol, startRow;
+    if (isHeaderless) {
+      emailCol = firstRow.findIndex(h => h.indexOf("@") > 0);
+      compCol = firstRow.findIndex((h, idx) => idx !== emailCol && h.length > 0);
+      if (compCol < 0) compCol = 0;
+      aliasCol = -1;
+      taxCol = -1;
+      startRow = 0;
+    } else {
+      compCol = firstRowLow.findIndex(h => h.includes("company") || h.includes("ชื่อ") || h.includes("supplier") || h.includes("name"));
+      if (compCol < 0) compCol = 0;
+      emailCol = firstRowLow.findIndex(h => h.includes("email") || h.includes("อีเมล") || h.includes("mail"));
+      if (emailCol < 0) emailCol = 1;
+      aliasCol = firstRowLow.findIndex(h => h.includes("alias") || h.includes("alt") || h.includes("อื่น") || h.includes("สำรอง"));
+      taxCol = firstRowLow.findIndex(h => h.includes("tax") || h.includes("ภาษี"));
+      startRow = 1;
+    }
+
+    const targetLow = companyName.toLowerCase();
+    for (let r = startRow; r < values.length; r++) {
+      const cellName = String(values[r][compCol] || "").trim().toLowerCase();
+      if (cellName === targetLow) {
+        sheet.getRange(r + 1, emailCol + 1).setValue(email);
+        if (aliasCol >= 0 && altName && !String(values[r][aliasCol] || "").trim()) {
+          sheet.getRange(r + 1, aliasCol + 1).setValue(altName);
+        }
+        if (taxCol >= 0 && taxId && !String(values[r][taxCol] || "").trim()) {
+          sheet.getRange(r + 1, taxCol + 1).setValue(taxId);
+        }
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "ok",
+          mode: "updated",
+          row: r + 1,
+          company_name: companyName,
+          email: email
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    if (isHeaderless) {
+      const row = [];
+      const width = Math.max(2, compCol + 1, emailCol + 1);
+      for (let i = 0; i < width; i++) row.push("");
+      row[compCol] = companyName;
+      row[emailCol] = email;
+      sheet.appendRow(row);
+    } else {
+      const width = Math.max(firstRow.length, compCol + 1, emailCol + 1, aliasCol + 1, taxCol + 1);
+      const row = new Array(width).fill("");
+      row[compCol] = companyName;
+      row[emailCol] = email;
+      if (aliasCol >= 0 && altName) row[aliasCol] = altName;
+      if (taxCol >= 0 && taxId) row[taxCol] = taxId;
+      sheet.appendRow(row);
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "ok",
+      mode: "inserted",
+      company_name: companyName,
+      email: email
+    })).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return jsonError("upsert_supplier failed: " + err.message, 500);
   }
 }
 
