@@ -113,6 +113,26 @@ try {
         "## PO AutoFlow Enterprise $tag`n`n$Notes"
     }
 
+    # Generate rate-limit-free latest.json manifest alongside installers
+    $setupExePath = $assets | Where-Object { $_ -like "*_x64-setup.exe" } | Select-Object -First 1
+    $setupSize = if ($setupExePath -and (Test-Path $setupExePath)) { (Get-Item $setupExePath).Length } else { $null }
+    $publishedName = "PO.AutoFlow.Enterprise_${cleanVersion}_x64-setup.exe"
+    $latestManifest = [ordered]@{
+        tag_name = $tag
+        release_name = "PO AutoFlow Enterprise $tag"
+        release_notes = $releaseNotes
+        published_at = (Get-Date).ToUniversalTime().ToString("o")
+        installer_name = $publishedName
+        installer_url = "https://github.com/oscarpooper-lang/po-autoflow-enterprise/releases/download/$tag/$publishedName"
+        installer_size_bytes = $setupSize
+    }
+    $bundleDir = Join-Path $repoRoot "src-tauri\target\release\bundle"
+    New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
+    $latestJsonPath = Join-Path $bundleDir "latest.json"
+    $latestJsonContent = $latestManifest | ConvertTo-Json -Depth 4
+    [System.IO.File]::WriteAllText($latestJsonPath, $latestJsonContent, [System.Text.UTF8Encoding]::new($false))
+    $assets += $latestJsonPath
+
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     cmd /c "gh release view $tag >nul 2>&1"

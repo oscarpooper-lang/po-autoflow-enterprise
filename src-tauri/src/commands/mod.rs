@@ -1806,26 +1806,102 @@ fn is_newer_semver(current: &str, latest: &str) -> bool {
     parse_semver_tuple(latest) > parse_semver_tuple(current)
 }
 
+fn extract_tag_from_release_url(url: &str) -> Option<String> {
+    let marker = "/releases/tag/";
+    let idx = url.find(marker)?;
+    let tail = &url[idx + marker.len()..];
+    let tag = tail.split(['?', '#', '/']).next().unwrap_or("").trim();
+    if tag.is_empty() {
+        None
+    } else {
+        Some(tag.to_string())
+    }
+}
+
 #[tauri::command]
 pub async fn check_github_update(repo_override: Option<String>) -> Result<GitHubUpdateStatus, String> {
     let repo = normalize_github_repo(repo_override)?;
     let current_version = env!("CARGO_PKG_VERSION").to_string();
-    let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
+    let ua = format!("PO-AutoFlow-Enterprise/{}", current_version);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
 
-    let response = client
-        .get(&api_url)
-        .header("User-Agent", format!("PO-AutoFlow-Enterprise/{}", current_version))
-        .header("Accept", "application/vnd.github+json")
+    // 1. Primary: Rate-limit-free release manifest asset (github.com/releases/latest/download/latest.json)
+    let manifest_url = format!(
+        "https://github.com/{}/releases/latest/download/latest.json",
+        repo
+    );
+    if let Ok(resp) = client
+        .get(&manifest_url)
+        .header("User-Agent", &ua)
         .send()
         .await
-        .map_err(|e| format!("Failed to reach GitHub API: {}", e))?;
+    {
+        if resp.status().is_success() {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                if let Some(tag_raw) = json["tag_name"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                    let latest_version = tag_raw.trim_start_matches(['v', 'V']).to_string();
+                    let release_name = json["release_name"]
+                        .as_str()
+                        .or_else(|| json["name"].as_str())
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or(tag_raw)
+                        .to_string();
+                    let release_notes = json["release_notes"]
+                        .as_str()
+                        .or_else(|| json["body"].as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let published_at = json["published_at"].as_str().unwrap_or("").to_string();
+                    let installer_name = json["installer_name"]
+                        .as_str()
+                        .filter(|s| !s.trim().is_empty())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| format!("PO.AutoFlow.Enterprise_{}_x64-setup.exe", latest_version));
+                    let installer_url = json["installer_url"]
+                        .as_str()
+                        .filter(|s| !s.trim().is_empty())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| {
+                            format!(
+                                "https://github.com/{}/releases/download/{}/{}",
+                                repo, tag_raw, installer_name
+                            )
+                        });
+                    let installer_size_bytes = json["installer_size_bytes"].as_u64();
+                    let release_url = format!("https://github.com/{}/releases/tag/{}", repo, tag_raw);
 
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
+                    return Ok(GitHubUpdateStatus {
+                        update_available: is_newer_semver(&current_version, &latest_version),
+                        current_version,
+                        latest_version,
+                        release_name,
+                        release_notes,
+                        published_at,
+                        release_url,
+                        installer_url: Some(installer_url),
+                        installer_name: Some(installer_name),
+                        installer_size_bytes,
+                        repository: repo,
+                    });
+                }
+            }
+        }
+    }
+
+    // 2. Fallback: Rate-limit-free GitHub web redirect (https://github.com/{repo}/releases/latest -> /releases/tag/vX.Y.Z)
+    let web_latest_url = format!("https://github.com/{}/releases/latest", repo);
+    let web_resp = client
+        .head(&web_latest_url)
+        .header("User-Agent", &ua)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to reach GitHub Releases: {}", e))?;
+
+    if web_resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(GitHubUpdateStatus {
             current_version: current_version.clone(),
             latest_version: current_version,
@@ -1841,80 +1917,106 @@ pub async fn check_github_update(repo_override: Option<String>) -> Result<GitHub
         });
     }
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("GitHub API returned {}: {}", status, body));
-    }
-
-    let json: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("Invalid GitHub release JSON: {}", e))?;
-
-    let tag_name = json["tag_name"].as_str().unwrap_or("").trim().to_string();
-    let latest_version = if tag_name.is_empty() {
-        current_version.clone()
-    } else {
-        tag_name.trim_start_matches(['v', 'V']).to_string()
+    let final_url = web_resp.url().as_str().to_string();
+    let tag_name = match extract_tag_from_release_url(&final_url) {
+        Some(t) => t,
+        None => {
+            return Ok(GitHubUpdateStatus {
+                current_version: current_version.clone(),
+                latest_version: current_version,
+                update_available: false,
+                release_name: "No published GitHub releases yet".to_string(),
+                release_notes: String::new(),
+                published_at: String::new(),
+                release_url: format!("https://github.com/{}/releases", repo),
+                installer_url: None,
+                installer_name: None,
+                installer_size_bytes: None,
+                repository: repo,
+            });
+        }
     };
 
-    let release_name = json["name"]
-        .as_str()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or(if tag_name.is_empty() { "Latest Release" } else { &tag_name })
-        .to_string();
-    let release_notes = json["body"].as_str().unwrap_or("").to_string();
-    let published_at = json["published_at"].as_str().unwrap_or("").to_string();
-    let release_url = json["html_url"]
-        .as_str()
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("https://github.com/{}/releases", repo));
+    let latest_version = tag_name.trim_start_matches(['v', 'V']).to_string();
+    let default_name = format!("PO.AutoFlow.Enterprise_{}_x64-setup.exe", latest_version);
+    let default_url = format!(
+        "https://github.com/{}/releases/download/{}/{}",
+        repo, tag_name, default_name
+    );
 
-    let mut chosen_asset: Option<(u8, String, String, Option<u64>)> = None;
-    if let Some(assets) = json["assets"].as_array() {
-        for asset in assets {
-            let name = asset["name"].as_str().unwrap_or("");
-            let url = asset["browser_download_url"].as_str().unwrap_or("");
-            let size = asset["size"].as_u64();
-            if name.is_empty() || url.is_empty() {
-                continue;
-            }
-            let lower = name.to_lowercase();
-            let priority = if lower.ends_with(".exe") && lower.contains("setup") {
-                Some(0u8)
-            } else if lower.ends_with(".msi") {
-                Some(1u8)
-            } else if lower.ends_with(".exe") {
-                Some(2u8)
-            } else {
-                None
-            };
-            if let Some(p) = priority {
-                let replace = chosen_asset.as_ref().map(|c| p < c.0).unwrap_or(true);
-                if replace {
-                    chosen_asset = Some((p, url.to_string(), name.to_string(), size));
+    let mut release_name = format!("PO AutoFlow Enterprise {}", tag_name);
+    let mut release_notes = String::new();
+    let mut published_at = String::new();
+    let mut installer_name = Some(default_name);
+    let mut installer_url = Some(default_url);
+    let mut installer_size_bytes = None;
+
+    // 3. Optional best-effort API enrichment for release notes (never fails if 403 rate-limited)
+    let api_tag_url = format!("https://api.github.com/repos/{}/releases/tags/{}", repo, tag_name);
+    if let Ok(Ok(api_resp)) = tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        client
+            .get(&api_tag_url)
+            .header("User-Agent", &ua)
+            .header("Accept", "application/vnd.github+json")
+            .send(),
+    )
+    .await
+    {
+        if api_resp.status().is_success() {
+            if let Ok(json) = api_resp.json::<serde_json::Value>().await {
+                if let Some(n) = json["name"].as_str().filter(|s| !s.trim().is_empty()) {
+                    release_name = n.to_string();
+                }
+                if let Some(b) = json["body"].as_str() {
+                    release_notes = b.to_string();
+                }
+                if let Some(p) = json["published_at"].as_str() {
+                    published_at = p.to_string();
+                }
+                if let Some(assets) = json["assets"].as_array() {
+                    let mut chosen: Option<(u8, String, String, Option<u64>)> = None;
+                    for asset in assets {
+                        let name = asset["name"].as_str().unwrap_or("");
+                        let url = asset["browser_download_url"].as_str().unwrap_or("");
+                        let size = asset["size"].as_u64();
+                        if name.is_empty() || url.is_empty() {
+                            continue;
+                        }
+                        let lower = name.to_lowercase();
+                        let priority = if lower.ends_with(".exe") && lower.contains("setup") {
+                            Some(0u8)
+                        } else if lower.ends_with(".msi") {
+                            Some(1u8)
+                        } else if lower.ends_with(".exe") {
+                            Some(2u8)
+                        } else {
+                            None
+                        };
+                        if let Some(p) = priority {
+                            if chosen.as_ref().map(|c| p < c.0).unwrap_or(true) {
+                                chosen = Some((p, url.to_string(), name.to_string(), size));
+                            }
+                        }
+                    }
+                    if let Some((_, url, name, size)) = chosen {
+                        installer_url = Some(url);
+                        installer_name = Some(name);
+                        installer_size_bytes = size;
+                    }
                 }
             }
         }
     }
 
-    let (installer_url, installer_name, installer_size_bytes) = match chosen_asset {
-        Some((_, url, name, size)) => (Some(url), Some(name), size),
-        None => (None, None, None),
-    };
-
-    let update_available = is_newer_semver(&current_version, &latest_version);
-
     Ok(GitHubUpdateStatus {
+        update_available: is_newer_semver(&current_version, &latest_version),
         current_version,
         latest_version,
-        update_available,
         release_name,
         release_notes,
         published_at,
-        release_url,
+        release_url: final_url,
         installer_url,
         installer_name,
         installer_size_bytes,
@@ -2037,5 +2139,22 @@ mod updater_tests {
             "oscarpooper-lang/po-autoflow-enterprise"
         );
         assert!(normalize_github_repo(Some("invalid-repo".into())).is_err());
+    }
+
+    #[test]
+    fn test_extract_tag_from_release_url() {
+        assert_eq!(
+            extract_tag_from_release_url(
+                "https://github.com/oscarpooper-lang/po-autoflow-enterprise/releases/tag/v1.2.0"
+            )
+            .as_deref(),
+            Some("v1.2.0")
+        );
+        assert_eq!(
+            extract_tag_from_release_url(
+                "https://github.com/oscarpooper-lang/po-autoflow-enterprise/releases"
+            ),
+            None
+        );
     }
 }
