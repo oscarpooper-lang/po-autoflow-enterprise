@@ -281,6 +281,7 @@ pub fn run() {
             get_recent_events,
             get_audit_logs,
             retry_job,
+            deep_scan_job_with_vision,
             approve_and_send_job,
             start_monitoring,
             stop_monitoring,

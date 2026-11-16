@@ -141,6 +141,42 @@ pub async fn retry_job(state: State<'_, AppState>, job_id: String) -> Result<(),
 }
 
 #[tauri::command]
+pub async fn deep_scan_job_with_vision(
+    state: State<'_, AppState>,
+    job_id: String,
+) -> Result<(), String> {
+    let job = state
+        .db
+        .get_job(&job_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Job not found".to_string())?;
+
+    let settings = state.db.get_settings().map_err(|e| e.to_string())?;
+    if settings.local_vision_provider.eq_ignore_ascii_case("builtin")
+        || settings.local_vision_provider.trim().is_empty()
+    {
+        let status = verify_builtin_vision_ready(&settings.root_dir, &settings.local_vision_model);
+        if !status.reachable {
+            return Err(
+                "Built-in Vision AI model is not downloaded yet. Open Settings -> OCR Engine & Thresholds and click 'Download Inside App' first."
+                    .to_string(),
+            );
+        }
+    }
+
+    let current_path = state
+        .coordinator
+        .locate_job_folder(&job, &settings)
+        .ok_or_else(|| format!("PO folder '{}' cannot be found on disk", job.po_folder_name))?;
+
+    state.coordinator.release_folder(&current_path);
+    state
+        .coordinator
+        .process_po_folder_with_options(&current_path, true)
+        .await
+}
+
+#[tauri::command]
 pub async fn approve_and_send_job(
     state: State<'_, AppState>,
     job_id: String,

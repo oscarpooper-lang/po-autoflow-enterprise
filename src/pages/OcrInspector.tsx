@@ -22,6 +22,7 @@ import {
   Eye,
   Loader2,
   ExternalLink,
+  Sparkles,
 } from 'lucide-react';
 import type { Job, OcrResultRecord, CompanyCacheEntry, PagePreviewResponse } from '../types';
 import { api } from '../services/tauri';
@@ -154,6 +155,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   const [saveAliasOnApprove, setSaveAliasOnApprove] = useState<boolean>(true);
   const [isSendingApproval, setIsSendingApproval] = useState<boolean>(false);
   const [isRetrying, setIsRetrying] = useState<boolean>(false);
+  const [isDeepScanning, setIsDeepScanning] = useState<boolean>(false);
   const [actionBanner, setActionBanner] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [copiedText, setCopiedText] = useState<boolean>(false);
 
@@ -381,6 +383,28 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
       setActionBanner({ type: 'error', message: `Re-scan failed: ${msg}` });
     } finally {
       setIsRetrying(false);
+    }
+  };
+
+  const handleDeepScanCurrentJob = async () => {
+    if (!currentJob) return;
+    setIsDeepScanning(true);
+    setActionBanner(null);
+    try {
+      await api.deepScanJobWithVision(currentJob.id);
+      const records = await api.getOcrResults(currentJob.id);
+      setOcrRecords(records || []);
+      setCurrentPageIndex(0);
+      setActionBanner({
+        type: 'success',
+        message: 'Built-In Vision AI Deep Scan completed and updated supplier match.',
+      });
+      onRefreshData?.();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setActionBanner({ type: 'error', message: `AI Deep Scan failed: ${msg}` });
+    } finally {
+      setIsDeepScanning(false);
     }
   };
 
@@ -937,16 +961,30 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
               )}
             </div>
 
-            {currentJob && onRetryJob && (
-              <button
-                type="button"
-                onClick={handleRetryCurrentJob}
-                disabled={isRetrying}
-                className="w-full py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-100 border border-zinc-700 font-medium text-xs flex items-center justify-center gap-1.5"
-              >
-                <RotateCw className={`w-3.5 h-3.5 ${isRetrying ? 'animate-spin' : ''}`} />
-                <span>{isRetrying ? 'Re-Scanning PDFs...' : 'Re-Scan PO & Re-Match'}</span>
-              </button>
+            {currentJob && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {onRetryJob && (
+                  <button
+                    type="button"
+                    onClick={handleRetryCurrentJob}
+                    disabled={isRetrying || isDeepScanning}
+                    className="w-full py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-100 border border-zinc-700 font-medium text-xs flex items-center justify-center gap-1.5"
+                  >
+                    <RotateCw className={`w-3.5 h-3.5 ${isRetrying ? 'animate-spin' : ''}`} />
+                    <span>{isRetrying ? 'Re-Scanning...' : 'Re-Scan PO'}</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleDeepScanCurrentJob}
+                  disabled={isDeepScanning || isRetrying}
+                  className="w-full py-2 rounded-lg bg-purple-600/20 hover:bg-purple-600/30 disabled:opacity-50 text-purple-200 border border-purple-500/40 font-medium text-xs flex items-center justify-center gap-1.5"
+                  title="Force-run Built-In Vision AI on this PO now"
+                >
+                  <Sparkles className={`w-3.5 h-3.5 ${isDeepScanning ? 'animate-pulse' : ''}`} />
+                  <span>{isDeepScanning ? 'AI Scanning...' : 'AI Deep Scan'}</span>
+                </button>
+              </div>
             )}
           </div>
 

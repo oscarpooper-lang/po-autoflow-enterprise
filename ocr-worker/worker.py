@@ -1028,6 +1028,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
     builtin_engine_path = str(hints.get("builtin_engine_path") or "")
     builtin_model_path = str(hints.get("builtin_model_path") or "")
     builtin_mmproj_path = str(hints.get("builtin_mmproj_path") or "")
+    force_vision = bool(hints.get("force_vision", False))
 
     ext = os.path.splitext(file_path)[1].lower()
     page_results = []
@@ -1165,12 +1166,13 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
         all_text = "\n".join(overall_text_parts)
         agg_parsed = parse_supplier_and_po(all_text, all_boxes, neg_phrases, pref_y)
 
-        # Optional 100% Offline Local Vision AI fallback (SmolVLM2-2.2B / Qwen2.5-VL-3B)
+        # Optional 100% Offline Local Vision AI fallback / deep scan (SmolVLM2 / Qwen2.5-VL)
         needs_vision_fallback = (
-            local_vision_enabled
+            (local_vision_enabled or force_vision)
             and ext != ".docx"
             and (
-                not agg_parsed.get("supplier_candidates")
+                force_vision
+                or not agg_parsed.get("supplier_candidates")
                 or float(agg_parsed.get("primary_confidence") or 0.0) < 85.0
             )
         )

@@ -808,6 +808,28 @@ export const Settings: React.FC<SettingsProps> = ({
                     </label>
                   </div>
 
+                  {/* When Vision AI Runs */}
+                  <div>
+                    <label className="text-zinc-300 font-medium block mb-1">When Vision AI Runs:</label>
+                    <select
+                      value={formData.local_vision_trigger_mode || 'fallback'}
+                      onChange={(e) =>
+                        handleChange(
+                          'local_vision_trigger_mode',
+                          e.target.value as 'fallback' | 'always'
+                        )
+                      }
+                      className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2"
+                    >
+                      <option value="fallback">
+                        Smart Fallback (Run when OCR &lt; 85% or supplier is missing — Fast)
+                      </option>
+                      <option value="always">
+                        Always Run on Every PO Document (Deep Vision Scan)
+                      </option>
+                    </select>
+                  </div>
+
                   {/* Active Download Progress Bar */}
                   {builtInVision?.download &&
                     (builtInVision.download.active ||

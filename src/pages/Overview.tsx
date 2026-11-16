@@ -18,6 +18,7 @@ import {
   RotateCcw,
   ExternalLink,
   Eye,
+  Sparkles,
 } from 'lucide-react';
 import type {
   DashboardStats,
@@ -94,6 +95,7 @@ export const Overview: React.FC<OverviewProps> = ({
   const [saveAlias, setSaveAlias] = useState(true);
   const [isSending, setIsSending] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
+  const [isDeepScanning, setIsDeepScanning] = useState(false);
   const [actionMsg, setActionMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(
     null
   );
@@ -311,6 +313,23 @@ export const Overview: React.FC<OverviewProps> = ({
       setActionMsg({ type: 'error', text: err instanceof Error ? err.message : String(err) });
     } finally {
       setIsRetrying(false);
+    }
+  };
+
+  const handleDeepScanActive = async () => {
+    if (!activeJob) return;
+    setIsDeepScanning(true);
+    setActionMsg(null);
+    try {
+      await api.deepScanJobWithVision(activeJob.id);
+      const recs = await api.getOcrResults(activeJob.id);
+      setOcrRecords(recs || []);
+      await onRefreshData?.();
+      setActionMsg({ type: 'success', text: 'AI Deep Scan completed and updated supplier prediction.' });
+    } catch (err: unknown) {
+      setActionMsg({ type: 'error', text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setIsDeepScanning(false);
     }
   };
 
@@ -557,13 +576,23 @@ export const Overview: React.FC<OverviewProps> = ({
                     <button
                       type="button"
                       onClick={handleRetryActive}
-                      disabled={isRetrying}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-medium text-zinc-200 transition-colors"
+                      disabled={isRetrying || isDeepScanning}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-medium text-zinc-200 transition-colors disabled:opacity-50"
                     >
                       <RotateCw className={`w-3.5 h-3.5 ${isRetrying ? 'animate-spin' : ''}`} />
                       <span>{isRetrying ? 'Scanning...' : 'Re-Scan'}</span>
                     </button>
                   )}
+                  <button
+                    type="button"
+                    onClick={handleDeepScanActive}
+                    disabled={isDeepScanning || isRetrying}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/40 text-xs font-medium text-purple-200 transition-colors disabled:opacity-50"
+                    title="Force-run Built-In Vision AI on this PO now"
+                  >
+                    <Sparkles className={`w-3.5 h-3.5 ${isDeepScanning ? 'animate-pulse' : ''}`} />
+                    <span>{isDeepScanning ? 'AI Scanning...' : 'AI Deep Scan'}</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => onSelectJob(activeJob.id)}

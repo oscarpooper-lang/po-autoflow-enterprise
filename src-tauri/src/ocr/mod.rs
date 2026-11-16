@@ -91,6 +91,8 @@ pub struct OcrHints {
     pub builtin_model_path: String,
     #[serde(default)]
     pub builtin_mmproj_path: String,
+    #[serde(default)]
+    pub force_vision: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

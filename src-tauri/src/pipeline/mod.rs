@@ -74,6 +74,14 @@ impl PipelineCoordinator {
 
     /// Complete 8-stage end-to-end processing pipeline for an incoming PO directory.
     pub async fn process_po_folder(&self, incoming_po_dir: &Path) -> Result<(), String> {
+        self.process_po_folder_with_options(incoming_po_dir, false).await
+    }
+
+    pub async fn process_po_folder_with_options(
+        &self,
+        incoming_po_dir: &Path,
+        force_vision: bool,
+    ) -> Result<(), String> {
         // Enforce single-flight execution per PO folder
         {
             let mut locks = self.in_flight.lock();
@@ -85,11 +93,13 @@ impl PipelineCoordinator {
         }
 
         self.ocr_manager.push_log(format!(
-            "[pipeline] Queue started for {:?}",
-            incoming_po_dir
+            "[pipeline] Queue started for {:?} (force_vision={})",
+            incoming_po_dir, force_vision
         ));
 
-        let result = self.process_po_folder_internal(incoming_po_dir).await;
+        let result = self
+            .process_po_folder_internal(incoming_po_dir, force_vision)
+            .await;
         if let Err(ref err_msg) = result {
             self.ocr_manager.push_log(format!(
                 "[pipeline ERROR] {:?}: {}",
@@ -225,7 +235,11 @@ impl PipelineCoordinator {
         empty_fallback
     }
 
-    async fn process_po_folder_internal(&self, incoming_po_dir: &Path) -> Result<(), String> {
+    async fn process_po_folder_internal(
+        &self,
+        incoming_po_dir: &Path,
+        force_vision: bool,
+    ) -> Result<(), String> {
         if !incoming_po_dir.exists() || !incoming_po_dir.is_dir() {
             return Ok(());
         }
@@ -394,6 +408,8 @@ impl PipelineCoordinator {
             builtin_engine_path: builtin_engine_path.to_string_lossy().to_string(),
             builtin_model_path: builtin_model_path.to_string_lossy().to_string(),
             builtin_mmproj_path: builtin_mmproj_path.to_string_lossy().to_string(),
+            force_vision: force_vision
+                || (settings.local_vision_enabled && settings.local_vision_trigger_mode == "always"),
         };
 
         let mut all_supplier_candidates = Vec::new();

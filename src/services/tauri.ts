@@ -113,6 +113,7 @@ export const defaultSettings: AppSettings = {
   local_vision_provider: 'builtin',
   local_vision_endpoint: 'http://127.0.0.1:11434',
   local_vision_model: 'smolvlm2-2.2b',
+  local_vision_trigger_mode: 'fallback',
 };
 
 let mockSettings: AppSettings = { ...defaultSettings };
@@ -686,6 +687,12 @@ export const api = {
       learned_zones_count: 0,
       total_approvals_learned: 0,
     };
+  },
+
+  deepScanJobWithVision: async (jobId: string): Promise<void> => {
+    if (isTauriEnvironment()) {
+      await invoke<void>('deep_scan_job_with_vision', { jobId });
+    }
   },
 
   testLocalVisionAi: async (

@@ -43,6 +43,7 @@ export interface AppSettings {
   local_vision_provider?: 'builtin' | 'ollama' | 'transformers';
   local_vision_endpoint?: string;
   local_vision_model?: string;
+  local_vision_trigger_mode?: 'fallback' | 'always';
 }
 
 export interface GoogleAccountInfo {
