@@ -15,7 +15,6 @@ jobs:
       matrix:
         include:
           - platform: 'windows-latest'
-            args: ''
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -52,25 +51,78 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Build and Publish Tauri Application
-        uses: tauri-apps/tauri-action@v0
+      - name: Check if release assets already exist
+        id: check
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'PO AutoFlow Enterprise ${{ github.ref_name }}'
-          releaseBody: |
-            ## PO AutoFlow Enterprise Release ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if (-not $tag.StartsWith("v")) {
+            Write-Output "skip_build=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Host "Not a version tag push ($tag); quality checks completed."
+            exit 0
+          }
+          $prevEap = $ErrorActionPreference
+          $ErrorActionPreference = "Continue"
+          $json = gh release view $tag --json assets 2>$null
+          $exitCode = $LASTEXITCODE
+          $ErrorActionPreference = $prevEap
+          if ($exitCode -eq 0 -and $json) {
+            $parsed = $json | ConvertFrom-Json
+            $hasExe = $parsed.assets | Where-Object { $_.name -like "*-setup.exe" }
+            $hasMsi = $parsed.assets | Where-Object { $_.name -like "*.msi" }
+            if ($hasExe -and $hasMsi) {
+              Write-Output "skip_build=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+              Write-Host "Release $tag already published with installer assets; skipping duplicate build."
+              exit 0
+            }
+          }
+          Write-Output "skip_build=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-            ### Automatic Updates
-            Existing desktop installations detect and install this update via **Check Update** / **Download & Install Update** in the sidebar or Settings.
+      - name: Build Windows Tauri Installers
+        if: steps.check.outputs.skip_build != 'true'
+        run: npm run tauri build
 
-            ### Core Capabilities
-            - Automated Purchase Order folder monitoring (`C:\PO-AutoFlow\Incoming`)
-            - Neural PP-OCRv5 Thai & English extraction + AX 2012 GID font repair
-            - Google Sheets supplier fuzzy matching & alias memory
-            - Individual previewable email attachments or ZIP dispatch via Google Apps Script
-            - Interactive Developer Terminal & System Tray background execution
-          releaseDraft: false
-          prerelease: false
-          args: ${{ matrix.args }}
+      - name: Publish Release Assets & latest.json
+        if: steps.check.outputs.skip_build != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $cleanVer = $tag.TrimStart('v', 'V')
+          $assets = @()
+          $nsisDir = "src-tauri\target\release\bundle\nsis"
+          $msiDir = "src-tauri\target\release\bundle\msi"
+          if (Test-Path $nsisDir) {
+            $assets += Get-ChildItem -Path $nsisDir -Filter "*_x64-setup.exe" | Select-Object -ExpandProperty FullName
+          }
+          if (Test-Path $msiDir) {
+            $assets += Get-ChildItem -Path $msiDir -Filter "*.msi" | Select-Object -ExpandProperty FullName
+          }
+          $setupExePath = $assets | Where-Object { $_ -like "*_x64-setup.exe" } | Select-Object -First 1
+          $setupSize = if ($setupExePath -and (Test-Path $setupExePath)) { (Get-Item $setupExePath).Length } else { $null }
+          $publishedName = "PO.AutoFlow.Enterprise_${cleanVer}_x64-setup.exe"
+          $manifest = [ordered]@{
+            tag_name = $tag
+            release_name = "PO AutoFlow Enterprise $tag"
+            release_notes = "Automated release $tag for Windows x64."
+            published_at = (Get-Date).ToUniversalTime().ToString("o")
+            installer_name = $publishedName
+            installer_url = "https://github.com/${{ github.repository }}/releases/download/$tag/$publishedName"
+            installer_size_bytes = $setupSize
+          }
+          $latestJsonPath = "src-tauri\target\release\bundle\latest.json"
+          [System.IO.File]::WriteAllText((Join-Path $PWD $latestJsonPath), ($manifest | ConvertTo-Json -Depth 4), [System.Text.UTF8Encoding]::new($false))
+          $assets += $latestJsonPath
+
+          $prevEap = $ErrorActionPreference
+          $ErrorActionPreference = "Continue"
+          gh release view $tag *> $null
+          $exists = ($LASTEXITCODE -eq 0)
+          $ErrorActionPreference = $prevEap
+          if ($exists) {
+            & gh release upload $tag @assets --clobber
+          } else {
+            & gh release create $tag @assets --title "PO AutoFlow Enterprise $tag" --notes "Automated release $tag for Windows x64."
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Failed to publish GitHub Release $tag." }

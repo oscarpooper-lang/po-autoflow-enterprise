@@ -24,6 +24,38 @@ impl SecurityManager {
         }
     }
 
+    /// Canonicalizes the deepest existing ancestor so non-existent child paths on Windows
+    /// (including 8.3 short names like RUNNER~1) normalize consistently with their base directory.
+    fn canonicalize_best_effort(path: &Path) -> PathBuf {
+        if let Ok(canon) = path.canonicalize() {
+            return Self::normalize_path(&canon);
+        }
+
+        let mut remaining: Vec<std::ffi::OsString> = Vec::new();
+        let mut cursor = path;
+        while let Some(name) = cursor.file_name() {
+            remaining.push(name.to_os_string());
+            match cursor.parent() {
+                Some(parent) => {
+                    cursor = parent;
+                    if cursor.exists() {
+                        let mut resolved = cursor
+                            .canonicalize()
+                            .map(|p| Self::normalize_path(&p))
+                            .unwrap_or_else(|_| Self::normalize_path(cursor));
+                        for seg in remaining.iter().rev() {
+                            resolved.push(seg);
+                        }
+                        return resolved;
+                    }
+                }
+                None => break,
+            }
+        }
+
+        Self::normalize_path(path)
+    }
+
     /// Validates that a target path is strictly contained within the allowed base directory.
     pub fn validate_path_containment<P: AsRef<Path>, Q: AsRef<Path>>(
         base_dir: P,
@@ -41,10 +73,7 @@ impl SecurityManager {
             )));
         }
 
-        let base = base_raw
-            .canonicalize()
-            .map(|p| Self::normalize_path(&p))
-            .unwrap_or_else(|_| Self::normalize_path(base_raw));
+        let base = Self::canonicalize_best_effort(base_raw);
 
         let full_path = if target_raw.is_absolute() {
             Self::normalize_path(target_raw)
@@ -52,10 +81,7 @@ impl SecurityManager {
             base.join(target_raw)
         };
 
-        let canon_target = full_path
-            .canonicalize()
-            .map(|p| Self::normalize_path(&p))
-            .unwrap_or_else(|_| Self::normalize_path(&full_path));
+        let canon_target = Self::canonicalize_best_effort(&full_path);
 
         if !canon_target.starts_with(&base) {
             return Err(SecurityError::PathTraversal(format!(
