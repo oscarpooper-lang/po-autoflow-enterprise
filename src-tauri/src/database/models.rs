@@ -87,7 +87,7 @@ fn default_attachment_mode() -> String {
 }
 
 fn default_local_vision_provider() -> String {
-    "ollama".to_string()
+    "builtin".to_string()
 }
 
 fn default_local_vision_endpoint() -> String {
@@ -95,7 +95,7 @@ fn default_local_vision_endpoint() -> String {
 }
 
 fn default_local_vision_model() -> String {
-    "hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF".to_string()
+    "smolvlm2-2.2b".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,9 +154,9 @@ impl Default for AppSettings {
             self_learning_enabled: true,
             auto_sync_learned_suppliers_to_sheets: true,
             local_vision_enabled: false,
-            local_vision_provider: "ollama".to_string(),
+            local_vision_provider: "builtin".to_string(),
             local_vision_endpoint: "http://127.0.0.1:11434".to_string(),
-            local_vision_model: "hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF".to_string(),
+            local_vision_model: "smolvlm2-2.2b".to_string(),
         }
     }
 }
@@ -335,5 +335,40 @@ pub struct LocalVisionStatus {
     pub configured_model: String,
     pub available_models: Vec<String>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuiltInVisionModelEntry {
+    pub id: String,
+    pub name: String,
+    pub size_label: String,
+    pub total_size_bytes: u64,
+    pub description: String,
+    pub installed: bool,
+    pub active: bool,
+    pub model_path: String,
+    pub mmproj_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BuiltInDownloadProgress {
+    pub active: bool,
+    pub model_id: String,
+    pub stage: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub percent: f64,
+    pub message: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuiltInVisionStatus {
+    pub engine_installed: bool,
+    pub engine_path: String,
+    pub models_dir: String,
+    pub active_model_id: String,
+    pub models: Vec<BuiltInVisionModelEntry>,
+    pub download: BuiltInDownloadProgress,
 }
 

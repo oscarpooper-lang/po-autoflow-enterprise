@@ -85,6 +85,12 @@ pub struct OcrHints {
     pub local_vision_provider: String,
     pub local_vision_endpoint: String,
     pub local_vision_model: String,
+    #[serde(default)]
+    pub builtin_engine_path: String,
+    #[serde(default)]
+    pub builtin_model_path: String,
+    #[serde(default)]
+    pub builtin_mmproj_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +116,7 @@ pub struct OcrManager {
     worker_script: PathBuf,
     process: Arc<Mutex<Option<WorkerProcess>>>,
     terminal_logs: Arc<parking_lot::Mutex<VecDeque<String>>>,
+    download_progress: Arc<parking_lot::Mutex<crate::database::models::BuiltInDownloadProgress>>,
 }
 
 impl OcrManager {
@@ -118,7 +125,18 @@ impl OcrManager {
             worker_script: worker_script_path.as_ref().to_path_buf(),
             process: Arc::new(Mutex::new(None)),
             terminal_logs: Arc::new(parking_lot::Mutex::new(VecDeque::with_capacity(500))),
+            download_progress: Arc::new(parking_lot::Mutex::new(
+                crate::database::models::BuiltInDownloadProgress::default(),
+            )),
         }
+    }
+
+    pub fn get_download_progress(&self) -> crate::database::models::BuiltInDownloadProgress {
+        self.download_progress.lock().clone()
+    }
+
+    pub fn set_download_progress(&self, progress: crate::database::models::BuiltInDownloadProgress) {
+        *self.download_progress.lock() = progress;
     }
 
     pub fn push_log(&self, line: impl Into<String>) {

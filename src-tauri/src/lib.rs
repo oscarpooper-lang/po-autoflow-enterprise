@@ -307,7 +307,10 @@ pub fn run() {
             check_github_update,
             install_github_update,
             get_learning_stats,
-            test_local_vision_ai
+            test_local_vision_ai,
+            get_builtin_vision_status,
+            download_builtin_vision_model,
+            delete_builtin_vision_model
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

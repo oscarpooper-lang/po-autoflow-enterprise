@@ -14,6 +14,7 @@ import type {
   DeveloperConsoleSnapshot,
   LearningStats,
   LocalVisionStatus,
+  BuiltInVisionStatus,
 } from '../types';
 
 export interface GitHubUpdateStatus {
@@ -109,9 +110,9 @@ export const defaultSettings: AppSettings = {
   self_learning_enabled: true,
   auto_sync_learned_suppliers_to_sheets: true,
   local_vision_enabled: false,
-  local_vision_provider: 'ollama',
+  local_vision_provider: 'builtin',
   local_vision_endpoint: 'http://127.0.0.1:11434',
-  local_vision_model: 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF',
+  local_vision_model: 'smolvlm2-2.2b',
 };
 
 let mockSettings: AppSettings = { ...defaultSettings };
@@ -702,10 +703,85 @@ export const api = {
     return {
       reachable: false,
       endpoint: endpoint || 'http://127.0.0.1:11434',
-      configured_model: model || 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF',
+      configured_model: model || 'smolvlm2-2.2b',
       available_models: [],
       message: 'Local Vision AI test requires desktop Tauri runtime.',
     };
+  },
+
+  getBuiltInVisionStatus: async (): Promise<BuiltInVisionStatus> => {
+    if (isTauriEnvironment()) {
+      return await invoke<BuiltInVisionStatus>('get_builtin_vision_status');
+    }
+    return {
+      engine_installed: false,
+      engine_path: 'C:\\PO-AutoFlow\\Models\\engine\\llama-mtmd-cli.exe',
+      models_dir: 'C:\\PO-AutoFlow\\Models',
+      active_model_id: 'smolvlm2-2.2b',
+      models: [
+        {
+          id: 'smolvlm2-500m',
+          name: 'SmolVLM2-500M-Instruct (Ultra Tiny)',
+          size_label: '520 MB',
+          total_size_bytes: 545579008,
+          description: 'Fastest CPU inference, lowest RAM usage.',
+          installed: false,
+          active: false,
+          model_path: '',
+          mmproj_path: '',
+        },
+        {
+          id: 'smolvlm2-2.2b',
+          name: 'SmolVLM2-2.2B-Instruct (Recommended)',
+          size_label: '1.63 GB',
+          total_size_bytes: 1705190000,
+          description: 'Compact 2.2B vision-language model. Great balance of size and accuracy.',
+          installed: false,
+          active: false,
+          model_path: '',
+          mmproj_path: '',
+        },
+        {
+          id: 'qwen2.5-vl-3b',
+          name: 'Qwen2.5-VL-3B-Instruct (Best Thai + English)',
+          size_label: '2.65 GB',
+          total_size_bytes: 2774630000,
+          description: 'Strongest native Thai & English document OCR.',
+          installed: false,
+          active: false,
+          model_path: '',
+          mmproj_path: '',
+        },
+      ],
+      download: {
+        active: false,
+        model_id: '',
+        stage: 'idle',
+        downloaded_bytes: 0,
+        total_bytes: 0,
+        percent: 0,
+        message: '',
+        error: null,
+      },
+    };
+  },
+
+  downloadBuiltInVisionModel: async (modelId: string): Promise<BuiltInVisionStatus> => {
+    if (isTauriEnvironment()) {
+      return await invoke<BuiltInVisionStatus>('download_builtin_vision_model', {
+        modelId,
+      });
+    }
+    throw new Error('Downloading models requires desktop Tauri runtime.');
+  },
+
+  deleteBuiltInVisionModel: async (modelId: string): Promise<BuiltInVisionStatus> => {
+    if (isTauriEnvironment()) {
+      return await invoke<BuiltInVisionStatus>('delete_builtin_vision_model', {
+        modelId,
+      });
+    }
+    throw new Error('Managing models requires desktop Tauri runtime.');
   },
 
   checkGitHubUpdate,

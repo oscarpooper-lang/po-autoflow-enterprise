@@ -1137,14 +1137,18 @@ pub async fn run_developer_command(
         }
 
         "test-vision" => {
-            let res = state
-                .ocr_manager
-                .test_local_vision(
-                    &settings.local_vision_provider,
-                    &settings.local_vision_endpoint,
-                    &settings.local_vision_model,
-                )
-                .await?;
+            let res = if settings.local_vision_provider == "builtin" {
+                verify_builtin_vision_ready(&settings.root_dir, &settings.local_vision_model)
+            } else {
+                state
+                    .ocr_manager
+                    .test_local_vision(
+                        &settings.local_vision_provider,
+                        &settings.local_vision_endpoint,
+                        &settings.local_vision_model,
+                    )
+                    .await?
+            };
             format!(
                 "LOCAL VISION AI (100% On-Device):\n  Enabled    : {}\n  Provider   : {}\n  Endpoint   : {}\n  Model      : {}\n  Reachable  : {}\n  Available  : {}\n  Message    : {}",
                 settings.local_vision_enabled,
@@ -1171,6 +1175,551 @@ pub fn get_learning_stats(state: State<'_, AppState>) -> Result<LearningStats, S
     state.db.get_learning_stats().map_err(|e| e.to_string())
 }
 
+const BUILTIN_ENGINE_ZIP_URL: &str =
+    "https://github.com/ggml-org/llama.cpp/releases/download/b12430/llama-b12430-bin-win-cpu-x64.zip";
+
+struct BuiltinModelPreset {
+    id: &'static str,
+    name: &'static str,
+    size_label: &'static str,
+    total_size_bytes: u64,
+    description: &'static str,
+    model_filename: &'static str,
+    mmproj_filename: &'static str,
+    model_url: &'static str,
+    mmproj_url: &'static str,
+}
+
+const BUILTIN_VISION_MODELS: &[BuiltinModelPreset] = &[
+    BuiltinModelPreset {
+        id: "smolvlm2-500m",
+        name: "SmolVLM2-500M-Instruct (Ultra Tiny)",
+        size_label: "520 MB",
+        total_size_bytes: 545_579_008,
+        description: "Fastest CPU inference, lowest RAM usage. Good for clear PO headers, PO numbers & Tax IDs.",
+        model_filename: "SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+        mmproj_filename: "mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+        model_url: "https://huggingface.co/ggml-org/SmolVLM2-500M-Video-Instruct-GGUF/resolve/main/SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+        mmproj_url: "https://huggingface.co/ggml-org/SmolVLM2-500M-Video-Instruct-GGUF/resolve/main/mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf",
+    },
+    BuiltinModelPreset {
+        id: "smolvlm2-2.2b",
+        name: "SmolVLM2-2.2B-Instruct (Recommended)",
+        size_label: "1.63 GB",
+        total_size_bytes: 1_705_190_000,
+        description: "Compact 2.2B vision-language model by Hugging Face. Great balance of size and accuracy.",
+        model_filename: "SmolVLM2-2.2B-Instruct-Q4_K_M.gguf",
+        mmproj_filename: "mmproj-SmolVLM2-2.2B-Instruct-Q8_0.gguf",
+        model_url: "https://huggingface.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF/resolve/main/SmolVLM2-2.2B-Instruct-Q4_K_M.gguf",
+        mmproj_url: "https://huggingface.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF/resolve/main/mmproj-SmolVLM2-2.2B-Instruct-Q8_0.gguf",
+    },
+    BuiltinModelPreset {
+        id: "qwen2.5-vl-3b",
+        name: "Qwen2.5-VL-3B-Instruct (Best Thai + English)",
+        size_label: "2.65 GB",
+        total_size_bytes: 2_774_630_000,
+        description: "Strongest native Thai & English document OCR for complex tables and blurry scans.",
+        model_filename: "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
+        mmproj_filename: "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
+        model_url: "https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
+        mmproj_url: "https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
+    },
+];
+
+pub fn resolve_builtin_vision_paths(root_dir: &str, model_id: &str) -> (PathBuf, PathBuf, PathBuf) {
+    let models_dir = PathBuf::from(root_dir).join("Models");
+    let engine_exe = models_dir.join("engine").join("llama-mtmd-cli.exe");
+    let preset = BUILTIN_VISION_MODELS
+        .iter()
+        .find(|p| p.id == model_id)
+        .unwrap_or(&BUILTIN_VISION_MODELS[1]);
+    let model_dir = models_dir.join(preset.id);
+    (
+        engine_exe,
+        model_dir.join(preset.model_filename),
+        model_dir.join(preset.mmproj_filename),
+    )
+}
+
+fn verify_builtin_vision_ready(root_dir: &str, model_id: &str) -> LocalVisionStatus {
+    let (engine_exe, model_path, mmproj_path) = resolve_builtin_vision_paths(root_dir, model_id);
+    let mut installed_models = Vec::new();
+    for preset in BUILTIN_VISION_MODELS {
+        let (_, m_path, p_path) = resolve_builtin_vision_paths(root_dir, preset.id);
+        let m_ok = std::fs::metadata(&m_path).map(|m| m.len() > 1_000_000).unwrap_or(false);
+        let p_ok = std::fs::metadata(&p_path).map(|m| m.len() > 1_000_000).unwrap_or(false);
+        if m_ok && p_ok {
+            installed_models.push(preset.id.to_string());
+        }
+    }
+
+    let engine_ok = engine_exe.exists();
+    let model_ok = std::fs::metadata(&model_path).map(|m| m.len() > 1_000_000).unwrap_or(false);
+    let mmproj_ok = std::fs::metadata(&mmproj_path).map(|m| m.len() > 1_000_000).unwrap_or(false);
+
+    if !engine_ok || !model_ok || !mmproj_ok {
+        return LocalVisionStatus {
+            reachable: false,
+            endpoint: engine_exe.to_string_lossy().to_string(),
+            configured_model: model_id.to_string(),
+            available_models: installed_models,
+            message: format!(
+                "Built-in model '{}' is not downloaded yet. Click 'Download Inside App' above to install it with zero external apps.",
+                model_id
+            ),
+        };
+    }
+
+    let mut cmd = std::process::Command::new(&engine_exe);
+    cmd.arg("--version");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+
+    match cmd.output() {
+        Ok(out) if out.status.success() => LocalVisionStatus {
+            reachable: true,
+            endpoint: engine_exe.to_string_lossy().to_string(),
+            configured_model: model_id.to_string(),
+            available_models: installed_models,
+            message: format!(
+                "Built-in native engine & '{}' verified on disk (100% self-contained inside app, zero localhost or 3rd-party apps).",
+                model_id
+            ),
+        },
+        Ok(out) => LocalVisionStatus {
+            reachable: false,
+            endpoint: engine_exe.to_string_lossy().to_string(),
+            configured_model: model_id.to_string(),
+            available_models: installed_models,
+            message: format!(
+                "Native engine exited with status {:?}: {}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        },
+        Err(e) => LocalVisionStatus {
+            reachable: false,
+            endpoint: engine_exe.to_string_lossy().to_string(),
+            configured_model: model_id.to_string(),
+            available_models: installed_models,
+            message: format!("Failed to execute native engine {:?}: {}", engine_exe, e),
+        },
+    }
+}
+
+fn build_builtin_vision_status(db: &Database, ocr_manager: &OcrManager) -> Result<BuiltInVisionStatus, String> {
+    let settings = db.get_settings().map_err(|e| e.to_string())?;
+    let models_dir = PathBuf::from(&settings.root_dir).join("Models");
+    let engine_exe = models_dir.join("engine").join("llama-mtmd-cli.exe");
+    let active_id = if BUILTIN_VISION_MODELS.iter().any(|p| p.id == settings.local_vision_model) {
+        settings.local_vision_model.clone()
+    } else {
+        "smolvlm2-2.2b".to_string()
+    };
+
+    let models = BUILTIN_VISION_MODELS
+        .iter()
+        .map(|preset| {
+            let (_, m_path, p_path) = resolve_builtin_vision_paths(&settings.root_dir, preset.id);
+            let m_ok = std::fs::metadata(&m_path).map(|m| m.len() > 1_000_000).unwrap_or(false);
+            let p_ok = std::fs::metadata(&p_path).map(|m| m.len() > 1_000_000).unwrap_or(false);
+            BuiltInVisionModelEntry {
+                id: preset.id.to_string(),
+                name: preset.name.to_string(),
+                size_label: preset.size_label.to_string(),
+                total_size_bytes: preset.total_size_bytes,
+                description: preset.description.to_string(),
+                installed: m_ok && p_ok,
+                active: settings.local_vision_enabled && active_id == preset.id,
+                model_path: m_path.to_string_lossy().to_string(),
+                mmproj_path: p_path.to_string_lossy().to_string(),
+            }
+        })
+        .collect();
+
+    Ok(BuiltInVisionStatus {
+        engine_installed: engine_exe.exists(),
+        engine_path: engine_exe.to_string_lossy().to_string(),
+        models_dir: models_dir.to_string_lossy().to_string(),
+        active_model_id: active_id,
+        models,
+        download: ocr_manager.get_download_progress(),
+    })
+}
+
+async fn stream_download_file(
+    client: &reqwest::Client,
+    url: &str,
+    dest_path: &std::path::Path,
+    stage: &str,
+    model_id: &str,
+    ocr_manager: &OcrManager,
+    base_offset: u64,
+    grand_total_hint: u64,
+    label: &str,
+) -> Result<u64, String> {
+    use std::io::Write;
+
+    if let Some(parent) = dest_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory {:?}: {}", parent, e))?;
+    }
+
+    let part_path = dest_path.with_file_name(format!(
+        "{}.part",
+        dest_path.file_name().and_then(|n| n.to_str()).unwrap_or("download")
+    ));
+
+    let mut resp = client
+        .get(url)
+        .header(
+            "User-Agent",
+            format!("PO-AutoFlow-Enterprise/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .send()
+        .await
+        .map_err(|e| format!("Network error downloading {}: {}", label, e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Download failed for {} (HTTP {})", label, resp.status()));
+    }
+
+    let content_len = resp.content_length().unwrap_or(0);
+    let effective_total = grand_total_hint.max(base_offset + content_len).max(1);
+
+    let mut file = std::fs::File::create(&part_path)
+        .map_err(|e| format!("Failed to create temp file {:?}: {}", part_path, e))?;
+
+    let mut downloaded: u64 = 0;
+    let mut last_reported: u64 = 0;
+
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&part_path);
+            format!("Stream error downloading {}: {}", label, e)
+        })?
+    {
+        file.write_all(&chunk).map_err(|e| {
+            let _ = std::fs::remove_file(&part_path);
+            format!("Disk write error on {:?}: {}", part_path, e)
+        })?;
+        downloaded += chunk.len() as u64;
+
+        if downloaded - last_reported >= 524_288 {
+            last_reported = downloaded;
+            let overall = base_offset + downloaded;
+            let pct = ((overall as f64 / effective_total as f64) * 100.0).clamp(0.0, 99.5);
+            ocr_manager.set_download_progress(BuiltInDownloadProgress {
+                active: true,
+                model_id: model_id.to_string(),
+                stage: stage.to_string(),
+                downloaded_bytes: overall,
+                total_bytes: effective_total,
+                percent: (pct * 10.0).round() / 10.0,
+                message: format!(
+                    "Downloading {} ({:.1} MB)...",
+                    label,
+                    downloaded as f64 / 1_048_576.0
+                ),
+                error: None,
+            });
+        }
+    }
+
+    file.flush()
+        .map_err(|e| format!("Failed to flush file {:?}: {}", part_path, e))?;
+    drop(file);
+
+    if dest_path.exists() {
+        std::fs::remove_file(dest_path).ok();
+    }
+    std::fs::rename(&part_path, dest_path)
+        .map_err(|e| format!("Failed to finalize {:?}: {}", dest_path, e))?;
+
+    Ok(downloaded)
+}
+
+#[tauri::command]
+pub fn get_builtin_vision_status(state: State<'_, AppState>) -> Result<BuiltInVisionStatus, String> {
+    build_builtin_vision_status(&state.db, &state.ocr_manager)
+}
+
+#[tauri::command]
+pub async fn download_builtin_vision_model(
+    state: State<'_, AppState>,
+    model_id: String,
+) -> Result<BuiltInVisionStatus, String> {
+    let preset = BUILTIN_VISION_MODELS
+        .iter()
+        .find(|p| p.id == model_id.trim())
+        .ok_or_else(|| format!("Unknown built-in model ID '{}'", model_id))?;
+
+    if state.ocr_manager.get_download_progress().active {
+        return build_builtin_vision_status(&state.db, &state.ocr_manager);
+    }
+
+    let settings = state.db.get_settings().map_err(|e| e.to_string())?;
+    let root_dir = settings.root_dir.clone();
+    let (engine_exe, model_path, mmproj_path) = resolve_builtin_vision_paths(&root_dir, preset.id);
+    let models_dir = PathBuf::from(&root_dir).join("Models");
+    let engine_dir = models_dir.join("engine");
+    let need_engine = !engine_exe.exists();
+    let engine_estimate: u64 = if need_engine { 25_165_824 } else { 0 };
+    let total_expected = engine_estimate + preset.total_size_bytes;
+
+    state.ocr_manager.set_download_progress(BuiltInDownloadProgress {
+        active: true,
+        model_id: preset.id.to_string(),
+        stage: "starting".to_string(),
+        downloaded_bytes: 0,
+        total_bytes: total_expected,
+        percent: 0.0,
+        message: format!("Starting in-app download for {}...", preset.name),
+        error: None,
+    });
+
+    let db = state.db.clone();
+    let ocr_manager = state.ocr_manager.clone();
+
+    tokio::spawn(async move {
+        let client = match reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(3600))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                ocr_manager.set_download_progress(BuiltInDownloadProgress {
+                    active: false,
+                    model_id: preset.id.to_string(),
+                    stage: "error".to_string(),
+                    downloaded_bytes: 0,
+                    total_bytes: total_expected,
+                    percent: 0.0,
+                    message: format!("HTTP client error: {}", e),
+                    error: Some(e.to_string()),
+                });
+                return;
+            }
+        };
+
+        let mut offset: u64 = 0;
+
+        // 1. Download & extract native Windows inference engine (llama-mtmd-cli.exe + DLLs)
+        if need_engine {
+            let zip_path = models_dir.join("llama-engine-win-x64.zip");
+            match stream_download_file(
+                &client,
+                BUILTIN_ENGINE_ZIP_URL,
+                &zip_path,
+                "downloading_engine",
+                preset.id,
+                &ocr_manager,
+                offset,
+                total_expected,
+                "Built-in Vision Engine (llama.cpp)",
+            )
+            .await
+            {
+                Ok(bytes) => {
+                    offset += bytes;
+                    ocr_manager.set_download_progress(BuiltInDownloadProgress {
+                        active: true,
+                        model_id: preset.id.to_string(),
+                        stage: "extracting_engine".to_string(),
+                        downloaded_bytes: offset,
+                        total_bytes: total_expected,
+                        percent: ((offset as f64 / total_expected as f64) * 100.0).clamp(0.0, 99.5),
+                        message: "Extracting built-in inference binaries...".to_string(),
+                        error: None,
+                    });
+
+                    let extract_res: Result<(), String> = (|| {
+                        std::fs::create_dir_all(&engine_dir)
+                            .map_err(|e| format!("Failed creating engine dir: {}", e))?;
+                        let f = std::fs::File::open(&zip_path)
+                            .map_err(|e| format!("Failed opening engine zip: {}", e))?;
+                        let mut archive = zip::ZipArchive::new(f)
+                            .map_err(|e| format!("Invalid engine zip archive: {}", e))?;
+                        for i in 0..archive.len() {
+                            let mut entry = archive
+                                .by_index(i)
+                                .map_err(|e| format!("Zip entry error: {}", e))?;
+                            if entry.is_dir() {
+                                continue;
+                            }
+                            if let Some(fname) = entry.enclosed_name().and_then(|p| {
+                                p.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .map(|s| s.to_string())
+                            }) {
+                                let lower = fname.to_lowercase();
+                                if lower.ends_with(".exe") || lower.ends_with(".dll") {
+                                    let out_file_path = engine_dir.join(&fname);
+                                    let mut out_f = std::fs::File::create(&out_file_path)
+                                        .map_err(|e| format!("Failed creating {:?}: {}", out_file_path, e))?;
+                                    std::io::copy(&mut entry, &mut out_f)
+                                        .map_err(|e| format!("Failed extracting {}: {}", fname, e))?;
+                                }
+                            }
+                        }
+                        if !engine_exe.exists() {
+                            return Err("llama-mtmd-cli.exe was not found inside engine package".to_string());
+                        }
+                        Ok(())
+                    })();
+
+                    std::fs::remove_file(&zip_path).ok();
+                    if let Err(err) = extract_res {
+                        ocr_manager.set_download_progress(BuiltInDownloadProgress {
+                            active: false,
+                            model_id: preset.id.to_string(),
+                            stage: "error".to_string(),
+                            downloaded_bytes: offset,
+                            total_bytes: total_expected,
+                            percent: 0.0,
+                            message: err.clone(),
+                            error: Some(err),
+                        });
+                        return;
+                    }
+                }
+                Err(err) => {
+                    ocr_manager.set_download_progress(BuiltInDownloadProgress {
+                        active: false,
+                        model_id: preset.id.to_string(),
+                        stage: "error".to_string(),
+                        downloaded_bytes: offset,
+                        total_bytes: total_expected,
+                        percent: 0.0,
+                        message: err.clone(),
+                        error: Some(err),
+                    });
+                    return;
+                }
+            }
+        }
+
+        // 2. Download Vision Projector (mmproj.gguf)
+        if !std::fs::metadata(&mmproj_path).map(|m| m.len() > 1_000_000).unwrap_or(false) {
+            match stream_download_file(
+                &client,
+                preset.mmproj_url,
+                &mmproj_path,
+                "downloading_mmproj",
+                preset.id,
+                &ocr_manager,
+                offset,
+                total_expected,
+                &format!("{} Vision Projector", preset.id),
+            )
+            .await
+            {
+                Ok(bytes) => offset += bytes,
+                Err(err) => {
+                    ocr_manager.set_download_progress(BuiltInDownloadProgress {
+                        active: false,
+                        model_id: preset.id.to_string(),
+                        stage: "error".to_string(),
+                        downloaded_bytes: offset,
+                        total_bytes: total_expected,
+                        percent: 0.0,
+                        message: err.clone(),
+                        error: Some(err),
+                    });
+                    return;
+                }
+            }
+        }
+
+        // 3. Download Quantized Model Weights (.gguf)
+        if !std::fs::metadata(&model_path).map(|m| m.len() > 1_000_000).unwrap_or(false) {
+            match stream_download_file(
+                &client,
+                preset.model_url,
+                &model_path,
+                "downloading_model",
+                preset.id,
+                &ocr_manager,
+                offset,
+                total_expected,
+                preset.name,
+            )
+            .await
+            {
+                Ok(bytes) => offset += bytes,
+                Err(err) => {
+                    ocr_manager.set_download_progress(BuiltInDownloadProgress {
+                        active: false,
+                        model_id: preset.id.to_string(),
+                        stage: "error".to_string(),
+                        downloaded_bytes: offset,
+                        total_bytes: total_expected,
+                        percent: 0.0,
+                        message: err.clone(),
+                        error: Some(err),
+                    });
+                    return;
+                }
+            }
+        }
+
+        // Activate in settings
+        if let Ok(mut s) = db.get_settings() {
+            s.local_vision_enabled = true;
+            s.local_vision_provider = "builtin".to_string();
+            s.local_vision_model = preset.id.to_string();
+            db.save_settings(&s).ok();
+        }
+        ocr_manager.push_log(format!(
+            "[vision-ai] Built-in model '{}' downloaded and activated inside {:?}",
+            preset.id, models_dir
+        ));
+        ocr_manager.set_download_progress(BuiltInDownloadProgress {
+            active: false,
+            model_id: preset.id.to_string(),
+            stage: "completed".to_string(),
+            downloaded_bytes: offset.max(total_expected),
+            total_bytes: total_expected,
+            percent: 100.0,
+            message: format!("{} is downloaded and active!", preset.name),
+            error: None,
+        });
+    });
+
+    build_builtin_vision_status(&state.db, &state.ocr_manager)
+}
+
+#[tauri::command]
+pub fn delete_builtin_vision_model(
+    state: State<'_, AppState>,
+    model_id: String,
+) -> Result<BuiltInVisionStatus, String> {
+    let preset = BUILTIN_VISION_MODELS
+        .iter()
+        .find(|p| p.id == model_id.trim())
+        .ok_or_else(|| format!("Unknown built-in model ID '{}'", model_id))?;
+
+    let mut settings = state.db.get_settings().map_err(|e| e.to_string())?;
+    let model_dir = PathBuf::from(&settings.root_dir).join("Models").join(preset.id);
+    if model_dir.exists() {
+        std::fs::remove_dir_all(&model_dir)
+            .map_err(|e| format!("Failed deleting model files at {:?}: {}", model_dir, e))?;
+    }
+
+    if settings.local_vision_model == preset.id {
+        settings.local_vision_enabled = false;
+        state.db.save_settings(&settings).ok();
+    }
+
+    build_builtin_vision_status(&state.db, &state.ocr_manager)
+}
+
 #[tauri::command]
 pub async fn test_local_vision_ai(
     state: State<'_, AppState>,
@@ -1188,6 +1737,10 @@ pub async fn test_local_vision_ai(
     let mdl = model
         .filter(|s| !s.trim().is_empty())
         .unwrap_or(settings.local_vision_model);
+
+    if prov.eq_ignore_ascii_case("builtin") {
+        return Ok(verify_builtin_vision_ready(&settings.root_dir, &mdl));
+    }
 
     state.ocr_manager.test_local_vision(&prov, &ep, &mdl).await
 }

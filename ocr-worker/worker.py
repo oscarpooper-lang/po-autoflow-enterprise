@@ -11,6 +11,8 @@ import json
 import base64
 import traceback
 import re
+import subprocess
+import tempfile
 import importlib.util
 import urllib.request
 import urllib.parse
@@ -87,8 +89,11 @@ def query_local_vision_model(
     provider: str,
     endpoint: str,
     model: str,
+    engine_path: str = "",
+    model_path: str = "",
+    mmproj_path: str = "",
 ) -> Dict[str, Any]:
-    """Queries 100% offline on-device Vision AI (SmolVLM2-2.2B / Qwen2.5-VL-3B via Ollama or Python transformers)."""
+    """Queries 100% offline on-device Vision AI (Built-in llama-mtmd-cli, Ollama, or Python transformers)."""
     prompt = (
         "Analyze this Purchase Order or Tax Invoice image. "
         "Note: QTC ENERGY PUBLIC COMPANY LIMITED is the BUYER, so ignore QTC completely. "
@@ -98,7 +103,65 @@ def query_local_vision_model(
     )
 
     try:
-        if (provider or "ollama").lower() == "transformers":
+        prov_low = (provider or "builtin").strip().lower()
+        if prov_low == "builtin":
+            if not (
+                engine_path
+                and model_path
+                and mmproj_path
+                and os.path.exists(engine_path)
+                and os.path.exists(model_path)
+                and os.path.exists(mmproj_path)
+            ):
+                return {}
+
+            ok, buf = cv2.imencode(".png", img_np)
+            if not ok:
+                return {}
+
+            tmp_png = ""
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+                    tf.write(buf.tobytes())
+                    tmp_png = tf.name
+
+                cmd = [
+                    engine_path,
+                    "-m",
+                    model_path,
+                    "--mmproj",
+                    mmproj_path,
+                    "--image",
+                    tmp_png,
+                    "-p",
+                    prompt,
+                    "-n",
+                    "200",
+                    "--temp",
+                    "0.1",
+                    "--no-warmup",
+                ]
+                kwargs: Dict[str, Any] = {
+                    "capture_output": True,
+                    "text": True,
+                    "encoding": "utf-8",
+                    "errors": "ignore",
+                    "timeout": 60,
+                    "cwd": os.path.dirname(engine_path),
+                }
+                if os.name == "nt":
+                    kwargs["creationflags"] = 0x08000000
+
+                proc = subprocess.run(cmd, **kwargs)
+                return _extract_json_object(proc.stdout)
+            finally:
+                if tmp_png and os.path.exists(tmp_png):
+                    try:
+                        os.remove(tmp_png)
+                    except Exception:
+                        pass
+
+        if prov_low == "transformers":
             if (
                 importlib.util.find_spec("transformers") is None
                 or importlib.util.find_spec("torch") is None
@@ -959,9 +1022,12 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
     pref_y_raw = hints.get("preferred_y_band")
     pref_y = float(pref_y_raw) if pref_y_raw is not None else None
     local_vision_enabled = bool(hints.get("local_vision_enabled", False))
-    local_vision_provider = str(hints.get("local_vision_provider") or "ollama")
+    local_vision_provider = str(hints.get("local_vision_provider") or "builtin")
     local_vision_endpoint = str(hints.get("local_vision_endpoint") or "http://127.0.0.1:11434")
-    local_vision_model = str(hints.get("local_vision_model") or "hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF")
+    local_vision_model = str(hints.get("local_vision_model") or "smolvlm2-2.2b")
+    builtin_engine_path = str(hints.get("builtin_engine_path") or "")
+    builtin_model_path = str(hints.get("builtin_model_path") or "")
+    builtin_mmproj_path = str(hints.get("builtin_mmproj_path") or "")
 
     ext = os.path.splitext(file_path)[1].lower()
     page_results = []
@@ -1120,6 +1186,9 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                     local_vision_provider,
                     local_vision_endpoint,
                     local_vision_model,
+                    builtin_engine_path,
+                    builtin_model_path,
+                    builtin_mmproj_path,
                 )
                 if vision_out:
                     _merge_local_vision_into_parsed(agg_parsed, vision_out, neg_phrases)

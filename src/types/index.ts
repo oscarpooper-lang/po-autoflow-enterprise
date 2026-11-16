@@ -40,7 +40,7 @@ export interface AppSettings {
   self_learning_enabled?: boolean;
   auto_sync_learned_suppliers_to_sheets?: boolean;
   local_vision_enabled?: boolean;
-  local_vision_provider?: 'ollama' | 'transformers';
+  local_vision_provider?: 'builtin' | 'ollama' | 'transformers';
   local_vision_endpoint?: string;
   local_vision_model?: string;
 }
@@ -241,5 +241,37 @@ export interface LocalVisionStatus {
   configured_model: string;
   available_models: string[];
   message: string;
+}
+
+export interface BuiltInVisionModelEntry {
+  id: string;
+  name: string;
+  size_label: string;
+  total_size_bytes: number;
+  description: string;
+  installed: boolean;
+  active: boolean;
+  model_path: string;
+  mmproj_path: string;
+}
+
+export interface BuiltInDownloadProgress {
+  active: boolean;
+  model_id: string;
+  stage: string;
+  downloaded_bytes: number;
+  total_bytes: number;
+  percent: number;
+  message: string;
+  error?: string | null;
+}
+
+export interface BuiltInVisionStatus {
+  engine_installed: boolean;
+  engine_path: string;
+  models_dir: string;
+  active_model_id: string;
+  models: BuiltInVisionModelEntry[];
+  download: BuiltInDownloadProgress;
 }
 

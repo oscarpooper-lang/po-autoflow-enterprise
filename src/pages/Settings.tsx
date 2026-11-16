@@ -22,8 +22,17 @@ import {
   BrainCircuit,
   Sparkles,
   Lock,
+  Trash2,
+  Check,
+  HardDrive,
 } from 'lucide-react';
-import type { AppSettings, GoogleAccountInfo, LearningStats, LocalVisionStatus } from '../types';
+import type {
+  AppSettings,
+  GoogleAccountInfo,
+  LearningStats,
+  LocalVisionStatus,
+  BuiltInVisionStatus,
+} from '../types';
 import { api, checkGitHubUpdate, installGitHubUpdate, type GitHubUpdateStatus } from '../services/tauri';
 
 interface SettingsProps {
@@ -58,26 +67,76 @@ export const Settings: React.FC<SettingsProps> = ({
   const [learningStats, setLearningStats] = useState<LearningStats | null>(null);
   const [visionStatus, setVisionStatus] = useState<LocalVisionStatus | null>(null);
   const [testingVision, setTestingVision] = useState(false);
+  const [builtInVision, setBuiltInVision] = useState<BuiltInVisionStatus | null>(null);
+  const [downloadingModelId, setDownloadingModelId] = useState<string | null>(null);
 
   const handleTestLocalVision = async () => {
     setTestingVision(true);
     try {
-      const res = await api.testLocalVisionAi(
-        formData.local_vision_provider || 'ollama',
-        formData.local_vision_endpoint || 'http://127.0.0.1:11434',
-        formData.local_vision_model || 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF'
-      );
+      const activeModel =
+        builtInVision?.active_model_id || formData.local_vision_model || 'smolvlm2-2.2b';
+      const res = await api.testLocalVisionAi('builtin', '', activeModel);
       setVisionStatus(res);
     } catch (err: any) {
       setVisionStatus({
         reachable: false,
-        endpoint: formData.local_vision_endpoint || 'http://127.0.0.1:11434',
-        configured_model: formData.local_vision_model || 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF',
+        endpoint: formData.local_vision_endpoint || '',
+        configured_model: formData.local_vision_model || 'smolvlm2-2.2b',
         available_models: [],
         message: typeof err === 'string' ? err : err?.message || 'Test failed',
       });
     } finally {
       setTestingVision(false);
+    }
+  };
+
+  const handleDownloadBuiltInModel = async (modelId: string) => {
+    setDownloadingModelId(modelId);
+    setVisionStatus(null);
+    try {
+      const res = await api.downloadBuiltInVisionModel(modelId);
+      setBuiltInVision(res);
+    } catch (err: any) {
+      setVisionStatus({
+        reachable: false,
+        endpoint: '',
+        configured_model: modelId,
+        available_models: [],
+        message: typeof err === 'string' ? err : err?.message || 'Failed to start download',
+      });
+    } finally {
+      setDownloadingModelId(null);
+    }
+  };
+
+  const handleSelectBuiltInModel = async (modelId: string) => {
+    const next: AppSettings = {
+      ...formData,
+      local_vision_enabled: true,
+      local_vision_provider: 'builtin',
+      local_vision_model: modelId,
+    };
+    setFormData(next);
+    await onSaveSettings(next);
+    const updated = await api.getBuiltInVisionStatus().catch(() => null);
+    if (updated) setBuiltInVision(updated);
+  };
+
+  const handleDeleteBuiltInModel = async (modelId: string) => {
+    try {
+      const updated = await api.deleteBuiltInVisionModel(modelId);
+      setBuiltInVision(updated);
+      if (formData.local_vision_model === modelId) {
+        setFormData((prev) => ({ ...prev, local_vision_enabled: false }));
+      }
+    } catch (err: any) {
+      setVisionStatus({
+        reachable: false,
+        endpoint: '',
+        configured_model: modelId,
+        available_models: [],
+        message: typeof err === 'string' ? err : err?.message || 'Failed to delete model',
+      });
     }
   };
 
@@ -133,7 +192,32 @@ export const Settings: React.FC<SettingsProps> = ({
       .getLearningStats()
       .then((stats) => setLearningStats(stats))
       .catch(() => {});
+    api
+      .getBuiltInVisionStatus()
+      .then((status) => setBuiltInVision(status))
+      .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!builtInVision?.download?.active) return;
+    const timer = setInterval(() => {
+      api
+        .getBuiltInVisionStatus()
+        .then((res) => {
+          setBuiltInVision(res);
+          if (!res.download.active && res.download.stage === 'completed') {
+            setFormData((prev) => ({
+              ...prev,
+              local_vision_enabled: true,
+              local_vision_provider: 'builtin',
+              local_vision_model: res.active_model_id,
+            }));
+          }
+        })
+        .catch(() => {});
+    }, 800);
+    return () => clearInterval(timer);
+  }, [builtInVision?.download?.active]);
 
   useEffect(() => {
     setFormData(initialSettings);
@@ -685,18 +769,22 @@ export const Settings: React.FC<SettingsProps> = ({
                   </div>
                 </div>
 
-                {/* 100% Offline Local Vision AI Card */}
+                {/* Built-In On-Device Vision AI Manager (Zero 3rd-Party Apps or Localhost Needed) */}
                 <div className="p-4 rounded-xl bg-zinc-950/70 border border-zinc-800 space-y-3 text-xs">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
                       <h4 className="font-semibold text-white flex items-center gap-1.5">
                         <Sparkles className="w-4 h-4 text-emerald-400" />
-                        <span>100% Offline Local Vision AI (SmolVLM2-2.2B / Qwen2.5-VL-3B)</span>
+                        <span>Built-In On-Device Vision AI (No 3rd-Party Apps Needed)</span>
                       </h4>
                       <p className="text-[11px] text-zinc-400 mt-0.5 flex items-center gap-1">
                         <Lock className="w-3 h-3 text-emerald-400 shrink-0" />
                         <span>
-                          Zero cloud data leakage: strictly runs on-device (`127.0.0.1` / local Python) only when OCR confidence is below 85%.
+                          Runs directly inside PO AutoFlow from{' '}
+                          <code className="text-zinc-300 font-mono">
+                            {builtInVision?.models_dir || `${formData.root_dir}\\Models`}
+                          </code>{' '}
+                          — no Ollama, no localhost server, zero cloud uploads.
                         </span>
                       </p>
                     </div>
@@ -704,7 +792,14 @@ export const Settings: React.FC<SettingsProps> = ({
                       <input
                         type="checkbox"
                         checked={!!formData.local_vision_enabled}
-                        onChange={(e) => handleChange('local_vision_enabled', e.target.checked)}
+                        onChange={(e) => {
+                          const enabled = e.target.checked;
+                          setFormData((prev) => ({
+                            ...prev,
+                            local_vision_enabled: enabled,
+                            local_vision_provider: 'builtin',
+                          }));
+                        }}
                         className="h-4 w-4 rounded border-zinc-700 bg-zinc-800 text-emerald-500 cursor-pointer"
                       />
                       <span className="font-semibold text-zinc-200">
@@ -713,76 +808,127 @@ export const Settings: React.FC<SettingsProps> = ({
                     </label>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-zinc-300 font-medium block mb-1">Local AI Runtime:</label>
-                      <select
-                        value={formData.local_vision_provider || 'ollama'}
-                        onChange={(e) => {
-                          const prov = e.target.value as 'ollama' | 'transformers';
-                          setFormData((prev) => ({
-                            ...prev,
-                            local_vision_provider: prov,
-                            local_vision_model:
-                              prov === 'transformers'
-                                ? 'HuggingFaceTB/SmolVLM2-2.2B-Instruct'
-                                : prev.local_vision_model?.includes('HuggingFaceTB/')
-                                ? 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF'
-                                : prev.local_vision_model || 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF',
-                          }));
-                        }}
-                        className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2"
+                  {/* Active Download Progress Bar */}
+                  {builtInVision?.download &&
+                    (builtInVision.download.active ||
+                      builtInVision.download.stage === 'completed' ||
+                      builtInVision.download.error) && (
+                      <div
+                        className={`p-3 rounded-lg border space-y-1.5 ${
+                          builtInVision.download.error
+                            ? 'bg-red-500/10 border-red-500/30 text-red-300'
+                            : builtInVision.download.stage === 'completed'
+                            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                            : 'bg-blue-500/10 border-blue-500/30 text-blue-200'
+                        }`}
                       >
-                        <option value="ollama">Local Ollama Server (127.0.0.1:11434 — Recommended)</option>
-                        <option value="transformers">Embedded Python Transformers (On-Device PyTorch)</option>
-                      </select>
-                    </div>
+                        <div className="flex items-center justify-between text-[11px] font-semibold">
+                          <span>{builtInVision.download.message || builtInVision.download.stage}</span>
+                          <span className="font-mono">
+                            {(builtInVision.download.downloaded_bytes / 1_048_576).toFixed(1)} MB /{' '}
+                            {(builtInVision.download.total_bytes / 1_048_576).toFixed(0)} MB (
+                            {builtInVision.download.percent.toFixed(1)}%)
+                          </span>
+                        </div>
+                        <div className="w-full h-2 rounded-full bg-zinc-900 overflow-hidden">
+                          <div
+                            className={`h-full transition-all duration-300 ${
+                              builtInVision.download.error
+                                ? 'bg-red-500'
+                                : builtInVision.download.stage === 'completed'
+                                ? 'bg-emerald-500'
+                                : 'bg-blue-500'
+                            }`}
+                            style={{ width: `${Math.min(100, Math.max(0, builtInVision.download.percent))}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
 
-                    <div>
-                      <label className="text-zinc-300 font-medium block mb-1">Lightweight Vision Model:</label>
-                      <select
-                        value={
-                          [
-                            'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF',
-                            'qwen2.5vl:3b',
-                            'moondream',
-                            'HuggingFaceTB/SmolVLM2-2.2B-Instruct',
-                          ].includes(formData.local_vision_model || '')
-                            ? formData.local_vision_model
-                            : 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF'
-                        }
-                        onChange={(e) => handleChange('local_vision_model', e.target.value)}
-                        className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2"
-                      >
-                        <option value="hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF">
-                          SmolVLM2-2.2B-Instruct (GGUF via Ollama — ~1.3 GB, Ultra Light)
-                        </option>
-                        <option value="qwen2.5vl:3b">
-                          Qwen2.5-VL-3B (via Ollama — ~3.2 GB, Best for Thai + English POs)
-                        </option>
-                        <option value="moondream">
-                          Moondream 1.8B (via Ollama — ~1.7 GB, Fast CPU Fallback)
-                        </option>
-                        <option value="HuggingFaceTB/SmolVLM2-2.2B-Instruct">
-                          HuggingFaceTB/SmolVLM2-2.2B-Instruct (Embedded Python Transformers)
-                        </option>
-                      </select>
-                    </div>
+                  {/* Selectable Built-In Model Cards */}
+                  <div className="space-y-2">
+                    {(builtInVision?.models || []).map((m) => {
+                      const isDownloadingThis =
+                        downloadingModelId === m.id ||
+                        (builtInVision?.download?.active && builtInVision.download.model_id === m.id);
+                      const isActive =
+                        formData.local_vision_enabled &&
+                        (formData.local_vision_model || builtInVision?.active_model_id) === m.id;
+
+                      return (
+                        <div
+                          key={m.id}
+                          className={`p-3 rounded-lg border flex flex-wrap items-center justify-between gap-3 ${
+                            isActive
+                              ? 'bg-emerald-950/30 border-emerald-500/40'
+                              : 'bg-zinc-900/70 border-zinc-800'
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1 space-y-0.5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-semibold text-zinc-100">{m.name}</span>
+                              <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono text-[10px]">
+                                {m.size_label}
+                              </span>
+                              {m.installed && builtInVision?.engine_installed ? (
+                                <span
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                    isActive
+                                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                      : 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
+                                  }`}
+                                >
+                                  {isActive ? 'Active & Ready' : 'Downloaded'}
+                                </span>
+                              ) : (
+                                <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500 text-[10px]">
+                                  Not Installed
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-zinc-400">{m.description}</p>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            {m.installed && builtInVision?.engine_installed ? (
+                              <>
+                                {!isActive && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSelectBuiltInModel(m.id)}
+                                    className="px-2.5 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white font-semibold flex items-center gap-1 text-[11px]"
+                                  >
+                                    <Check className="w-3 h-3" />
+                                    <span>Select Active</span>
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteBuiltInModel(m.id)}
+                                  className="p-1.5 rounded-md bg-zinc-800 hover:bg-red-500/20 text-zinc-400 hover:text-red-300 border border-zinc-700"
+                                  title="Delete downloaded model files"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleDownloadBuiltInModel(m.id)}
+                                disabled={Boolean(builtInVision?.download?.active) || downloadingModelId !== null}
+                                className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold flex items-center gap-1.5 text-[11px]"
+                              >
+                                <Download className={`w-3.5 h-3.5 ${isDownloadingThis ? 'animate-bounce' : ''}`} />
+                                <span>
+                                  {isDownloadingThis ? 'Downloading...' : 'Download Inside App'}
+                                </span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-
-                  {formData.local_vision_provider !== 'transformers' && (
-                    <div>
-                      <label className="text-zinc-300 font-medium block mb-1">
-                        Localhost Endpoint (Locked to 127.0.0.1 / localhost):
-                      </label>
-                      <input
-                        type="text"
-                        value={formData.local_vision_endpoint || 'http://127.0.0.1:11434'}
-                        onChange={(e) => handleChange('local_vision_endpoint', e.target.value)}
-                        className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 font-mono"
-                      />
-                    </div>
-                  )}
 
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                     <button
@@ -792,13 +938,15 @@ export const Settings: React.FC<SettingsProps> = ({
                       className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold border border-zinc-700 flex items-center gap-1.5"
                     >
                       <RefreshCw className={`w-3.5 h-3.5 ${testingVision ? 'animate-spin' : ''}`} />
-                      <span>{testingVision ? 'Checking...' : 'Test Local Vision AI'}</span>
+                      <span>{testingVision ? 'Verifying...' : 'Verify Built-In Engine'}</span>
                     </button>
-                    <code className="text-[11px] text-zinc-400 font-mono bg-zinc-900 px-2 py-1 rounded border border-zinc-800">
-                      {formData.local_vision_provider === 'transformers'
-                        ? 'pip install transformers torch accelerate Pillow'
-                        : `ollama pull ${formData.local_vision_model || 'hf.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF'}`}
-                    </code>
+                    <span className="text-[11px] text-zinc-400 flex items-center gap-1">
+                      <HardDrive className="w-3.5 h-3.5 text-zinc-500" />
+                      <span>
+                        Native Engine:{' '}
+                        {builtInVision?.engine_installed ? 'Installed in app folder' : 'Auto-installs on first model download'}
+                      </span>
+                    </span>
                   </div>
 
                   {visionStatus && (

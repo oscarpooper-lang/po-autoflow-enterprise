@@ -378,6 +378,12 @@ impl PipelineCoordinator {
             None
         };
 
+        let (builtin_engine_path, builtin_model_path, builtin_mmproj_path) =
+            crate::commands::resolve_builtin_vision_paths(
+                &settings.root_dir,
+                &settings.local_vision_model,
+            );
+
         let ocr_hints = crate::ocr::OcrHints {
             negative_phrases: neg_phrases,
             preferred_y_band,
@@ -385,6 +391,9 @@ impl PipelineCoordinator {
             local_vision_provider: settings.local_vision_provider.clone(),
             local_vision_endpoint: settings.local_vision_endpoint.clone(),
             local_vision_model: settings.local_vision_model.clone(),
+            builtin_engine_path: builtin_engine_path.to_string_lossy().to_string(),
+            builtin_model_path: builtin_model_path.to_string_lossy().to_string(),
+            builtin_mmproj_path: builtin_mmproj_path.to_string_lossy().to_string(),
         };
 
         let mut all_supplier_candidates = Vec::new();
