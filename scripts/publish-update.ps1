@@ -113,11 +113,11 @@ try {
         "## PO AutoFlow Enterprise $tag`n`n$Notes"
     }
 
-    $releaseExists = $false
-    gh release view $tag *> $null
-    if ($LASTEXITCODE -eq 0) {
-        $releaseExists = $true
-    }
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    cmd /c "gh release view $tag >nul 2>&1"
+    $releaseExists = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $prevEap
 
     if ($releaseExists) {
         Write-Host "==> Uploading installers to existing GitHub Release $tag..." -ForegroundColor Cyan
