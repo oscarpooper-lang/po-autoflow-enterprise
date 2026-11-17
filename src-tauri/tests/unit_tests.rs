@@ -618,6 +618,208 @@ fn test_dv_ov_multi_tab_and_vendor_classification() {
     ));
 }
 
+#[test]
+fn test_exact_gmail_and_shared_email_combo_matching() {
+    let dir = vec![
+        CompanyCacheEntry {
+            id: "row_1".to_string(),
+            company_name: "บริษัท อัลฟ่า เทค จำกัด".to_string(),
+            alternative_name: Some("ALPHA TECH PTE. LTD.".to_string()),
+            email: "billing@alphasupply.gmail.com, owner@gmail.com".to_string(),
+            active: true,
+            tax_id: None,
+            notes: Some("Alpha Group Branch 1".to_string()),
+            vendor_group: Some("DV".to_string()),
+            synced_at: "2026-11-17T00:00:00Z".to_string(),
+        },
+        CompanyCacheEntry {
+            id: "row_2".to_string(),
+            company_name: "บริษัท เบต้า เซอร์วิส จำกัด".to_string(),
+            alternative_name: Some("BETA SERVICE CO., LTD.".to_string()),
+            email: "owner@gmail.com".to_string(),
+            active: true,
+            tax_id: None,
+            notes: None,
+            vendor_group: Some("DV".to_string()),
+            synced_at: "2026-11-17T00:00:00Z".to_string(),
+        },
+        CompanyCacheEntry {
+            id: "row_3".to_string(),
+            company_name: "บริษัท แกรมม่า ซัพพลาย จำกัด".to_string(),
+            alternative_name: None,
+            email: "unique.vendor99@gmail.com".to_string(),
+            active: true,
+            tax_id: None,
+            notes: None,
+            vendor_group: Some("DV".to_string()),
+            synced_at: "2026-11-17T00:00:00Z".to_string(),
+        },
+    ];
+
+    // 1. Unique exact @gmail.com email matches cleanly even when OCR name is unrecognizable
+    let only_gmail = CompanyMatcher::match_candidates_with_memory(
+        &[app_lib::ocr::SupplierCandidate {
+            name: "UNRELATED HEADER TEXT".to_string(),
+            confidence: 80.0,
+            language: "en".to_string(),
+            line_index: Some(0),
+            source: Some("regex".to_string()),
+        }],
+        &[],
+        &["unique.vendor99@gmail.com".to_string()],
+        &dir,
+        &[],
+        &[],
+        98.0,
+        90.0,
+        75.0,
+    );
+    assert_eq!(only_gmail.matched_by, "exact_email");
+    assert_eq!(only_gmail.category, "verified");
+    assert!(!only_gmail.is_ambiguous);
+    assert_eq!(
+        only_gmail.matched_company.unwrap().company_name,
+        "บริษัท แกรมม่า ซัพพลาย จำกัด"
+    );
+
+    // 2. Shared @gmail.com across two companies: weak/generic name + exact email resolves right combo
+    let shared_with_name = CompanyMatcher::match_candidates_with_memory(
+        &[app_lib::ocr::SupplierCandidate {
+            name: "BETA SERVICE".to_string(),
+            confidence: 90.0,
+            language: "en".to_string(),
+            line_index: Some(1),
+            source: Some("regex".to_string()),
+        }],
+        &[],
+        &["owner@gmail.com".to_string()],
+        &dir,
+        &[],
+        &[],
+        98.0,
+        90.0,
+        75.0,
+    );
+    assert!(!shared_with_name.is_ambiguous);
+    assert_eq!(
+        shared_with_name.matched_company.unwrap().company_name,
+        "บริษัท เบต้า เซอร์วิส จำกัด"
+    );
+
+    // 3. Shared @gmail.com with zero matching name stays safely in review as ambiguous
+    let shared_no_name = CompanyMatcher::match_candidates_with_memory(
+        &[],
+        &[],
+        &["owner@gmail.com".to_string()],
+        &dir,
+        &[],
+        &[],
+        98.0,
+        90.0,
+        75.0,
+    );
+    assert_eq!(shared_no_name.category, "review");
+    assert!(shared_no_name.is_ambiguous);
+    assert_eq!(shared_no_name.matched_by, "ambiguous_shared_email");
+}
+
+#[test]
+fn test_branch_international_suffix_and_alias_on_alt_name() {
+    assert_eq!(
+        ThaiNormalizer::clean_company_name("บริษัท เอบีซี จำกัด (สาขาที่ 00001)"),
+        "เอบีซี"
+    );
+    assert_eq!(
+        ThaiNormalizer::clean_company_name("SIEMENS ENERGY GMBH Branch 2"),
+        "siemens energy"
+    );
+    assert_eq!(
+        ThaiNormalizer::clean_company_name("ACME ASIA PTE. LTD."),
+        "acme asia"
+    );
+    // Boundary safety: words ending in "lab" or "corp" without separator must stay intact
+    assert_eq!(ThaiNormalizer::clean_company_name("BIOLAB"), "biolab");
+
+    let dir = vec![CompanyCacheEntry {
+        id: "ov_1".to_string(),
+        company_name: "เอซีมี เอเชีย".to_string(),
+        alternative_name: Some("ACME ASIA PTE. LTD.".to_string()),
+        email: "ap@acme.sg".to_string(),
+        active: true,
+        tax_id: None,
+        notes: Some("ACME SINGAPORE".to_string()),
+        vendor_group: Some("OV".to_string()),
+        synced_at: "2026-11-17T00:00:00Z".to_string(),
+    }];
+
+    // Alias pointing to alternative_name still resolves canonical Sheet entry
+    let aliases = vec![CompanyAlias {
+        id: "al_1".to_string(),
+        alias: "ACME ASIA SG".to_string(),
+        canonical_company_name: "ACME ASIA PTE. LTD.".to_string(),
+        created_by: "user".to_string(),
+        created_at: "2026-11-17T00:00:00Z".to_string(),
+    }];
+    let alias_hit = CompanyMatcher::match_company("ACME ASIA SG", &dir, &aliases, 98.0, 90.0, 75.0);
+    assert_eq!(alias_hit.matched_by, "alias");
+    assert_eq!(alias_hit.matched_company.unwrap().id, "ov_1");
+
+    // Usable proofing note matches cleanly
+    let note_hit = CompanyMatcher::match_company("ACME SINGAPORE", &dir, &[], 98.0, 90.0, 75.0);
+    assert_eq!(note_hit.category, "verified");
+    assert_eq!(note_hit.matched_by, "notes");
+}
+
+#[test]
+fn test_safe_move_folder_archives_existing_dest_and_blocks_temp_files() {
+    let tmp = tempdir().unwrap();
+    let incoming = tmp.path().join("Incoming");
+    let sent = tmp.path().join("Sent");
+    std::fs::create_dir_all(incoming.join("PO-999")).unwrap();
+    std::fs::create_dir_all(sent.join("PO-999")).unwrap();
+
+    // Old Sent copy must never be lost if a new PO-999 is moved in
+    std::fs::write(sent.join("PO-999").join("old_sent.txt"), b"original").unwrap();
+    let new_file = incoming.join("PO-999").join("new_po.pdf");
+    std::fs::write(&new_file, b"new_pdf").unwrap();
+
+    // Temp/browser lock file inside folder must block stability readiness
+    let temp_part = incoming.join("PO-999").join("invoice.pdf.crdownload");
+    std::fs::write(&temp_part, b"partial").unwrap();
+    assert!(!app_lib::watcher::stability::FileStabilityChecker::can_open_all_files(
+        &incoming.join("PO-999")
+    ));
+    std::fs::remove_file(&temp_part).unwrap();
+    assert!(app_lib::watcher::stability::FileStabilityChecker::can_open_all_files(
+        &incoming.join("PO-999")
+    ));
+
+    let moved_dest = app_lib::pipeline::move_folder_to_dir(
+        &incoming.join("PO-999"),
+        &sent.to_string_lossy(),
+    )
+    .unwrap();
+    assert!(moved_dest.join("new_po.pdf").exists());
+    assert!(!incoming.join("PO-999").exists());
+
+    // Verify previous Sent/PO-999 was archived safely as PO-999__prev_*
+    let archived_exists = std::fs::read_dir(&sent)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .any(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            name.starts_with("PO-999__prev_") && e.path().join("old_sent.txt").exists()
+        });
+    assert!(archived_exists);
+
+    // Non-existent source returns Err instead of Ok
+    assert!(
+        app_lib::pipeline::move_folder_to_dir(&incoming.join("MISSING-PO"), &sent.to_string_lossy())
+            .is_err()
+    );
+}
+
+
 
 
 

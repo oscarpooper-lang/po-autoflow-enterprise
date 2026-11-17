@@ -1602,7 +1602,18 @@ def parse_supplier_and_po(
         if clean_tax not in SELF_TAX_IDS and clean_tax not in tax_ids:
             tax_ids.append(clean_tax)
 
-    # 3. Emails (excluding QTC domains; also handles labeled local parts with OCR spaces)
+    # 3. Emails (excluding QTC domains & automated noreply mailboxes; also handles labeled local parts with OCR spaces)
+    def _is_ignored_email(addr: str) -> bool:
+        if not addr or "qtc-energy" in addr:
+            return True
+        local = addr.split("@", 1)[0]
+        return (
+            local in {"noreply", "no-reply", "no_reply", "do-not-reply", "donotreply", "mailer-daemon"}
+            or local.startswith("noreply")
+            or local.startswith("no-reply")
+            or local.startswith("do-not-reply")
+        )
+
     emails: List[str] = []
     for match in re.finditer(
         r"e-?mail\s*[:：]\s*([A-Za-z0-9._%+\-]+(?:\s+[A-Za-z0-9._%+\-]+){0,2}@[A-Za-z0-9.\-]+\.[A-Za-z0-9]{2,})",
@@ -1610,13 +1621,13 @@ def parse_supplier_and_po(
         re.IGNORECASE,
     ):
         em = _clean_ocr_email(match.group(1))
-        if em and "qtc-energy" not in em and em not in emails:
+        if em and not _is_ignored_email(em) and em not in emails:
             emails.append(em)
     for match in re.finditer(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z0-9]{2,}", text):
         em = _clean_ocr_email(match.group(0))
         if (
             em
-            and "qtc-energy" not in em
+            and not _is_ignored_email(em)
             and not any(
                 existing == em or (existing.endswith(em) and existing.split("@")[1] == em.split("@")[1])
                 for existing in emails

@@ -261,19 +261,31 @@ pub fn run() {
             ));
 
             // Auto-resume folder monitoring on startup if enabled in settings
+            let mut needs_delayed_watcher_retry: Option<(String, u64)> = None;
             let watcher_instance = if let Ok(settings) = db.get_settings() {
                 if settings.auto_monitoring_active {
-                    let mut watcher = FolderWatcher::new(&settings.incoming_dir, job_tx.clone())
-                        .with_poll_interval(settings.poll_interval_ms);
-                    match watcher.start() {
-                        Ok(()) => {
-                            coordinator.set_watcher_active_jobs(watcher.active_jobs());
-                            info!("Auto-monitoring resumed on startup for {:?}", settings.incoming_dir);
-                            Some(watcher)
-                        }
-                        Err(e) => {
-                            warn!("Failed to resume auto-monitoring on startup: {}", e);
-                            None
+                    let incoming_path = std::path::Path::new(&settings.incoming_dir);
+                    if !incoming_path.exists() && std::fs::create_dir_all(incoming_path).is_err() {
+                        warn!(
+                            "Incoming directory drive/share not mounted yet on startup ({:?}); scheduling background retry",
+                            settings.incoming_dir
+                        );
+                        needs_delayed_watcher_retry = Some((settings.incoming_dir.clone(), settings.poll_interval_ms));
+                        None
+                    } else {
+                        let mut watcher = FolderWatcher::new(&settings.incoming_dir, job_tx.clone())
+                            .with_poll_interval(settings.poll_interval_ms);
+                        match watcher.start() {
+                            Ok(()) => {
+                                coordinator.set_watcher_active_jobs(watcher.active_jobs());
+                                info!("Auto-monitoring resumed on startup for {:?}", settings.incoming_dir);
+                                Some(watcher)
+                            }
+                            Err(e) => {
+                                warn!("Failed to resume auto-monitoring on startup ({}): scheduling background retry", e);
+                                needs_delayed_watcher_retry = Some((settings.incoming_dir.clone(), settings.poll_interval_ms));
+                                None
+                            }
                         }
                     }
                 } else {
@@ -283,12 +295,51 @@ pub fn run() {
                 None
             };
 
+            let watcher_arc = Arc::new(Mutex::new(watcher_instance));
+            if let Some((retry_dir, retry_poll_ms)) = needs_delayed_watcher_retry {
+                let watcher_ref = Arc::clone(&watcher_arc);
+                let coordinator_ref = coordinator.clone();
+                let job_tx_ref = job_tx.clone();
+                let log_ref = ocr_manager.clone();
+                tauri::async_runtime::spawn(async move {
+                    log_ref.push_log(format!(
+                        "[watcher] Waiting for network drive / folder '{}' to come online...",
+                        retry_dir
+                    ));
+                    for attempt in 1..=60u32 {
+                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                        let mut guard = watcher_ref.lock().await;
+                        if guard.is_some() {
+                            return;
+                        }
+                        if std::path::Path::new(&retry_dir).exists() {
+                            let mut w = FolderWatcher::new(&retry_dir, job_tx_ref.clone())
+                                .with_poll_interval(retry_poll_ms);
+                            if let Ok(()) = w.start() {
+                                coordinator_ref.set_watcher_active_jobs(w.active_jobs());
+                                *guard = Some(w);
+                                log_ref.push_log(format!(
+                                    "[watcher] Auto-monitoring started after network mount became available (attempt {}): {}",
+                                    attempt, retry_dir
+                                ));
+                                info!("Delayed auto-monitoring resumed on attempt {} for {:?}", attempt, retry_dir);
+                                return;
+                            }
+                        }
+                    }
+                    log_ref.push_log(format!(
+                        "[watcher] Timed out waiting 10m for '{}' on startup — use 'Start Folder Monitoring' once connected.",
+                        retry_dir
+                    ));
+                });
+            }
+
             // Manage global application state
             app.manage(AppState {
                 db,
                 ocr_manager,
                 coordinator,
-                watcher: Arc::new(Mutex::new(watcher_instance)),
+                watcher: watcher_arc,
                 job_tx,
             });
 

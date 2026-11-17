@@ -26,13 +26,38 @@ impl FileStabilityChecker {
         }
     }
 
+    /// Returns true if a file looks like a temporary browser/Office/sync partial file.
+    pub fn is_temporary_sync_file(path: &Path) -> bool {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .trim()
+            .to_lowercase();
+        if name.is_empty() {
+            return false;
+        }
+        if name.starts_with("~$") || name.ends_with('~') {
+            return true;
+        }
+        [".tmp", ".part", ".crdownload", ".partial", ".download"]
+            .iter()
+            .any(|ext| name.ends_with(ext))
+    }
+
     /// Recursively computes snapshot (file count, total bytes, latest mtime) of directory.
     pub fn take_snapshot(dir_path: &Path) -> Result<FolderSnapshot, std::io::Error> {
         let mut file_count = 0;
         let mut total_size = 0;
         let mut latest_mtime = std::time::SystemTime::UNIX_EPOCH;
 
-        for entry in WalkDir::new(dir_path).into_iter().filter_map(|e| e.ok()) {
+        for entry_res in WalkDir::new(dir_path) {
+            let entry = entry_res.map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Directory read error during snapshot: {}", e),
+                )
+            })?;
             if entry.file_type().is_file() {
                 file_count += 1;
                 let metadata = entry.metadata()?;
@@ -52,10 +77,21 @@ impl FileStabilityChecker {
         })
     }
 
-    /// Verifies all files in directory can be opened for reading (ensuring Windows file lock is released).
+    /// Verifies all files in directory are non-temporary and can be opened for reading (ensuring Windows file lock is released).
     pub fn can_open_all_files(dir_path: &Path) -> bool {
-        for entry in WalkDir::new(dir_path).into_iter().filter_map(|e| e.ok()) {
+        for entry_res in WalkDir::new(dir_path) {
+            let entry = match entry_res {
+                Ok(e) => e,
+                Err(e) => {
+                    debug!("Directory walk error during lock check on {:?}: {}", dir_path, e);
+                    return false;
+                }
+            };
             if entry.file_type().is_file() {
+                if Self::is_temporary_sync_file(entry.path()) {
+                    debug!("Temporary/partial file still present in {:?}: {:?}", dir_path, entry.path());
+                    return false;
+                }
                 match File::open(entry.path()) {
                     Ok(_) => {}
                     Err(e) => {

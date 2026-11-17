@@ -155,12 +155,20 @@ impl CompanyMatcher {
         for alias in aliases {
             let norm_alias = ThaiNormalizer::clean_company_name(&alias.alias);
             if norm_alias == clean_query || Self::similarity_ratio(&norm_alias, &clean_query) >= 95.0 {
-                // Find canonical company in directory
+                // Find canonical company in directory (match Primary or Alternate name)
+                let canon_clean = ThaiNormalizer::clean_company_name(&alias.canonical_company_name);
                 if let Some(target) = directory.iter().find(|c| {
                     c.active
-                        && (ThaiNormalizer::clean_company_name(&c.company_name)
-                            == ThaiNormalizer::clean_company_name(&alias.canonical_company_name)
-                            || c.company_name == alias.canonical_company_name)
+                        && (c.company_name == alias.canonical_company_name
+                            || ThaiNormalizer::clean_company_name(&c.company_name) == canon_clean
+                            || c.alternative_name
+                                .as_deref()
+                                .map(|alt| {
+                                    alt == alias.canonical_company_name
+                                        || (!canon_clean.is_empty()
+                                            && ThaiNormalizer::clean_company_name(alt) == canon_clean)
+                                })
+                                .unwrap_or(false))
                 }) {
                     return MatchResult {
                         query: query.to_string(),
@@ -219,6 +227,24 @@ impl CompanyMatcher {
                 if score_alt > best_score {
                     best_score = score_alt;
                     matched_field = "alternative_name";
+                }
+            }
+
+            if let Some(ref notes) = company.notes {
+                let low_note = notes.trim().to_lowercase();
+                let is_boilerplate = low_note.is_empty()
+                    || low_note.len() < 3
+                    || low_note.contains("imported from google sheet")
+                    || low_note.ends_with(" tab")
+                    || low_note == "dv"
+                    || low_note == "ov"
+                    || low_note.contains("approved in ui");
+                if !is_boilerplate {
+                    let score_note = score_against(notes);
+                    if score_note > best_score {
+                        best_score = score_note;
+                        matched_field = "notes";
+                    }
                 }
             }
 
@@ -400,12 +426,27 @@ impl CompanyMatcher {
             }
         }
 
-        // Collect non-generic corporate email domains extracted from the document
-        let doc_domains: HashSet<String> = extracted_emails
+        // Collect all valid lowercased extracted emails (supports exact Gmail / generic email matches)
+        // plus non-generic corporate email domains for domain-level matching.
+        let doc_exact_emails: HashSet<String> = extracted_emails
+            .iter()
+            .map(|e| e.trim().to_lowercase())
+            .filter(|e| e.contains('@') && !e.is_empty())
+            .collect();
+
+        let doc_domains: HashSet<String> = doc_exact_emails
             .iter()
             .filter_map(|e| e.split('@').nth(1).map(|d| d.trim().to_lowercase()))
             .filter(|d| !d.is_empty() && !GENERIC_DOMAINS.contains(&d.as_str()))
             .collect();
+
+        let company_shares_exact_email = |comp: &CompanyCacheEntry| -> bool {
+            !doc_exact_emails.is_empty()
+                && comp.email.split([',', ';']).any(|single| {
+                    let s = single.trim().to_lowercase();
+                    !s.is_empty() && doc_exact_emails.contains(&s)
+                })
+        };
 
         // Check Signal 2: Learned Name Variants directly in learning_memory
         for cand in &valid {
@@ -455,31 +496,37 @@ impl CompanyMatcher {
                 review_threshold,
             );
 
-            // Apply learned email domain & approval frequency priors on matched candidate
+            // Apply exact email, learned email domain & approval frequency priors on matched candidate
             if let Some(ref matched_comp) = res.matched_company {
                 let mut extra_boost = 0.0_f64;
 
-                let comp_domain_hit = matched_comp.email.split([',', ';']).any(|single| {
-                    single
-                        .trim()
-                        .split('@')
-                        .nth(1)
-                        .map(|d| d.trim().to_lowercase())
-                        .map(|dom| !GENERIC_DOMAINS.contains(&dom.as_str()) && doc_domains.contains(&dom))
-                        .unwrap_or(false)
-                });
-                if comp_domain_hit {
-                    extra_boost += 8.0;
-                }
-
-                let learned_email_hit = memories.iter().any(|m| {
-                    m.signal_type == "email_domain"
-                        && doc_domains.contains(&m.signal_value.to_lowercase())
-                        && m.canonical_company_name
-                            .eq_ignore_ascii_case(&matched_comp.company_name)
-                });
-                if learned_email_hit && extra_boost < 8.0 {
-                    extra_boost += 8.0;
+                if company_shares_exact_email(matched_comp) {
+                    extra_boost += 14.0;
+                } else {
+                    let comp_domain_hit = matched_comp.email.split([',', ';']).any(|single| {
+                        single
+                            .trim()
+                            .split('@')
+                            .nth(1)
+                            .map(|d| d.trim().to_lowercase())
+                            .map(|dom| {
+                                !GENERIC_DOMAINS.contains(&dom.as_str()) && doc_domains.contains(&dom)
+                            })
+                            .unwrap_or(false)
+                    });
+                    if comp_domain_hit {
+                        extra_boost += 8.0;
+                    } else {
+                        let learned_email_hit = memories.iter().any(|m| {
+                            m.signal_type == "email_domain"
+                                && doc_domains.contains(&m.signal_value.to_lowercase())
+                                && m.canonical_company_name
+                                    .eq_ignore_ascii_case(&matched_comp.company_name)
+                        });
+                        if learned_email_hit {
+                            extra_boost += 8.0;
+                        }
+                    }
                 }
 
                 let freq_hits: i64 = memories
@@ -497,6 +544,9 @@ impl CompanyMatcher {
 
                 if extra_boost > 0.0 && res.confidence > 0.0 {
                     res.confidence = ((res.confidence + extra_boost).min(100.0) * 10.0).round() / 10.0;
+                    if res.is_ambiguous && company_shares_exact_email(matched_comp) {
+                        res.is_ambiguous = false;
+                    }
                     if !res.is_ambiguous {
                         res.category = if res.confidence >= verified_threshold {
                             "verified".to_string()
@@ -523,6 +573,91 @@ impl CompanyMatcher {
                 best_result = Some((res, is_th));
             }
         }
+
+        let match_by_exact_email = |preferred_q: &str| -> Option<MatchResult> {
+            if doc_exact_emails.is_empty() {
+                return None;
+            }
+            let mut exact_matches: Vec<&CompanyCacheEntry> = directory
+                .iter()
+                .filter(|c| c.active && !ThaiNormalizer::is_ignored_self_company(&c.company_name))
+                .filter(|c| company_shares_exact_email(c))
+                .collect();
+            exact_matches.dedup_by(|a, b| a.company_name == b.company_name);
+
+            if exact_matches.is_empty() {
+                return None;
+            }
+            if exact_matches.len() == 1 {
+                let comp = exact_matches[0];
+                return Some(MatchResult {
+                    query: if !preferred_q.is_empty() {
+                        preferred_q.to_string()
+                    } else {
+                        comp.company_name.clone()
+                    },
+                    matched_company: Some(comp.clone()),
+                    confidence: 99.0,
+                    category: if 99.0 >= verified_threshold {
+                        "verified".to_string()
+                    } else {
+                        "high".to_string()
+                    },
+                    is_ambiguous: false,
+                    matched_by: "exact_email".to_string(),
+                });
+            }
+
+            // Multiple Sheet rows share the exact extracted email: disambiguate using document company candidates
+            let sharing_owned: Vec<CompanyCacheEntry> =
+                exact_matches.iter().map(|c| (*c).clone()).collect();
+            let mut best_combo: Option<MatchResult> = None;
+            for cand in &valid {
+                let sub = Self::match_company(
+                    &cand.name,
+                    &sharing_owned,
+                    aliases,
+                    verified_threshold,
+                    high_threshold,
+                    review_threshold,
+                );
+                if sub.category != "no_match" && !sub.is_ambiguous {
+                    let take = match &best_combo {
+                        None => true,
+                        Some(curr) => sub.confidence > curr.confidence,
+                    };
+                    if take {
+                        best_combo = Some(sub);
+                    }
+                }
+            }
+            if let Some(mut combo) = best_combo {
+                combo.confidence = ((combo.confidence + 14.0).min(100.0) * 10.0).round() / 10.0;
+                combo.category = if combo.confidence >= verified_threshold {
+                    "verified".to_string()
+                } else {
+                    "high".to_string()
+                };
+                combo.matched_by = "exact_email_name_combo".to_string();
+                if !preferred_q.is_empty() {
+                    combo.query = preferred_q.to_string();
+                }
+                return Some(combo);
+            }
+
+            Some(MatchResult {
+                query: if !preferred_q.is_empty() {
+                    preferred_q.to_string()
+                } else {
+                    exact_matches[0].company_name.clone()
+                },
+                matched_company: Some(exact_matches[0].clone()),
+                confidence: 78.0,
+                category: "review".to_string(),
+                is_ambiguous: true,
+                matched_by: "ambiguous_shared_email".to_string(),
+            })
+        };
 
         let match_by_email_domain = |preferred_q: &str| -> Option<MatchResult> {
             if doc_domains.is_empty() {
@@ -577,9 +712,13 @@ impl CompanyMatcher {
         };
 
         if let Some((mut chosen, _)) = best_result {
-            if chosen.category == "no_match" {
-                if let Some(domain_res) = match_by_email_domain(&preferred_query) {
-                    chosen = domain_res;
+            if chosen.category == "no_match" || chosen.is_ambiguous {
+                if let Some(exact_res) = match_by_exact_email(&preferred_query) {
+                    chosen = exact_res;
+                } else if chosen.category == "no_match" {
+                    if let Some(domain_res) = match_by_email_domain(&preferred_query) {
+                        chosen = domain_res;
+                    }
                 }
             }
 
@@ -587,6 +726,10 @@ impl CompanyMatcher {
                 chosen.query = preferred_query;
             }
             return chosen;
+        }
+
+        if let Some(exact_res) = match_by_exact_email(&preferred_query) {
+            return exact_res;
         }
 
         if let Some(domain_res) = match_by_email_domain(&preferred_query) {

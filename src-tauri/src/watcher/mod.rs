@@ -45,6 +45,18 @@ impl FolderWatcher {
         if name.starts_with('.') {
             return false;
         }
+        let low = name.to_lowercase();
+        if low.starts_with("new folder") || low.starts_with("โฟลเดอร์ใหม่") {
+            let age_secs = std::fs::metadata(path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            if age_secs < 20 {
+                return false;
+            }
+        }
         // Wait until a user-created "New folder" has at least 1 file before locking it,
         // so renaming an empty folder on a network share does not misfire.
         std::fs::read_dir(path)

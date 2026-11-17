@@ -36,6 +36,8 @@ pub struct GasDeliveryRequest {
     pub body: String,
     #[serde(default)]
     pub attachment_mode: String,
+    #[serde(default)]
+    pub force_drive_link: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<EmailAttachmentPayload>,
 }
@@ -194,6 +196,42 @@ impl EmailDeliveryClient {
         attachment_mode: &str,
         attachments: Vec<EmailAttachmentPayload>,
     ) -> Result<GasDeliveryResponse, EmailError> {
+        self.send_po_email_with_options(
+            gas_url,
+            auth_secret,
+            tx_id,
+            po_number,
+            company_name,
+            recipient_email,
+            drive_file_id,
+            idempotency_key,
+            subject_template,
+            body_template,
+            attachment_mode,
+            attachments,
+            false,
+        )
+        .await
+    }
+
+    /// Delivers PO package with explicit attachment mode, inline attachments, and Drive link enforcement.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_po_email_with_options(
+        &self,
+        gas_url: &str,
+        auth_secret: &str,
+        tx_id: &str,
+        po_number: &str,
+        company_name: &str,
+        recipient_email: &str,
+        drive_file_id: Option<&str>,
+        idempotency_key: &str,
+        subject_template: &str,
+        body_template: &str,
+        attachment_mode: &str,
+        attachments: Vec<EmailAttachmentPayload>,
+        force_drive_link: bool,
+    ) -> Result<GasDeliveryResponse, EmailError> {
         if gas_url.trim().is_empty() {
             return Err(EmailError::ConfigMissing(
                 "Google Apps Script Webhook URL is not configured".to_string(),
@@ -222,6 +260,7 @@ impl EmailDeliveryClient {
                 subject: subject.clone(),
                 body: body.clone(),
                 attachment_mode: attachment_mode.to_string(),
+                force_drive_link,
                 attachments: attachments.clone(),
             };
 
@@ -240,8 +279,32 @@ impl EmailDeliveryClient {
                 match self.client.post(gas_url).json(&payload).send().await {
                     Ok(resp) => {
                         let status_code = resp.status();
+                        let raw_body = resp.text().await.unwrap_or_default();
                         if status_code.is_success() {
-                            let gas_resp: GasDeliveryResponse = resp.json().await?;
+                            let gas_resp: GasDeliveryResponse = match serde_json::from_str(&raw_body) {
+                                Ok(parsed) => parsed,
+                                Err(parse_err) => {
+                                    let low_body = raw_body.to_lowercase();
+                                    let snippet: String = raw_body.chars().take(220).collect();
+                                    let hint = if low_body.contains("<!doctype html") || low_body.contains("<html") {
+                                        if low_body.contains("servicelogin") || low_body.contains("accounts.google.com") {
+                                            "Google Apps Script returned a login/permission HTML page — verify Web App Execute as 'Me' & Who has access 'Anyone'."
+                                        } else if low_body.contains("too many times") || low_body.contains("quota") {
+                                            "Google Apps Script daily Gmail/execution quota exceeded."
+                                        } else {
+                                            "Google Apps Script returned an HTML error page instead of JSON."
+                                        }
+                                    } else {
+                                        "Unexpected non-JSON response from Google Apps Script."
+                                    };
+                                    return Err(EmailError::DeliveryFailed(format!(
+                                        "{} ({}) [{}]",
+                                        hint,
+                                        parse_err,
+                                        snippet.replace(['\r', '\n'], " ")
+                                    )));
+                                }
+                            };
                             if gas_resp.status == "failed" {
                                 let err_msg = gas_resp.error.unwrap_or_else(|| "Unknown GAS error".to_string());
                                 if err_msg.to_lowercase().contains("unauthorized") {
@@ -264,10 +327,10 @@ impl EmailDeliveryClient {
                             backoff_ms *= 2;
                             continue;
                         } else {
-                            let err_text = resp.text().await.unwrap_or_default();
+                            let snippet: String = raw_body.chars().take(280).collect();
                             return Err(EmailError::DeliveryFailed(format!(
                                 "GAS error (HTTP {}): {}",
-                                status_code, err_text
+                                status_code, snippet
                             )));
                         }
                     }

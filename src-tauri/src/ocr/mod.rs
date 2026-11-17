@@ -135,6 +135,12 @@ struct WorkerProcess {
     reader: BufReader<ChildStdout>,
 }
 
+impl Drop for WorkerProcess {
+    fn drop(&mut self) {
+        let _ = self._child.start_kill();
+    }
+}
+
 #[derive(Clone)]
 pub struct OcrManager {
     worker_script: PathBuf,
@@ -208,7 +214,8 @@ impl OcrManager {
                     cmd.current_dir(parent_dir);
                 }
             }
-            cmd.stdin(Stdio::piped())
+            cmd.kill_on_drop(true)
+                .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
 

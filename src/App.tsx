@@ -364,6 +364,7 @@ export const App: React.FC = () => {
                 recentJobs={jobs}
                 recentEvents={events}
                 companies={companies}
+                aliases={aliases}
                 settings={settings}
                 onSaveSettings={handleSaveSettings}
                 onSelectJob={handleSelectJobForInspection}
@@ -394,6 +395,7 @@ export const App: React.FC = () => {
                 selectedJobId={selectedJobId}
                 jobs={jobs}
                 companies={companies}
+                aliases={aliases}
                 onSelectJob={setSelectedJobId}
                 onRefreshData={loadInitialData}
                 onRetryJob={handleRetryJob}

@@ -26,18 +26,25 @@ import type {
   ApplicationEvent,
   AppSettings,
   CompanyCacheEntry,
+  CompanyAlias,
   OcrResultRecord,
   PagePreviewResponse,
 } from '../types';
 import { api } from '../services/tauri';
 import { resolveUiLang, tr, tx, type UiLang } from '../i18n';
 import { summarizeOcrRecords } from '../utils/ocrRecords';
+import {
+  matchSupplierAgainstDirectory,
+  findCompaniesSharingEmail,
+  splitEmailAddresses,
+} from '../utils/supplierMatcher';
 
 interface OverviewProps {
   stats: DashboardStats;
   recentJobs: Job[];
   recentEvents?: ApplicationEvent[];
   companies?: CompanyCacheEntry[];
+  aliases?: CompanyAlias[];
   settings?: AppSettings;
   onSaveSettings?: (newSettings: AppSettings) => Promise<void>;
   onSelectJob: (jobId: string) => void;
@@ -59,6 +66,7 @@ export const Overview: React.FC<OverviewProps> = ({
   stats,
   recentJobs = [],
   companies = [],
+  aliases = [],
   settings,
   onSaveSettings,
   onSelectJob,
@@ -204,15 +212,54 @@ export const Overview: React.FC<OverviewProps> = ({
   const activeJobPo = activeJob?.po_number || '';
   const activeJobFolder = activeJob?.po_folder_name || '';
 
+  const jobAutoMatch = useMemo(
+    () =>
+      matchSupplierAgainstDirectory(
+        [activeJobCompany, predictions.primaryTh, predictions.primaryEn, activeJobDetected],
+        [activeJobEmail, ...predictions.emails],
+        companies,
+        aliases
+      ),
+    [activeJobCompany, predictions, activeJobDetected, activeJobEmail, companies, aliases]
+  );
+
+  const liveFormMatch = useMemo(
+    () =>
+      matchSupplierAgainstDirectory(
+        [approveCompany, predictions.primaryTh, predictions.primaryEn, activeJobDetected],
+        [approveEmail, ...predictions.emails],
+        companies,
+        aliases
+      ),
+    [approveCompany, predictions, activeJobDetected, approveEmail, companies, aliases]
+  );
+
+  const sameEmailCombos = useMemo(
+    () =>
+      findCompaniesSharingEmail(
+        approveEmail || activeJobEmail || predictions.emails[0] || '',
+        companies
+      ),
+    [approveEmail, activeJobEmail, predictions.emails, companies]
+  );
+
   useEffect(() => {
     setActionMsg(null);
+    const matchedComp =
+      companies.find(
+        (c) =>
+          Boolean(activeJobCompany) &&
+          (c.company_name === activeJobCompany || c.alternative_name === activeJobCompany)
+      ) || jobAutoMatch.company;
     const defaultComp =
-      activeJobCompany || predictions.primaryTh || predictions.primaryEn || activeJobDetected || '';
+      matchedComp?.company_name ||
+      activeJobCompany ||
+      predictions.primaryTh ||
+      predictions.primaryEn ||
+      activeJobDetected ||
+      '';
     setApproveCompany(defaultComp);
-    const dirMatch = companies.find(
-      (c) => c.company_name === defaultComp || c.alternative_name === defaultComp
-    );
-    setApproveEmail(activeJobEmail || dirMatch?.email || predictions.emails[0] || '');
+    setApproveEmail(activeJobEmail || matchedComp?.email || predictions.emails[0] || '');
     setApprovePo(activeJobPo || predictions.poNums[0] || activeJobFolder || '');
   }, [
     activeJobId,
@@ -223,7 +270,90 @@ export const Overview: React.FC<OverviewProps> = ({
     activeJobFolder,
     companies,
     predictions,
+    jobAutoMatch,
   ]);
+
+  const applySheetSupplier = (compName: string) => {
+    const found = companies.find(
+      (c) => c.company_name === compName || c.alternative_name === compName
+    );
+    if (!found) return;
+    setApproveCompany(found.company_name);
+    if (found.email) {
+      setApproveEmail(found.email);
+    }
+  };
+
+  const handleDetectedSupplierPillClick = (rawName: string) => {
+    const matched = matchSupplierAgainstDirectory(
+      [rawName],
+      [approveEmail, ...predictions.emails],
+      companies,
+      aliases
+    );
+    if (matched.company && matched.score >= 78) {
+      setApproveCompany(matched.company.company_name);
+      if (matched.company.email) {
+        setApproveEmail(matched.company.email);
+      }
+    } else {
+      setApproveCompany(rawName);
+    }
+  };
+
+  const handleDetectedEmailPillClick = (emailVal: string) => {
+    setApproveEmail(emailVal);
+    const sharing = findCompaniesSharingEmail(emailVal, companies);
+    if (sharing.length === 1) {
+      setApproveCompany(sharing[0].company_name);
+    } else if (sharing.length > 1) {
+      const best = matchSupplierAgainstDirectory(
+        [approveCompany, predictions.primaryTh, predictions.primaryEn, activeJobDetected],
+        [emailVal],
+        sharing,
+        aliases
+      );
+      if (best.company) {
+        setApproveCompany(best.company.company_name);
+      }
+    }
+  };
+
+  const handleApproveCompanyInput = (val: string) => {
+    setApproveCompany(val);
+    const matched = matchSupplierAgainstDirectory(
+      [val],
+      [approveEmail, ...predictions.emails],
+      companies,
+      aliases
+    );
+    if (matched.company && matched.score >= 88 && matched.company.email) {
+      const emailAlreadyBelongs =
+        splitEmailAddresses(approveEmail).length > 0 &&
+        sameEmailCombos.some((c) => c.id === matched.company?.id);
+      if (!emailAlreadyBelongs) {
+        setApproveEmail(matched.company.email);
+      }
+    }
+  };
+
+  const handleApproveEmailInput = (val: string) => {
+    setApproveEmail(val);
+    const sharing = findCompaniesSharingEmail(val, companies);
+    if (sharing.length === 1) {
+      setApproveCompany(sharing[0].company_name);
+    } else if (sharing.length > 1) {
+      const best = matchSupplierAgainstDirectory(
+        [approveCompany, predictions.primaryTh, predictions.primaryEn, activeJobDetected],
+        [val],
+        sharing,
+        aliases
+      );
+      if (best.company) {
+        setApproveCompany(best.company.company_name);
+      }
+    }
+  };
 
   const isManualOnly =
     !settings ||
@@ -786,7 +916,7 @@ export const Overview: React.FC<OverviewProps> = ({
                     {predictions.primaryTh && (
                       <button
                         type="button"
-                        onClick={() => setApproveCompany(predictions.primaryTh!)}
+                        onClick={() => handleDetectedSupplierPillClick(predictions.primaryTh!)}
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/25 hover:bg-emerald-500/20"
                       >
                         <Languages className="w-3 h-3" /> {predictions.primaryTh}
@@ -795,7 +925,7 @@ export const Overview: React.FC<OverviewProps> = ({
                     {predictions.primaryEn && (
                       <button
                         type="button"
-                        onClick={() => setApproveCompany(predictions.primaryEn!)}
+                        onClick={() => handleDetectedSupplierPillClick(predictions.primaryEn!)}
                         className="px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-zinc-700 hover:bg-zinc-700"
                       >
                         {predictions.primaryEn}
@@ -805,7 +935,7 @@ export const Overview: React.FC<OverviewProps> = ({
                       <button
                         key={em}
                         type="button"
-                        onClick={() => setApproveEmail(em)}
+                        onClick={() => handleDetectedEmailPillClick(em)}
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/25 hover:bg-blue-500/20 font-mono"
                       >
                         <Mail className="w-3 h-3" /> {em}
@@ -815,18 +945,14 @@ export const Overview: React.FC<OverviewProps> = ({
                 )}
 
                 {companies.length > 0 && (
-                  <div className="text-xs">
-                    <label className="text-zinc-400 block mb-1">
+                  <div className="text-xs space-y-1.5">
+                    <label className="text-zinc-400 block">
                       {tx(lang, 'Choose Supplier from Google Sheet:', 'เลือกชื่อผู้ขายจาก Google Sheet:')}
                     </label>
                     <select
-                      value=""
+                      value={liveFormMatch.company && liveFormMatch.score >= 82 ? liveFormMatch.company.company_name : ''}
                       onChange={(e) => {
-                        const found = companies.find((c) => c.company_name === e.target.value);
-                        if (found) {
-                          setApproveCompany(found.company_name);
-                          setApproveEmail(found.email);
-                        }
+                        if (e.target.value) applySheetSupplier(e.target.value);
                       }}
                       className="w-full bg-zinc-900 border border-zinc-800 text-zinc-200 rounded-lg px-3 py-2 text-xs"
                     >
@@ -839,10 +965,58 @@ export const Overview: React.FC<OverviewProps> = ({
                       </option>
                       {companies.map((c) => (
                         <option key={c.id} value={c.company_name}>
-                          {c.company_name} ({c.email})
+                          {c.vendor_group ? `[${c.vendor_group}] ` : ''}
+                          {c.company_name}
+                          {c.alternative_name ? ` / ${c.alternative_name}` : ''} ({c.email})
                         </option>
                       ))}
                     </select>
+
+                    {liveFormMatch.company && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-[11px] text-emerald-300">
+                        <span>
+                          {tx(lang, 'Sheet Match:', 'ตรงกับ Sheet:')}{' '}
+                          <strong className="text-emerald-200">{liveFormMatch.company.company_name}</strong>
+                          {liveFormMatch.company.alternative_name
+                            ? ` (${liveFormMatch.company.alternative_name})`
+                            : ''}{' '}
+                          · {liveFormMatch.score.toFixed(0)}% ({liveFormMatch.matchedBy})
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => applySheetSupplier(liveFormMatch.company!.company_name)}
+                          className="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100 font-medium"
+                        >
+                          {tx(lang, 'Apply Match', 'ใช้ข้อมูลนี้')}
+                        </button>
+                      </div>
+                    )}
+
+                    {sameEmailCombos.length > 1 && (
+                      <div className="flex flex-wrap items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-300">
+                        <span>
+                          {tx(
+                            lang,
+                            `${sameEmailCombos.length} Sheet companies share this email:`,
+                            `มี ${sameEmailCombos.length} บริษัทใน Sheet ใช้อีเมลนี้ร่วมกัน:`
+                          )}
+                        </span>
+                        {sameEmailCombos.map((comp) => (
+                          <button
+                            key={comp.id}
+                            type="button"
+                            onClick={() => applySheetSupplier(comp.company_name)}
+                            className={`px-2 py-0.5 rounded border text-[11px] transition-colors ${
+                              approveCompany === comp.company_name
+                                ? 'bg-amber-400/25 border-amber-400 text-amber-100 font-semibold'
+                                : 'bg-zinc-900 border-zinc-700 text-zinc-200 hover:bg-zinc-800'
+                            }`}
+                          >
+                            {comp.company_name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -855,7 +1029,7 @@ export const Overview: React.FC<OverviewProps> = ({
                       type="text"
                       required
                       value={approveCompany}
-                      onChange={(e) => setApproveCompany(e.target.value)}
+                      onChange={(e) => handleApproveCompanyInput(e.target.value)}
                       placeholder={tx(lang, 'Supplier company name', 'ชื่อบริษัทผู้ขาย')}
                       className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-blue-500"
                     />
@@ -869,7 +1043,7 @@ export const Overview: React.FC<OverviewProps> = ({
                       type="text"
                       required
                       value={approveEmail}
-                      onChange={(e) => setApproveEmail(e.target.value)}
+                      onChange={(e) => handleApproveEmailInput(e.target.value)}
                       placeholder="ooo@email.com, aaa@gmail.com"
                       className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-blue-500"
                     />

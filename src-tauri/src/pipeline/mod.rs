@@ -543,7 +543,16 @@ impl PipelineCoordinator {
                             }
                             for em in page.parsed.emails {
                                 let em_clean = em.trim().to_string();
+                                let em_low = em_clean.to_lowercase();
+                                let local_part = em_low.split('@').next().unwrap_or("");
+                                let is_automated_sender = local_part.starts_with("noreply")
+                                    || local_part.starts_with("no-reply")
+                                    || local_part.starts_with("no_reply")
+                                    || local_part.starts_with("do-not-reply")
+                                    || local_part.starts_with("donotreply")
+                                    || local_part == "mailer-daemon";
                                 if EmailDeliveryClient::is_valid_email(&em_clean)
+                                    && !is_automated_sender
                                     && !ThaiNormalizer::is_ignored_self_company(&em_clean)
                                     && !all_extracted_emails.iter().any(|x| x.eq_ignore_ascii_case(&em_clean))
                                 {
@@ -815,6 +824,12 @@ impl PipelineCoordinator {
         resolved_po: &str,
         documents: &[crate::document::DiscoveredDocument],
     ) -> Result<Job, String> {
+        static DELIVERY_SEMAPHORE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+        let _delivery_permit = DELIVERY_SEMAPHORE
+            .acquire()
+            .await
+            .map_err(|e| format!("Delivery semaphore unavailable: {}", e))?;
+
         let settings = self.db.get_settings().map_err(|e| e.to_string())?;
         let job_id = job.id.clone();
         let folder_name = job.po_folder_name.clone();
@@ -993,34 +1008,45 @@ impl PipelineCoordinator {
         };
 
         let mut individual_attachments = Vec::new();
+        let mut any_inline_skipped = false;
         if attachment_mode == "individual_files" || attachment_mode == "both" {
             use base64::Engine;
-            const MAX_TOTAL_RAW_BYTES: usize = 18 * 1024 * 1024;
+            // Base64 expands payload ~33%, and GAS UrlFetch/Gmail adds JSON overhead.
+            // 14 MB raw fits comfortably under Google Apps Script's ~20 MB inline limit.
+            const MAX_TOTAL_RAW_BYTES: usize = 14 * 1024 * 1024;
             let mut running_bytes: usize = 0;
 
             for doc in documents {
-                if let Ok(bytes) = std::fs::read(&doc.absolute_path) {
-                    if running_bytes + bytes.len() > MAX_TOTAL_RAW_BYTES {
-                        warn!(
-                            "Skipping extra attachment {:?} because total raw size exceeds 18MB Gmail inline cap",
-                            doc.relative_path
-                        );
-                        continue;
+                match std::fs::read(&doc.absolute_path) {
+                    Ok(bytes) => {
+                        if running_bytes + bytes.len() > MAX_TOTAL_RAW_BYTES {
+                            any_inline_skipped = true;
+                            warn!(
+                                "Skipping inline attachment {:?} ({} bytes): exceeds 14MB safe raw inline cap; Drive link will be included",
+                                doc.relative_path,
+                                bytes.len()
+                            );
+                            continue;
+                        }
+                        running_bytes += bytes.len();
+                        let file_name = doc
+                            .absolute_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&doc.relative_path)
+                            .to_string();
+                        let mime_type = EmailDeliveryClient::mime_type_for_path(&doc.absolute_path).to_string();
+                        let file_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                        individual_attachments.push(crate::email::EmailAttachmentPayload {
+                            file_name,
+                            mime_type,
+                            file_base64,
+                        });
                     }
-                    running_bytes += bytes.len();
-                    let file_name = doc
-                        .absolute_path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(&doc.relative_path)
-                        .to_string();
-                    let mime_type = EmailDeliveryClient::mime_type_for_path(&doc.absolute_path).to_string();
-                    let file_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                    individual_attachments.push(crate::email::EmailAttachmentPayload {
-                        file_name,
-                        mime_type,
-                        file_base64,
-                    });
+                    Err(e) => {
+                        any_inline_skipped = true;
+                        warn!("Failed reading attachment {:?}: {}", doc.relative_path, e);
+                    }
                 }
             }
         }
@@ -1035,11 +1061,12 @@ impl PipelineCoordinator {
         );
         self.db.update_job(&job).ok();
         self.ocr_manager.push_log(format!(
-            "[gmail] Dispatching PO {} to {} (mode={}, inline_files={}, drive_file_id={})",
+            "[gmail] Dispatching PO {} to {} (mode={}, inline_files={}, force_link={}, drive_file_id={})",
             resolved_po,
             recipient_email,
             attachment_mode,
             individual_attachments.len(),
+            any_inline_skipped,
             drive_upload.file_id
         ));
 
@@ -1064,7 +1091,7 @@ impl PipelineCoordinator {
                 error: None,
             })
         } else {
-            self.email_client.send_po_email_with_attachments(
+            self.email_client.send_po_email_with_options(
                 &settings.gas_webhook_url,
                 &settings.gas_auth_secret,
                 &tx_id,
@@ -1077,6 +1104,7 @@ impl PipelineCoordinator {
                 &settings.email_body_template,
                 attachment_mode,
                 individual_attachments,
+                any_inline_skipped,
             ).await
         };
 
@@ -1227,6 +1255,13 @@ pub fn flatten_nested_same_name_dir(parent_dir: &Path) {
 }
 
 pub fn move_folder_to_dir(source_dir: &Path, target_parent: &str) -> std::io::Result<PathBuf> {
+    if !source_dir.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Source directory does not exist: {:?}", source_dir),
+        ));
+    }
+
     let parent = PathBuf::from(target_parent);
     std::fs::create_dir_all(&parent)?;
 
@@ -1239,8 +1274,21 @@ pub fn move_folder_to_dir(source_dir: &Path, target_parent: &str) -> std::io::Re
         return Ok(dest);
     }
 
+    // Never destroy an existing destination folder before a safe copy/rename succeeds;
+    // archive any previous folder at `dest` under a timestamped suffix instead.
     if dest.exists() {
-        std::fs::remove_dir_all(&dest).ok();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let base = folder_name.to_string_lossy();
+        let mut archived = parent.join(format!("{}__prev_{}", base, ts));
+        let mut seq = 1u32;
+        while archived.exists() {
+            archived = parent.join(format!("{}__prev_{}_{}", base, ts, seq));
+            seq += 1;
+        }
+        std::fs::rename(&dest, &archived)?;
     }
 
     let mut last_err = None;
@@ -1253,21 +1301,25 @@ pub fn move_folder_to_dir(source_dir: &Path, target_parent: &str) -> std::io::Re
                 if std::fs::remove_dir_all(source_dir).is_ok() {
                     return Ok(dest);
                 }
+                last_err = Some(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Copied to {:?} but could not remove source {:?}", dest, source_dir),
+                ));
+                // Clean up duplicate copy only if source is still intact and remove failed
+                let _ = std::fs::remove_dir_all(&dest);
             }
             Err(e) => {
+                // Remove partial/incomplete destination copy so we never pretend partial copy succeeded
+                let _ = std::fs::remove_dir_all(&dest);
                 last_err = Some(e);
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(150 * attempt));
     }
 
-    if dest.exists() {
-        Ok(dest)
-    } else {
-        Err(last_err.unwrap_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::Other, "Failed to move folder after 5 retries")
-        }))
-    }
+    Err(last_err.unwrap_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::Other, "Failed to move folder after 5 retries")
+    }))
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {

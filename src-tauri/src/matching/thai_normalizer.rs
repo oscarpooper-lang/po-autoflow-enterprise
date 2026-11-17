@@ -110,10 +110,11 @@ impl ThaiNormalizer {
         let norm = Self::normalize_unicode(text);
         let mut lower = norm.to_lowercase();
 
-        // Strip trailing office branches first
-        let branch_markers = ["(สำนักงานใหญ่)", "สำนักงานใหญ่", "(head office)", "head office"];
-        for marker in branch_markers {
-            lower = lower.replace(marker, " ").trim().to_string();
+        // Strip trailing head office / branch labels so main office & branch docs share one key
+        if let Ok(branch_re) = Regex::new(
+            r"(?i)(?:\(?\s*สำนักงานใหญ่\s*\)?|\(?\s*head\s*office\s*\)?|\(?\s*สาขา(?:ที่)?\s*\d*\s*\)?|\(?\s*\bbranch\s*(?:no\.?\s*)?\d*\s*\)?)",
+        ) {
+            lower = branch_re.replace_all(&lower, " ").trim().to_string();
         }
 
         // Strip Thai prefixes
@@ -164,7 +165,7 @@ impl ThaiNormalizer {
             }
         }
 
-        // Strip English suffixes (longest multi-word suffixes first!)
+        // Strip English & international legal suffixes (longest multi-word suffixes first, boundary-safe)
         let eng_suffixes = [
             "public company limited",
             "limited partnership",
@@ -177,6 +178,12 @@ impl ThaiNormalizer {
             "co. ltd.",
             "co. ltd",
             "co ltd",
+            "pte. ltd.",
+            "pte ltd",
+            "pty. ltd.",
+            "pty ltd",
+            "sdn. bhd.",
+            "sdn bhd",
             "limited",
             "ltd.",
             "ltd",
@@ -186,10 +193,19 @@ impl ThaiNormalizer {
             "incorporated",
             "inc.",
             "inc",
+            "gmbh",
+            "l.l.c.",
+            "llc",
+            "llp",
             "plc.",
             "plc",
             "pcl.",
             "pcl",
+            "s.a.",
+            "k.k.",
+            "b.v.",
+            "ag",
+            "ab",
         ];
 
         let mut eng_changed = true;
@@ -197,9 +213,18 @@ impl ThaiNormalizer {
             eng_changed = false;
             for suffix in &eng_suffixes {
                 if lower.ends_with(suffix) {
-                    lower = lower[..lower.len() - suffix.len()].trim().to_string();
-                    eng_changed = true;
-                    break;
+                    let prefix_end = lower.len() - suffix.len();
+                    let boundary_ok = prefix_end == 0
+                        || lower[..prefix_end]
+                            .chars()
+                            .next_back()
+                            .map(|ch| !ch.is_alphanumeric())
+                            .unwrap_or(true);
+                    if boundary_ok {
+                        lower = lower[..prefix_end].trim_end_matches(|ch: char| ch.is_whitespace() || ch == ',').trim().to_string();
+                        eng_changed = true;
+                        break;
+                    }
                 }
             }
         }

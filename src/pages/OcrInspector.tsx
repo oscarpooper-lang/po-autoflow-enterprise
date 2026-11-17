@@ -24,16 +24,23 @@ import {
   ExternalLink,
   Sparkles,
 } from 'lucide-react';
-import type { Job, OcrResultRecord, CompanyCacheEntry, PagePreviewResponse } from '../types';
+import type { Job, OcrResultRecord, CompanyCacheEntry, CompanyAlias, PagePreviewResponse } from '../types';
 import { api } from '../services/tauri';
 import { StatusBadge } from './Overview';
 import { tr, tx, type UiLang } from '../i18n';
 import { summarizeOcrRecords, type ParsedEntitiesJson } from '../utils/ocrRecords';
+import {
+  matchSupplierAgainstDirectory,
+  findCompaniesSharingEmail,
+  normalizeCompanyKey,
+  splitEmailAddresses,
+} from '../utils/supplierMatcher';
 
 interface OcrInspectorProps {
   selectedJobId?: string;
   jobs: Job[];
   companies: CompanyCacheEntry[];
+  aliases?: CompanyAlias[];
   onSelectJob: (id: string) => void;
   onRefreshData?: () => void;
   onRetryJob?: (jobId: string) => Promise<void> | void;
@@ -109,6 +116,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   selectedJobId,
   jobs = [],
   companies = [],
+  aliases = [],
   onSelectJob,
   onRefreshData,
   onRetryJob,
@@ -258,6 +266,83 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     return Array.from(map.entries());
   }, [ocrRecords]);
 
+  const jobAutoMatch = useMemo(
+    () =>
+      matchSupplierAgainstDirectory(
+        [
+          currentMatchedName,
+          aggregatedEntities.primaryTh,
+          aggregatedEntities.primaryEn,
+          currentDetectedRaw,
+        ],
+        [currentMatchedEmail, ...aggregatedEntities.emails],
+        companies,
+        aliases
+      ),
+    [
+      currentMatchedName,
+      aggregatedEntities,
+      currentDetectedRaw,
+      currentMatchedEmail,
+      companies,
+      aliases,
+    ]
+  );
+
+  const liveSheetMatch = useMemo(
+    () =>
+      matchSupplierAgainstDirectory(
+        [
+          approveCompany,
+          aliasInput,
+          aggregatedEntities.primaryTh,
+          aggregatedEntities.primaryEn,
+          currentDetectedRaw,
+        ],
+        [approveEmail, ...aggregatedEntities.emails],
+        companies,
+        aliases
+      ),
+    [
+      approveCompany,
+      aliasInput,
+      aggregatedEntities,
+      currentDetectedRaw,
+      approveEmail,
+      companies,
+      aliases,
+    ]
+  );
+
+  const sameEmailCombos = useMemo(
+    () =>
+      findCompaniesSharingEmail(
+        approveEmail || currentMatchedEmail || aggregatedEntities.emails[0] || '',
+        companies
+      ),
+    [approveEmail, currentMatchedEmail, aggregatedEntities.emails, companies]
+  );
+
+  const linkedSheetCompany = useMemo(() => {
+    if (selectedCanonical) {
+      const exact = companies.find((c) => c.company_name === selectedCanonical);
+      if (exact) return exact;
+    }
+    const appKey = normalizeCompanyKey(approveCompany);
+    if (appKey) {
+      const byName = companies.find(
+        (c) =>
+          normalizeCompanyKey(c.company_name) === appKey ||
+          normalizeCompanyKey(c.alternative_name) === appKey
+      );
+      if (byName) return byName;
+    }
+    if (liveSheetMatch.company && liveSheetMatch.score >= 82) {
+      return liveSheetMatch.company;
+    }
+    return undefined;
+  }, [selectedCanonical, approveCompany, companies, liveSheetMatch]);
+
   useEffect(() => {
     setActionBanner(null);
     const detectedDefault =
@@ -267,11 +352,18 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
       '';
     setAliasInput(detectedDefault);
 
-    const matchedCanonical =
-      currentMatchedName || companies[0]?.company_name || '';
-    setSelectedCanonical(matchedCanonical);
+    const backendMatchedEntry = currentMatchedName
+      ? companies.find(
+          (c) =>
+            c.company_name === currentMatchedName || c.alternative_name === currentMatchedName
+        )
+      : undefined;
+    const autoEntry = backendMatchedEntry || jobAutoMatch.company || undefined;
+
+    setSelectedCanonical(autoEntry?.company_name || '');
 
     const defaultCompany =
+      autoEntry?.company_name ||
       currentMatchedName ||
       aggregatedEntities.primaryTh ||
       aggregatedEntities.primaryEn ||
@@ -279,14 +371,8 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
       '';
     setApproveCompany(defaultCompany);
 
-    const matchedDir = companies.find(
-      (c) =>
-        c.company_name === defaultCompany ||
-        c.alternative_name === defaultCompany ||
-        c.company_name === currentMatchedName
-    );
     setApproveEmail(
-      currentMatchedEmail || matchedDir?.email || aggregatedEntities.emails[0] || ''
+      currentMatchedEmail || autoEntry?.email || aggregatedEntities.emails[0] || ''
     );
     setApprovePo(
       currentPoNumber || aggregatedEntities.poNumbers[0] || currentJobFolder || ''
@@ -300,15 +386,52 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     currentPoNumber,
     companies,
     aggregatedEntities,
+    jobAutoMatch,
   ]);
 
-  const effectiveCanonical = selectedCanonical || companies[0]?.company_name || '';
+  const effectiveCanonical = selectedCanonical || linkedSheetCompany?.company_name || '';
+
+  const selectLinkedSupplier = (
+    companyName: string,
+    opts?: { syncAliasInput?: string }
+  ) => {
+    if (!companyName) {
+      setSelectedCanonical('');
+      return;
+    }
+    const found = companies.find(
+      (c) => c.company_name === companyName || c.alternative_name === companyName
+    );
+    if (!found) {
+      setSelectedCanonical(companyName);
+      setApproveCompany(companyName);
+      return;
+    }
+    setSelectedCanonical(found.company_name);
+    setApproveCompany(found.company_name);
+    if (found.email) {
+      setApproveEmail(found.email);
+    }
+    if (opts?.syncAliasInput !== undefined) {
+      setAliasInput(opts.syncAliasInput);
+    }
+  };
 
   const handleSaveAlias = async () => {
     if (!aliasInput.trim() || !effectiveCanonical) return;
     setAliasError(null);
     try {
       await api.addCompanyAlias(aliasInput.trim(), effectiveCanonical);
+      const canonEntry = companies.find((c) => c.company_name === effectiveCanonical);
+      if (canonEntry) {
+        setSelectedCanonical(canonEntry.company_name);
+        setApproveCompany(canonEntry.company_name);
+        if (canonEntry.email) {
+          setApproveEmail(canonEntry.email);
+        }
+      } else {
+        setApproveCompany(effectiveCanonical);
+      }
       setAliasSavedSuccess(true);
       onRefreshData?.();
       setTimeout(() => setAliasSavedSuccess(false), 3000);
@@ -434,26 +557,93 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     }
   };
 
+  const handleApproveCompanyInput = (val: string) => {
+    setApproveCompany(val);
+    const matched = matchSupplierAgainstDirectory(
+      [val],
+      [approveEmail, ...aggregatedEntities.emails],
+      companies,
+      aliases
+    );
+    if (matched.company && matched.score >= 82) {
+      setSelectedCanonical(matched.company.company_name);
+      if (matched.score >= 88 && matched.company.email) {
+        const alreadySharing =
+          splitEmailAddresses(approveEmail).length > 0 &&
+          sameEmailCombos.some((c) => c.id === matched.company?.id);
+        if (!alreadySharing) {
+          setApproveEmail(matched.company.email);
+        }
+      }
+    }
+  };
+
+  const handleApproveEmailInput = (val: string) => {
+    setApproveEmail(val);
+    const sharing = findCompaniesSharingEmail(val, companies);
+    if (sharing.length === 1) {
+      setSelectedCanonical(sharing[0].company_name);
+      setApproveCompany(sharing[0].company_name);
+    } else if (sharing.length > 1) {
+      const best = matchSupplierAgainstDirectory(
+        [
+          approveCompany,
+          aliasInput,
+          aggregatedEntities.primaryTh,
+          aggregatedEntities.primaryEn,
+          currentDetectedRaw,
+        ],
+        [val],
+        sharing,
+        aliases
+      );
+      if (best.company) {
+        setSelectedCanonical(best.company.company_name);
+        setApproveCompany(best.company.company_name);
+      }
+    }
+  };
+
+  const handleAliasInputChange = (val: string) => {
+    setAliasInput(val);
+    const matched = matchSupplierAgainstDirectory(
+      [val],
+      [approveEmail, ...aggregatedEntities.emails],
+      companies,
+      aliases
+    );
+    if (matched.company && matched.score >= 86) {
+      setSelectedCanonical(matched.company.company_name);
+    }
+  };
+
+  const handleDetectedSupplierTextClick = (rawName: string) => {
+    const cleaned = rawName.trim();
+    if (!cleaned) return;
+    setAliasInput(cleaned);
+    const matched = matchSupplierAgainstDirectory(
+      [cleaned],
+      [approveEmail, ...aggregatedEntities.emails],
+      companies,
+      aliases
+    );
+    if (matched.company && matched.score >= 78) {
+      selectLinkedSupplier(matched.company.company_name);
+    } else {
+      setApproveCompany(cleaned);
+    }
+  };
+
   const handleBoxClick = (text?: string) => {
     if (!text) return;
     const cleaned = text.trim();
     if (!cleaned) return;
     if (cleaned.includes('@') && cleaned.includes('.')) {
-      setApproveEmail(cleaned);
+      handleApproveEmailInput(cleaned);
     } else if (/^PO[-\s]?\d{4,}/i.test(cleaned)) {
       setApprovePo(cleaned);
     } else {
-      setAliasInput(cleaned);
-      setApproveCompany(cleaned);
-    }
-  };
-
-  const pickDirectoryCompanyForApprove = (companyName: string) => {
-    const found = companies.find((c) => c.company_name === companyName);
-    if (found) {
-      setApproveCompany(found.company_name);
-      setApproveEmail(found.email);
-      setSelectedCanonical(found.company_name);
+      handleDetectedSupplierTextClick(cleaned);
     }
   };
 
@@ -898,8 +1088,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                 disabled={!aggregatedEntities.primaryTh}
                 onClick={() => {
                   if (aggregatedEntities.primaryTh) {
-                    setApproveCompany(aggregatedEntities.primaryTh);
-                    setAliasInput(aggregatedEntities.primaryTh);
+                    handleDetectedSupplierTextClick(aggregatedEntities.primaryTh);
                   }
                 }}
                 className="p-2.5 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-left hover:bg-emerald-500/10 disabled:opacity-60"
@@ -917,8 +1106,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                 disabled={!aggregatedEntities.primaryEn}
                 onClick={() => {
                   if (aggregatedEntities.primaryEn) {
-                    setApproveCompany(aggregatedEntities.primaryEn);
-                    setAliasInput(aggregatedEntities.primaryEn);
+                    handleDetectedSupplierTextClick(aggregatedEntities.primaryEn);
                   }
                 }}
                 className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 text-left hover:bg-zinc-800/80 disabled:opacity-60"
@@ -948,7 +1136,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                   <button
                     key={em}
                     type="button"
-                    onClick={() => setApproveEmail(em)}
+                    onClick={() => handleApproveEmailInput(em)}
                     className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/25 hover:bg-cyan-500/20 font-mono"
                   >
                     <Mail className="w-3 h-3" /> {em}
@@ -1095,15 +1283,13 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
               )}
 
               {companies.length > 0 && (
-                <div className="text-xs">
-                  <label className="text-zinc-400 text-[11px] block mb-1">
+                <div className="text-xs space-y-1.5">
+                  <label className="text-zinc-400 text-[11px] block">
                     {tx(lang, 'Pick Supplier from Google Sheet:', 'เลือกผู้ขายจาก Google Sheet:')}
                   </label>
                   <select
-                    value=""
-                    onChange={(e) => {
-                      if (e.target.value) pickDirectoryCompanyForApprove(e.target.value);
-                    }}
+                    value={linkedSheetCompany?.company_name || ''}
+                    onChange={(e) => selectLinkedSupplier(e.target.value)}
                     className="w-full bg-zinc-900 border border-zinc-800 text-zinc-200 rounded-lg px-2.5 py-2 font-medium"
                   >
                     <option value="">
@@ -1111,10 +1297,58 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                     </option>
                     {companies.map((c) => (
                       <option key={c.id} value={c.company_name}>
-                        {c.company_name} ({c.email})
+                        {c.vendor_group ? `[${c.vendor_group}] ` : ''}
+                        {c.company_name}
+                        {c.alternative_name ? ` / ${c.alternative_name}` : ''} ({c.email})
                       </option>
                     ))}
                   </select>
+
+                  {liveSheetMatch.company && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-[11px] text-emerald-300">
+                      <span>
+                        {tx(lang, 'Auto Sheet Match:', 'ตรงกับ Sheet อัตโนมัติ:')}{' '}
+                        <strong className="text-emerald-200">{liveSheetMatch.company.company_name}</strong>
+                        {liveSheetMatch.company.alternative_name
+                          ? ` (${liveSheetMatch.company.alternative_name})`
+                          : ''}{' '}
+                        · {liveSheetMatch.score.toFixed(0)}% ({liveSheetMatch.matchedBy})
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => selectLinkedSupplier(liveSheetMatch.company!.company_name)}
+                        className="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100 font-medium"
+                      >
+                        {tx(lang, 'Sync Both', 'ซิงก์ทั้ง 2 ช่อง')}
+                      </button>
+                    </div>
+                  )}
+
+                  {sameEmailCombos.length > 1 && (
+                    <div className="flex flex-wrap items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-300">
+                      <span>
+                        {tx(
+                          lang,
+                          `${sameEmailCombos.length} suppliers share this email:`,
+                          `มี ${sameEmailCombos.length} บริษัทใช้อีเมลนี้:`
+                        )}
+                      </span>
+                      {sameEmailCombos.map((comp) => (
+                        <button
+                          key={comp.id}
+                          type="button"
+                          onClick={() => selectLinkedSupplier(comp.company_name)}
+                          className={`px-2 py-0.5 rounded border text-[11px] transition-colors ${
+                            effectiveCanonical === comp.company_name || approveCompany === comp.company_name
+                              ? 'bg-amber-400/25 border-amber-400 text-amber-100 font-semibold'
+                              : 'bg-zinc-900 border-zinc-700 text-zinc-200 hover:bg-zinc-800'
+                          }`}
+                        >
+                          {comp.company_name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1127,7 +1361,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                     type="text"
                     required
                     value={approveCompany}
-                    onChange={(e) => setApproveCompany(e.target.value)}
+                    onChange={(e) => handleApproveCompanyInput(e.target.value)}
                     placeholder={tx(lang, 'Supplier company name', 'ชื่อบริษัทผู้ขาย')}
                     className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-2.5 py-2"
                   />
@@ -1142,7 +1376,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                       type="text"
                       required
                       value={approveEmail}
-                      onChange={(e) => setApproveEmail(e.target.value)}
+                      onChange={(e) => handleApproveEmailInput(e.target.value)}
                       placeholder="ooo@email.com, aaa@gmail.com"
                       className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-2.5 py-2 font-mono"
                     />
@@ -1191,10 +1425,15 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
 
           {/* Save Alternate Supplier Name */}
           <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 space-y-3">
-            <span className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
-              <BookmarkPlus className="w-4 h-4 text-blue-400" />
-              {tx(lang, 'Save Alternate Supplier Name', 'บันทึกชื่อเรียกสำรองของบริษัทผู้ขาย')}
-            </span>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
+                <BookmarkPlus className="w-4 h-4 text-blue-400" />
+                {tx(lang, 'Save Alternate Supplier Name', 'บันทึกชื่อเรียกสำรองของบริษัทผู้ขาย')}
+              </span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/20">
+                {tx(lang, 'Linked ↔ Send', 'ซิงก์กับช่องส่งเมล')}
+              </span>
+            </div>
 
             <div className="space-y-2.5 text-xs">
               <div>
@@ -1204,7 +1443,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                 <input
                   type="text"
                   value={aliasInput}
-                  onChange={(e) => setAliasInput(e.target.value)}
+                  onChange={(e) => handleAliasInputChange(e.target.value)}
                   placeholder={tx(lang, 'e.g. ห้างหุ้นส่วนจำกัด พศินสุข', 'เช่น ห้างหุ้นส่วนจำกัด พศินสุข')}
                   className="w-full bg-zinc-900 border border-zinc-800 text-zinc-200 rounded-lg px-2.5 py-2"
                 />
@@ -1216,17 +1455,24 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                 </label>
                 <select
                   value={effectiveCanonical}
-                  onChange={(e) => setSelectedCanonical(e.target.value)}
+                  onChange={(e) => selectLinkedSupplier(e.target.value)}
                   className="w-full bg-zinc-900 border border-zinc-800 text-zinc-200 rounded-lg px-2.5 py-2"
                 >
                   {companies.length === 0 ? (
                     <option value="">{tx(lang, 'Sync Google Sheets directory first', 'กรุณาซิงก์รายชื่อ Google Sheet ก่อน')}</option>
                   ) : (
-                    companies.map((c) => (
-                      <option key={c.id} value={c.company_name}>
-                        {c.company_name} ({c.email})
+                    <>
+                      <option value="">
+                        {tx(lang, '-- Choose Google Sheet Supplier --', '-- เลือกผู้ขายจาก Google Sheet --')}
                       </option>
-                    ))
+                      {companies.map((c) => (
+                        <option key={c.id} value={c.company_name}>
+                          {c.vendor_group ? `[${c.vendor_group}] ` : ''}
+                          {c.company_name}
+                          {c.alternative_name ? ` / ${c.alternative_name}` : ''} ({c.email})
+                        </option>
+                      ))}
+                    </>
                   )}
                 </select>
               </div>
@@ -1242,7 +1488,11 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
 
               {aliasSavedSuccess && (
                 <div className="p-2 rounded bg-emerald-500/15 text-emerald-300 text-center text-xs border border-emerald-500/30">
-                  {tx(lang, 'Saved! Next PO with this name will match automatically.', 'บันทึกแล้ว! ใบ PO ถัดไปที่ใช้ชื่อนี้จะจับคู่อัตโนมัติทันที')}
+                  {tx(
+                    lang,
+                    'Saved & linked to Approve form! Next PO with this name will match automatically.',
+                    'บันทึกและซิงก์กับฟอร์มส่งอีเมลแล้ว! ใบ PO ถัดไปที่ใช้ชื่อนี้จะจับคู่อัตโนมัติทันที'
+                  )}
                 </div>
               )}
               {aliasError && (

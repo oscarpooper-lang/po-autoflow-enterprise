@@ -1,5 +1,5 @@
 /**
- * PO AutoFlow Enterprise - Google Apps Script All-In-One Cloud Hub (v2.2.0)
+ * PO AutoFlow Enterprise - Google Apps Script All-In-One Cloud Hub (v2.3.0)
  *
  * Capabilities:
  * 1. Private Google Sheets Supplier Directory Reader (SpreadsheetApp + OAuth CSV fallback)
@@ -255,7 +255,9 @@ function doPost(e) {
     let attachments = [];
     let totalAttachedBytes = 0;
     let fileLink = "";
+    let skippedInlineAttachment = false;
     const attachment_mode = payload.attachment_mode || "individual_files";
+    const force_drive_link = Boolean(payload.force_drive_link);
     const inline_attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
 
     // 1. Attach individual previewable files sent directly from desktop app (PDF, PNG, JPG, DOCX, etc.)
@@ -267,6 +269,7 @@ function doPost(e) {
           const rawBytes = Utilities.base64Decode(item.file_base64);
           if (totalAttachedBytes + rawBytes.length > CONFIG.MAX_ATTACHMENT_SIZE_BYTES) {
             console.warn("Skipping attachment " + item.file_name + ": total Gmail attachment limit exceeded");
+            skippedInlineAttachment = true;
             continue;
           }
           const mime = item.mime_type || inferMimeType(item.file_name);
@@ -274,12 +277,13 @@ function doPost(e) {
           attachments.push(blob);
           totalAttachedBytes += rawBytes.length;
         } catch (attErr) {
+          skippedInlineAttachment = true;
           console.warn("Notice: Could not decode inline attachment " + item.file_name + ": " + attErr.message);
         }
       }
     }
 
-    // 2. Retrieve archive from Google Drive (for Drive unzip fallback, ZIP mode, or secure link when files >20MB)
+    // 2. Retrieve archive from Google Drive (for Drive unzip fallback, ZIP mode, or secure link when any file exceeds cap)
     if (drive_file_id && !drive_file_id.startsWith("drive_local_")) {
       try {
         const driveFile = DriveApp.getFileById(drive_file_id);
@@ -296,6 +300,8 @@ function doPost(e) {
             if (totalAttachedBytes + blobBytes.length <= CONFIG.MAX_ATTACHMENT_SIZE_BYTES) {
               attachments.push(b.setContentType(inferMimeType(cleanName)).setName(cleanName));
               totalAttachedBytes += blobBytes.length;
+            } else {
+              skippedInlineAttachment = true;
             }
           }
         }
@@ -305,8 +311,13 @@ function doPost(e) {
           totalAttachedBytes += fileSize;
         }
 
-        if (attachments.length === 0 || fileSize > CONFIG.MAX_ATTACHMENT_SIZE_BYTES) {
-          fileLink = "\n\nSecure Google Drive Package Link (Size: " + (fileSize / (1024 * 1024)).toFixed(1) + " MB):\n" + driveFile.getUrl();
+        if (
+          attachments.length === 0 ||
+          fileSize > CONFIG.MAX_ATTACHMENT_SIZE_BYTES ||
+          force_drive_link ||
+          skippedInlineAttachment
+        ) {
+          fileLink = "\n\nSecure Google Drive Package Link (Complete Set, Size: " + (fileSize / (1024 * 1024)).toFixed(1) + " MB):\n" + driveFile.getUrl();
         }
       } catch (err) {
         console.warn("Notice: Could not retrieve Drive file ID (" + drive_file_id + "): " + err.message);
