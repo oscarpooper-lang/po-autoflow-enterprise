@@ -26,6 +26,8 @@ pub struct AppSettings {
     pub gas_auth_secret: String,
     pub email_subject_template: String,
     pub email_body_template: String,
+    #[serde(default)]
+    pub email_cc_default: String,
     pub max_zip_file_mb: u64,
     pub auto_monitoring_active: bool,
     pub dark_mode: bool,
@@ -180,6 +182,7 @@ impl Default for AppSettings {
             gas_auth_secret: "po-autoflow-enterprise-secret-key".to_string(),
             email_subject_template: "Purchase Order - {{PO_NUMBER}} - {{COMPANY_NAME}}".to_string(),
             email_body_template: "Dear {{COMPANY_NAME}},\n\nPlease find attached the Purchase Order documents for your reference.\n\nPO Number: {{PO_NUMBER}}\n\nPlease acknowledge receipt.\n\nBest regards,\nPO Automation System".to_string(),
+            email_cc_default: "".to_string(),
             max_zip_file_mb: 25,
             auto_monitoring_active: false,
             dark_mode: true,

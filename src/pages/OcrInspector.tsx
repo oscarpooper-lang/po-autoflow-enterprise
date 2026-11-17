@@ -24,7 +24,14 @@ import {
   ExternalLink,
   Sparkles,
 } from 'lucide-react';
-import type { Job, OcrResultRecord, CompanyCacheEntry, CompanyAlias, PagePreviewResponse } from '../types';
+import type {
+  Job,
+  OcrResultRecord,
+  CompanyCacheEntry,
+  CompanyAlias,
+  AppSettings,
+  PagePreviewResponse,
+} from '../types';
 import { api } from '../services/tauri';
 import { StatusBadge } from './Overview';
 import { tr, tx, type UiLang } from '../i18n';
@@ -41,6 +48,7 @@ interface OcrInspectorProps {
   jobs: Job[];
   companies: CompanyCacheEntry[];
   aliases?: CompanyAlias[];
+  settings?: AppSettings;
   onSelectJob: (id: string) => void;
   onRefreshData?: () => void;
   onRetryJob?: (jobId: string) => Promise<void> | void;
@@ -117,6 +125,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   jobs = [],
   companies = [],
   aliases = [],
+  settings,
   onSelectJob,
   onRefreshData,
   onRetryJob,
@@ -144,6 +153,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   // Approve & Dispatch form
   const [approveCompany, setApproveCompany] = useState<string>('');
   const [approveEmail, setApproveEmail] = useState<string>('');
+  const [approveCc, setApproveCc] = useState<string>('');
   const [approvePo, setApprovePo] = useState<string>('');
   const [saveAliasOnApprove, setSaveAliasOnApprove] = useState<boolean>(true);
   const [isSendingApproval, setIsSendingApproval] = useState<boolean>(false);
@@ -374,6 +384,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     setApproveEmail(
       currentMatchedEmail || autoEntry?.email || aggregatedEntities.emails[0] || ''
     );
+    setApproveCc(settings?.email_cc_default || '');
     setApprovePo(
       currentPoNumber || aggregatedEntities.poNumbers[0] || currentJobFolder || ''
     );
@@ -387,6 +398,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     companies,
     aggregatedEntities,
     jobAutoMatch,
+    settings?.email_cc_default,
   ]);
 
   const effectiveCanonical = selectedCanonical || linkedSheetCompany?.company_name || '';
@@ -510,18 +522,20 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
         approveCompany.trim(),
         approveEmail.trim(),
         approvePo.trim() || undefined,
-        saveAliasOnApprove
+        saveAliasOnApprove,
+        approveCc.trim()
       );
+      const ccNote = approveCc.trim() ? ` (CC: ${approveCc.trim()})` : '';
       setActionBanner({
         type: 'success',
         message: tx(
           lang,
           `Approved and delivered PO ${updated.po_number || currentJob.po_folder_name} to ${
             updated.matched_email || approveEmail
-          }.`,
+          }${ccNote}.`,
           `อนุมัติและส่งใบสั่งซื้อ ${updated.po_number || currentJob.po_folder_name} ไปยัง ${
             updated.matched_email || approveEmail
-          } สำเร็จ`
+          }${ccNote} สำเร็จ`
         ),
       });
       onRefreshData?.();
@@ -1393,6 +1407,19 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                       className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-2.5 py-2 font-mono"
                     />
                   </div>
+                </div>
+
+                <div>
+                  <label className="text-zinc-400 text-[11px] block mb-1">
+                    {tx(lang, 'CC (Optional, comma-separated):', 'CC (ไม่บังคับ คั่นหลายอีเมลด้วย ,):')}
+                  </label>
+                  <input
+                    type="text"
+                    value={approveCc}
+                    onChange={(e) => setApproveCc(e.target.value)}
+                    placeholder="yuwanit.n@qtc-energy.com, manager@company.com"
+                    className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-2.5 py-2 font-mono"
+                  />
                 </div>
 
                 <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer select-none">

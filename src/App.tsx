@@ -396,6 +396,7 @@ export const App: React.FC = () => {
                 jobs={jobs}
                 companies={companies}
                 aliases={aliases}
+                settings={settings}
                 onSelectJob={setSelectedJobId}
                 onRefreshData={loadInitialData}
                 onRetryJob={handleRetryJob}

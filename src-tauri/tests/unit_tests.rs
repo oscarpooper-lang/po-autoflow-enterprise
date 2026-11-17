@@ -819,6 +819,21 @@ fn test_safe_move_folder_archives_existing_dest_and_blocks_temp_files() {
     );
 }
 
+#[test]
+fn test_cc_email_normalization() {
+    assert_eq!(EmailDeliveryClient::normalize_cc_list("").unwrap(), "");
+    assert_eq!(EmailDeliveryClient::normalize_cc_list("   , ;  ").unwrap(), "");
+    assert_eq!(
+        EmailDeliveryClient::normalize_cc_list(
+            "yuwanit.n@qtc-energy.com; manager@gmail.com, yuwanit.n@qtc-energy.com"
+        )
+        .unwrap(),
+        "yuwanit.n@qtc-energy.com, manager@gmail.com"
+    );
+    assert!(EmailDeliveryClient::normalize_cc_list("valid@gmail.com, not-an-email").is_err());
+}
+
+
 
 
 

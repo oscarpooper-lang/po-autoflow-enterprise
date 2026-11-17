@@ -177,6 +177,7 @@ export const defaultSettings: AppSettings = {
   gas_auth_secret: 'po-autoflow-enterprise-secret-key',
   email_subject_template: 'Purchase Order - {{PO_NUMBER}} - {{COMPANY_NAME}}',
   email_body_template: 'Dear {{COMPANY_NAME}},\n\nPlease find attached the Purchase Order documents for your reference.\n\nPO Number: {{PO_NUMBER}}\n\nPlease acknowledge receipt.\n\nBest regards,\nPO Automation System',
+  email_cc_default: '',
   max_zip_file_mb: 25,
   auto_monitoring_active: false,
   dark_mode: true,
@@ -511,7 +512,8 @@ export const api = {
     companyName: string,
     recipientEmail: string,
     poNumber?: string,
-    saveAlias = true
+    saveAlias = true,
+    ccEmails?: string
   ): Promise<Job> => {
     if (isTauriEnvironment()) {
       return await invoke<Job>('approve_and_send_job', {
@@ -520,6 +522,7 @@ export const api = {
         recipientEmail,
         poNumber: poNumber || null,
         saveAlias,
+        ccEmails: ccEmails === undefined ? null : ccEmails,
       });
     }
     const existing = mockJobs.find((j) => j.id === jobId) || mockJobs[0];

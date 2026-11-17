@@ -222,6 +222,7 @@ function doPost(e) {
       po_number,
       company_name,
       recipient_email,
+      cc_emails,
       drive_file_id,
       idempotency_key,
       subject,
@@ -236,6 +237,14 @@ function doPost(e) {
     const normalizedRecipients = parseRecipientEmails(recipient_email);
     if (!normalizedRecipients) {
       return jsonError("Invalid recipient email address format: " + recipient_email, 400);
+    }
+
+    let normalizedCc = "";
+    if (cc_emails && String(cc_emails).trim()) {
+      normalizedCc = parseRecipientEmails(String(cc_emails));
+      if (!normalizedCc) {
+        return jsonError("Invalid CC email address format: " + cc_emails, 400);
+      }
     }
 
     // Duplicate protection via Idempotency cache (PropertiesService)
@@ -340,6 +349,10 @@ function doPost(e) {
       body: emailBody
     };
 
+    if (normalizedCc) {
+      mailOptions.cc = normalizedCc;
+    }
+
     if (attachments.length > 0) {
       mailOptions.attachments = attachments;
     }
@@ -355,6 +368,7 @@ function doPost(e) {
       transaction_id: transaction_id || executionId,
       po_number: po_number,
       recipient: normalizedRecipients,
+      cc: normalizedCc || null,
       timestamp: nowIso
     };
     props.setProperty("IDEMP_" + idempotency_key, JSON.stringify(resultRecord));
@@ -365,6 +379,7 @@ function doPost(e) {
       transaction_id: transaction_id,
       po_number: po_number,
       recipient: normalizedRecipients,
+      cc: normalizedCc || null,
       timestamp: nowIso,
       attachment_sent: attachments.length > 0
     })).setMimeType(ContentService.MimeType.JSON);

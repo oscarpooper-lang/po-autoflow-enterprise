@@ -38,6 +38,8 @@ pub struct GasDeliveryRequest {
     pub attachment_mode: String,
     #[serde(default)]
     pub force_drive_link: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cc_emails: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<EmailAttachmentPayload>,
 }
@@ -49,6 +51,8 @@ pub struct GasDeliveryResponse {
     pub transaction_id: Option<String>,
     pub po_number: Option<String>,
     pub recipient: Option<String>,
+    #[serde(default)]
+    pub cc: Option<String>,
     pub timestamp: Option<String>,
     pub duplicate_suppressed: Option<bool>,
     pub attachment_sent: Option<bool>,
@@ -144,6 +148,14 @@ impl EmailDeliveryClient {
         Ok(Self::parse_recipient_emails(raw)?.join(", "))
     }
 
+    /// Normalizes optional CC emails (returns empty string if empty; allows internal company domains).
+    pub fn normalize_cc_list(raw: &str) -> Result<String, String> {
+        if raw.split([',', ';']).all(|part| part.trim().is_empty()) {
+            return Ok(String::new());
+        }
+        Self::normalize_recipient_list(raw)
+    }
+
     /// Validates one or more comma/semicolon-separated email addresses.
     pub fn is_valid_email(email: &str) -> bool {
         Self::parse_recipient_emails(email).is_ok()
@@ -210,11 +222,12 @@ impl EmailDeliveryClient {
             attachment_mode,
             attachments,
             false,
+            "",
         )
         .await
     }
 
-    /// Delivers PO package with explicit attachment mode, inline attachments, and Drive link enforcement.
+    /// Delivers PO package with explicit attachment mode, inline attachments, Drive link enforcement, and optional CC.
     #[allow(clippy::too_many_arguments)]
     pub async fn send_po_email_with_options(
         &self,
@@ -231,6 +244,7 @@ impl EmailDeliveryClient {
         attachment_mode: &str,
         attachments: Vec<EmailAttachmentPayload>,
         force_drive_link: bool,
+        cc_emails: &str,
     ) -> Result<GasDeliveryResponse, EmailError> {
         if gas_url.trim().is_empty() {
             return Err(EmailError::ConfigMissing(
@@ -240,6 +254,8 @@ impl EmailDeliveryClient {
 
         let normalized_recipients = Self::normalize_recipient_list(recipient_email)
             .map_err(|_| EmailError::InvalidEmail(recipient_email.to_string()))?;
+        let normalized_cc = Self::normalize_cc_list(cc_emails)
+            .map_err(EmailError::InvalidEmail)?;
 
         let now_str = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let subject = Self::format_template(subject_template, po_number, company_name, &now_str);
@@ -261,6 +277,7 @@ impl EmailDeliveryClient {
                 body: body.clone(),
                 attachment_mode: attachment_mode.to_string(),
                 force_drive_link,
+                cc_emails: normalized_cc.clone(),
                 attachments: attachments.clone(),
             };
 

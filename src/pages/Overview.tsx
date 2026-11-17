@@ -95,6 +95,7 @@ export const Overview: React.FC<OverviewProps> = ({
   // Inline approval form state
   const [approveCompany, setApproveCompany] = useState('');
   const [approveEmail, setApproveEmail] = useState('');
+  const [approveCc, setApproveCc] = useState('');
   const [approvePo, setApprovePo] = useState('');
   const [saveAlias, setSaveAlias] = useState(true);
   const [isSending, setIsSending] = useState(false);
@@ -260,6 +261,7 @@ export const Overview: React.FC<OverviewProps> = ({
       '';
     setApproveCompany(defaultComp);
     setApproveEmail(activeJobEmail || matchedComp?.email || predictions.emails[0] || '');
+    setApproveCc(settings?.email_cc_default || '');
     setApprovePo(activeJobPo || predictions.poNums[0] || activeJobFolder || '');
   }, [
     activeJobId,
@@ -271,6 +273,7 @@ export const Overview: React.FC<OverviewProps> = ({
     companies,
     predictions,
     jobAutoMatch,
+    settings?.email_cc_default,
   ]);
 
   const applySheetSupplier = (compName: string) => {
@@ -397,18 +400,20 @@ export const Overview: React.FC<OverviewProps> = ({
         approveCompany.trim(),
         approveEmail.trim(),
         approvePo.trim() || undefined,
-        saveAlias
+        saveAlias,
+        approveCc.trim()
       );
+      const ccNote = approveCc.trim() ? ` (CC: ${approveCc.trim()})` : '';
       setActionMsg({
         type: 'success',
         text: tx(
           lang,
           `Sent PO ${updated.po_number || activeJob.po_folder_name} to ${
             updated.matched_email || approveEmail
-          }.`,
+          }${ccNote}.`,
           `ส่งใบสั่งซื้อ ${updated.po_number || activeJob.po_folder_name} ไปยัง ${
             updated.matched_email || approveEmail
-          } สำเร็จ`
+          }${ccNote} สำเร็จ`
         ),
       });
       await onRefreshData?.();
@@ -1058,6 +1063,19 @@ export const Overview: React.FC<OverviewProps> = ({
                       value={approvePo}
                       onChange={(e) => setApprovePo(e.target.value)}
                       placeholder="PO-26004156"
+                      className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="text-zinc-400 block mb-1">
+                      {tx(lang, 'CC (Optional, comma-separated):', 'CC (ไม่บังคับ คั่นหลายอีเมลด้วย ,):')}
+                    </label>
+                    <input
+                      type="text"
+                      value={approveCc}
+                      onChange={(e) => setApproveCc(e.target.value)}
+                      placeholder="yuwanit.n@qtc-energy.com, manager@company.com"
                       className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-blue-500"
                     />
                   </div>

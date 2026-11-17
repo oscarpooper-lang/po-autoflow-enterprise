@@ -807,6 +807,7 @@ impl PipelineCoordinator {
             &recipient_email,
             &resolved_po,
             &documents,
+            None,
         )
         .await?;
 
@@ -823,6 +824,7 @@ impl PipelineCoordinator {
         recipient_email: &str,
         resolved_po: &str,
         documents: &[crate::document::DiscoveredDocument],
+        cc_emails_override: Option<&str>,
     ) -> Result<Job, String> {
         static DELIVERY_SEMAPHORE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
         let _delivery_permit = DELIVERY_SEMAPHORE
@@ -1051,19 +1053,36 @@ impl PipelineCoordinator {
             }
         }
 
+        let raw_cc = match cc_emails_override {
+            Some(ov) => ov.to_string(),
+            None => settings.email_cc_default.clone(),
+        };
+        let clean_cc = EmailDeliveryClient::normalize_cc_list(&raw_cc)?;
+
         // 7. Stage: Triggering Google Apps Script Delivery
         job.status = "sending_email".to_string();
-        job.stage_message = format!(
-            "Dispatching email ({}, {} file(s)) to {} via Apps Script.",
-            attachment_mode,
-            individual_attachments.len(),
-            recipient_email
-        );
+        job.stage_message = if clean_cc.is_empty() {
+            format!(
+                "Dispatching email ({}, {} file(s)) to {} via Apps Script.",
+                attachment_mode,
+                individual_attachments.len(),
+                recipient_email
+            )
+        } else {
+            format!(
+                "Dispatching email ({}, {} file(s)) to {} (CC: {}) via Apps Script.",
+                attachment_mode,
+                individual_attachments.len(),
+                recipient_email,
+                clean_cc
+            )
+        };
         self.db.update_job(&job).ok();
         self.ocr_manager.push_log(format!(
-            "[gmail] Dispatching PO {} to {} (mode={}, inline_files={}, force_link={}, drive_file_id={})",
+            "[gmail] Dispatching PO {} to {}{} (mode={}, inline_files={}, force_link={}, drive_file_id={})",
             resolved_po,
             recipient_email,
+            if clean_cc.is_empty() { String::new() } else { format!(" cc={}", clean_cc) },
             attachment_mode,
             individual_attachments.len(),
             any_inline_skipped,
@@ -1077,7 +1096,12 @@ impl PipelineCoordinator {
             self.db.add_event(
                 Some(&job_id),
                 "info",
-                &format!("[DRY-RUN SIMULATION] Mocked email delivery for PO {} to {}", resolved_po, recipient_email),
+                &format!(
+                    "[DRY-RUN SIMULATION] Mocked email delivery for PO {} to {}{}",
+                    resolved_po,
+                    recipient_email,
+                    if clean_cc.is_empty() { String::new() } else { format!(" (CC: {})", clean_cc) }
+                ),
             ).ok();
             Ok(crate::email::GasDeliveryResponse {
                 status: "accepted".to_string(),
@@ -1085,6 +1109,7 @@ impl PipelineCoordinator {
                 transaction_id: Some(tx_id.clone()),
                 po_number: Some(resolved_po.to_string()),
                 recipient: Some(recipient_email.to_string()),
+                cc: if clean_cc.is_empty() { None } else { Some(clean_cc.clone()) },
                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
                 duplicate_suppressed: Some(false),
                 attachment_sent: Some(true),
@@ -1105,6 +1130,7 @@ impl PipelineCoordinator {
                 attachment_mode,
                 individual_attachments,
                 any_inline_skipped,
+                &clean_cc,
             ).await
         };
 
@@ -1126,7 +1152,14 @@ impl PipelineCoordinator {
 
                 // 8. Stage: Completed & Moved to Sent
                 job.status = "completed".to_string();
-                job.stage_message = format!("Delivered to {}. Execution ID: {:?}", recipient_email, resp.execution_id);
+                job.stage_message = if clean_cc.is_empty() {
+                    format!("Delivered to {}. Execution ID: {:?}", recipient_email, resp.execution_id)
+                } else {
+                    format!(
+                        "Delivered to {} (CC: {}). Execution ID: {:?}",
+                        recipient_email, clean_cc, resp.execution_id
+                    )
+                };
                 job.completed_at = Some(chrono::Utc::now().to_rfc3339());
                 job.updated_at = chrono::Utc::now().to_rfc3339();
                 self.db.update_job(&job).ok();

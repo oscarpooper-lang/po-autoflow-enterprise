@@ -363,6 +363,7 @@ pub async fn approve_and_send_job(
     recipient_email: String,
     po_number: Option<String>,
     save_alias: Option<bool>,
+    cc_emails: Option<String>,
 ) -> Result<Job, String> {
     let clean_company = company_name.trim().to_string();
 
@@ -390,6 +391,13 @@ pub async fn approve_and_send_job(
         .ok_or_else(|| "Job not found".to_string())?;
 
     let settings = state.db.get_settings().map_err(|e| e.to_string())?;
+    let raw_cc = cc_emails
+        .as_deref()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| settings.email_cc_default.clone());
+    let clean_cc = EmailDeliveryClient::normalize_cc_list(&raw_cc)
+        .map_err(|_| format!("Invalid CC email address: '{}'", raw_cc.trim()))?;
+
     let folder_path = state
         .coordinator
         .locate_job_folder(&job, &settings)
@@ -452,7 +460,15 @@ pub async fn approve_and_send_job(
 
     state
         .coordinator
-        .deliver_po_package(&folder_path, job, &clean_company, &clean_email, &resolved_po, &documents)
+        .deliver_po_package(
+            &folder_path,
+            job,
+            &clean_company,
+            &clean_email,
+            &resolved_po,
+            &documents,
+            Some(clean_cc.as_str()),
+        )
         .await
 }
 
@@ -620,9 +636,11 @@ pub async fn send_test_email(
     let client = EmailDeliveryClient::new();
     let tx_id = uuid::Uuid::new_v4().to_string();
     let idemp = format!("test_{}", tx_id);
+    let clean_cc = EmailDeliveryClient::normalize_cc_list(&settings.email_cc_default)
+        .map_err(|_| format!("Invalid default CC email address: '{}'", settings.email_cc_default.trim()))?;
 
     let resp = client
-        .send_po_email(
+        .send_po_email_with_options(
             &settings.gas_webhook_url,
             &settings.gas_auth_secret,
             &tx_id,
@@ -633,6 +651,10 @@ pub async fn send_test_email(
             &idemp,
             "PO AutoFlow Test Email - {{PO_NUMBER}}",
             "This is a verification email from PO AutoFlow Enterprise setup wizard.\n\nEverything is working properly!",
+            "individual_files",
+            Vec::new(),
+            false,
+            &clean_cc,
         )
         .await
         .map_err(|e| e.to_string())?;

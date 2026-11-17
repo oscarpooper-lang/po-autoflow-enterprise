@@ -22,6 +22,7 @@ export interface AppSettings {
   gas_auth_secret: string;
   email_subject_template: string;
   email_body_template: string;
+  email_cc_default?: string;
   max_zip_file_mb: number;
   auto_monitoring_active: boolean;
   dark_mode: boolean;

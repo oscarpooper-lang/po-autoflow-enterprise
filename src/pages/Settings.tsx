@@ -2225,6 +2225,26 @@ export const Settings: React.FC<SettingsProps> = ({
 
               <div>
                 <label className="text-zinc-300 font-semibold block mb-1">
+                  {tx(lang, 'Default CC Emails (Optional, comma-separated):', 'อีเมล CC เริ่มต้น (ไม่บังคับ คั่นหลายอีเมลด้วยเครื่องหมาย ,):')}
+                </label>
+                <input
+                  type="text"
+                  value={formData.email_cc_default || ''}
+                  onChange={(e) => handleChange('email_cc_default', e.target.value)}
+                  placeholder="yuwanit.n@qtc-energy.com, supervisor@company.com"
+                  className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 font-mono"
+                />
+                <p className="text-[11px] text-zinc-500 mt-1">
+                  {tx(
+                    lang,
+                    'Automatically CC’d on auto-sent PO emails and pre-filled in Overview / Documents Viewer.',
+                    'จะถูกใส่เป็น CC อัตโนมัติเมื่อระบบส่งอีเมล และเติมให้ล่วงหน้าในหน้า Overview และ Documents Viewer'
+                  )}
+                </p>
+              </div>
+
+              <div>
+                <label className="text-zinc-300 font-semibold block mb-1">
                   {tx(lang, 'Email Attachment Format (Gmail Preview):', 'รูปแบบไฟล์แนบอีเมล (พรีวิวใน Gmail):')}
                 </label>
                 <select
