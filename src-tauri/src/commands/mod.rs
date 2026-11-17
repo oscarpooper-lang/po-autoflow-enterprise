@@ -1981,6 +1981,131 @@ pub async fn get_ocr_engine_status(state: State<'_, AppState>) -> Result<OcrEngi
     }
 }
 
+#[tauri::command]
+pub fn list_benchmark_candidates(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let settings = state.db.get_settings().map_err(|e| e.to_string())?;
+    let mut files: Vec<String> = Vec::new();
+    let exts = ["pdf", "png", "jpg", "jpeg", "tif", "tiff", "bmp"];
+
+    for dir_str in [
+        &settings.review_dir,
+        &settings.incoming_dir,
+        &settings.processing_dir,
+        &settings.sent_dir,
+    ] {
+        let dir = PathBuf::from(dir_str);
+        if !dir.exists() {
+            continue;
+        }
+        for entry in walkdir::WalkDir::new(&dir).max_depth(3).into_iter().filter_map(|e| e.ok()) {
+            let p = entry.path();
+            if !p.is_file() {
+                continue;
+            }
+            let ext_ok = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| exts.contains(&e.to_lowercase().as_str()))
+                .unwrap_or(false);
+            if ext_ok {
+                let s = p.to_string_lossy().to_string();
+                if !files.contains(&s) {
+                    files.push(s);
+                }
+                if files.len() >= 25 {
+                    return Ok(files);
+                }
+            }
+        }
+    }
+
+    if files.is_empty() {
+        if let Some(proj_root) = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent() {
+            let sample_dir = proj_root.join("sample_data");
+            if sample_dir.exists() {
+                for entry in walkdir::WalkDir::new(&sample_dir).max_depth(3).into_iter().filter_map(|e| e.ok()) {
+                    let p = entry.path();
+                    if p.is_file()
+                        && p.extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| exts.contains(&e.to_lowercase().as_str()))
+                            .unwrap_or(false)
+                    {
+                        files.push(p.to_string_lossy().to_string());
+                        if files.len() >= 10 {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(files)
+}
+
+#[tauri::command]
+pub async fn benchmark_ocr_layers(
+    state: State<'_, AppState>,
+    file_path: String,
+) -> Result<serde_json::Value, String> {
+    let trimmed = file_path.trim();
+    if trimmed.is_empty() {
+        return Err("Please select or enter a PDF/image file path to benchmark.".to_string());
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.exists() {
+        return Err(format!("Benchmark file not found: {}", trimmed));
+    }
+
+    let settings = state.db.get_settings().map_err(|e| e.to_string())?;
+    let vision_models: Vec<serde_json::Value> = BUILTIN_VISION_MODELS
+        .iter()
+        .map(|preset| {
+            let (engine_exe, model_path, mmproj_path) =
+                resolve_builtin_vision_paths(&settings.root_dir, preset.id);
+            let installed = engine_exe.exists()
+                && std::fs::metadata(&model_path).map(|m| m.len() > 1_000_000).unwrap_or(false)
+                && std::fs::metadata(&mmproj_path).map(|m| m.len() > 1_000_000).unwrap_or(false);
+            serde_json::json!({
+                "id": preset.id,
+                "name": preset.name,
+                "size_label": preset.size_label,
+                "installed": installed,
+                "engine_path": engine_exe.to_string_lossy(),
+                "model_path": model_path.to_string_lossy(),
+                "mmproj_path": mmproj_path.to_string_lossy(),
+            })
+        })
+        .collect();
+
+    let req = serde_json::json!({
+        "command": "benchmark_file",
+        "file_path": path.to_string_lossy(),
+        "hints": {
+            "root_dir": settings.root_dir,
+            "local_vision_endpoint": settings.local_vision_endpoint,
+            "vision_models": vision_models,
+        }
+    });
+
+    let resp = state
+        .ocr_manager
+        .send_json_request(req, 300)
+        .await
+        .map_err(|e| format!("Benchmark worker error: {}", e))?;
+
+    if resp.get("status").and_then(|v| v.as_str()) == Some("error") {
+        return Err(
+            resp.get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Benchmark execution failed")
+                .to_string(),
+        );
+    }
+    Ok(resp)
+}
+
 const DEFAULT_GITHUB_REPO: &str = "oscarpooper-lang/po-autoflow-enterprise";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -2372,6 +2497,19 @@ pub async fn check_github_update(
     })
 }
 
+pub fn format_msi_installdir_raw_arg(install_dir: &str) -> Option<String> {
+    let clean = install_dir
+        .trim()
+        .trim_matches('"')
+        .trim_end_matches(['\\', '/'])
+        .trim();
+    if clean.is_empty() {
+        None
+    } else {
+        Some(format!("INSTALLDIR=\"{}\"", clean))
+    }
+}
+
 #[tauri::command]
 pub async fn install_github_update(
     installer_url: String,
@@ -2441,11 +2579,12 @@ pub async fn install_github_update(
     #[cfg(target_os = "windows")]
     {
         if lower.ends_with(".msi") {
+            use std::os::windows::process::CommandExt;
             let mut cmd = std::process::Command::new("msiexec");
             cmd.arg("/i").arg(&installer_path);
             let (_, install_dir) = detect_installed_package_kind();
-            if !install_dir.is_empty() {
-                cmd.arg(format!("INSTALLDIR={}", install_dir));
+            if let Some(raw_install_arg) = format_msi_installdir_raw_arg(&install_dir) {
+                cmd.raw_arg(raw_install_arg);
             }
             cmd.spawn()
                 .map_err(|e| format!("Failed to launch MSI installer: {}", e))?;
@@ -2507,5 +2646,14 @@ mod updater_tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn test_format_msi_installdir_raw_arg() {
+        assert_eq!(
+            format_msi_installdir_raw_arg("D:\\Program Files\\PO AutoFlow Enterprise\\"),
+            Some("INSTALLDIR=\"D:\\Program Files\\PO AutoFlow Enterprise\"".to_string())
+        );
+        assert_eq!(format_msi_installdir_raw_arg("   "), None);
     }
 }

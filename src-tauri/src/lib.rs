@@ -319,7 +319,9 @@ pub fn run() {
             get_builtin_vision_status,
             download_builtin_vision_model,
             delete_builtin_vision_model,
-            get_ocr_engine_status
+            get_ocr_engine_status,
+            benchmark_ocr_layers,
+            list_benchmark_candidates
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

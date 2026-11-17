@@ -39,6 +39,33 @@ export interface GitHubUpdateStatus {
   repository: string;
 }
 
+export interface BenchmarkLayerResult {
+  id: string;
+  name: string;
+  category: string;
+  status: 'ok' | 'skipped' | 'error';
+  note: string;
+  duration_ms: number;
+  confidence: number;
+  supplier_th?: string | null;
+  supplier_en?: string | null;
+  po_numbers: string[];
+  tax_ids: string[];
+  emails: string[];
+  field_score: number;
+  chars_count: number;
+  raw_preview: string;
+}
+
+export interface BenchmarkReport {
+  status: string;
+  file_path: string;
+  total_duration_ms: number;
+  fastest_layer?: string | null;
+  best_accuracy_layer?: string | null;
+  layers: BenchmarkLayerResult[];
+}
+
 export interface OcrEngineStatus {
   python_version: string;
   worker_reachable: boolean;
@@ -847,6 +874,20 @@ export const api = {
       vision_ai_status_label: 'Disabled',
       vision_ai_message: 'Browser preview mode.',
     };
+  },
+
+  listBenchmarkCandidates: async (): Promise<string[]> => {
+    if (isTauriEnvironment()) {
+      return await invoke<string[]>('list_benchmark_candidates');
+    }
+    return [];
+  },
+
+  benchmarkOcrLayers: async (filePath: string): Promise<BenchmarkReport> => {
+    if (isTauriEnvironment()) {
+      return await invoke<BenchmarkReport>('benchmark_ocr_layers', { filePath });
+    }
+    throw new Error('Model benchmarking requires desktop Tauri runtime.');
   },
 
   checkGitHubUpdate,

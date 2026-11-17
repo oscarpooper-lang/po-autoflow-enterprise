@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import importlib.util
 import urllib.request
 import urllib.parse
@@ -1785,6 +1786,383 @@ def get_engine_capabilities(root_dir: str = "") -> Dict[str, Any]:
     }
 
 
+def _score_benchmark_fields(parsed: Dict[str, Any]) -> int:
+    score = 0
+    if parsed.get("primary_supplier_th"):
+        score += 3
+    if parsed.get("primary_supplier_en"):
+        score += 2
+    if parsed.get("po_numbers"):
+        score += 2
+    if parsed.get("tax_ids"):
+        score += 2
+    if parsed.get("emails"):
+        score += 1
+    return score
+
+
+def _run_bench_step(
+    layer_id: str,
+    name: str,
+    category: str,
+    fn,
+) -> Dict[str, Any]:
+    """Executes one benchmark layer safely and collects timing + extracted entity metrics."""
+    t0 = time.perf_counter()
+    try:
+        out = fn()
+        dt_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+        status = out.get("status", "ok")
+        parsed = out.get("parsed") or {}
+        raw_text = str(out.get("raw_text") or "")
+        return {
+            "id": layer_id,
+            "name": name,
+            "category": category,
+            "status": status,
+            "note": str(out.get("note") or ""),
+            "duration_ms": dt_ms,
+            "confidence": round(float(out.get("confidence") or 0.0) * 100.0, 1)
+            if float(out.get("confidence") or 0.0) <= 1.05
+            else round(float(out.get("confidence") or 0.0), 1),
+            "supplier_th": parsed.get("primary_supplier_th"),
+            "supplier_en": parsed.get("primary_supplier_en"),
+            "po_numbers": parsed.get("po_numbers") or [],
+            "tax_ids": parsed.get("tax_ids") or [],
+            "emails": parsed.get("emails") or [],
+            "field_score": _score_benchmark_fields(parsed) if status == "ok" else 0,
+            "chars_count": len(raw_text),
+            "raw_preview": raw_text[:800],
+        }
+    except Exception as e:
+        dt_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+        return {
+            "id": layer_id,
+            "name": name,
+            "category": category,
+            "status": "error",
+            "note": str(e),
+            "duration_ms": dt_ms,
+            "confidence": 0.0,
+            "supplier_th": None,
+            "supplier_en": None,
+            "po_numbers": [],
+            "tax_ids": [],
+            "emails": [],
+            "field_score": 0,
+            "chars_count": 0,
+            "raw_preview": "",
+        }
+
+
+def benchmark_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Benchmarks every OCR engine & installed Vision AI model independently on page 1 of a file."""
+    file_path = request.get("file_path", "")
+    if not file_path or not os.path.exists(file_path):
+        return {"status": "error", "message": f"File not found: {file_path}"}
+
+    hints = request.get("hints") or {}
+    root_dir = str(hints.get("root_dir") or "")
+    local_vision_endpoint = str(hints.get("local_vision_endpoint") or "http://127.0.0.1:11434")
+    vision_models = hints.get("vision_models") or []
+    ext = os.path.splitext(file_path)[1].lower()
+    t_total = time.perf_counter()
+    results: List[Dict[str, Any]] = []
+
+    img_300: Optional[np.ndarray] = None
+    img_400: Optional[np.ndarray] = None
+
+    if ext == ".pdf":
+        img_300 = render_pdf_page_to_image(file_path, 1, dpi=300)
+        img_400 = render_pdf_page_to_image(file_path, 1, dpi=400)
+
+        def bench_native():
+            pages = extract_native_pdf_text(file_path)
+            if not pages:
+                return {"status": "skipped", "note": "Empty PDF"}
+            p0 = pages[0]
+            txt = p0.get("raw_text", "")
+            boxes = p0.get("boxes", [])
+            parsed = parse_supplier_and_po(txt, boxes)
+            note = (
+                f"{p0.get('image_count', 0)} embedded image(s) detected; stamp-only text triggers scanned OCR in live pipeline."
+                if p0.get("image_count", 0) > 0 and len(txt.strip()) < 250
+                else "Direct vector/font extraction."
+            )
+            return {
+                "status": "ok",
+                "raw_text": txt,
+                "confidence": 1.0 if len(txt.strip()) > 30 else 0.0,
+                "parsed": parsed,
+                "note": note,
+            }
+
+        results.append(_run_bench_step("native_pdf", "PyMuPDF Native PDF + AX2012 Repair", "PDF Text", bench_native))
+    elif ext in (".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"):
+        img_300 = read_image_unicode(file_path)
+        img_400 = img_300
+        results.append({
+            "id": "native_pdf",
+            "name": "PyMuPDF Native PDF + AX2012 Repair",
+            "category": "PDF Text",
+            "status": "skipped",
+            "note": f"Not applicable to image file ({ext})",
+            "duration_ms": 0.0,
+            "confidence": 0.0,
+            "supplier_th": None,
+            "supplier_en": None,
+            "po_numbers": [],
+            "tax_ids": [],
+            "emails": [],
+            "field_score": 0,
+            "chars_count": 0,
+            "raw_preview": "",
+        })
+    else:
+        return {"status": "error", "message": f"Unsupported file extension for benchmark: {ext}"}
+
+    if img_300 is None:
+        return {"status": "error", "message": f"Failed to decode page image from: {file_path}"}
+
+    # 2. PaddleOCR PP-OCRv5
+    def bench_paddle():
+        if not HAS_PADDLEOCR:
+            import platform
+            return {
+                "status": "skipped",
+                "note": f"Not available on Python {platform.python_version()} (no paddlepaddle wheel).",
+            }
+        eng = get_paddle_ocr()
+        if eng is None:
+            return {"status": "skipped", "note": "PaddleOCR failed to initialize."}
+        enh = Preprocessor.deskew_and_enhance(img_300)
+        res = eng.ocr(enh, cls=True)
+        lines, boxes, tot = [], [], 0.0
+        if res and res[0]:
+            for bbox, (txt, conf) in res[0]:
+                rep = repair_thai_encoding(txt)
+                lines.append(rep)
+                tot += conf
+                boxes.append({"box": bbox, "text": rep, "confidence": float(conf), "type": "ocr"})
+        raw = "\n".join(lines)
+        return {
+            "status": "ok",
+            "raw_text": raw,
+            "confidence": (tot / len(lines)) if lines else 0.0,
+            "parsed": parse_supplier_and_po(raw, boxes),
+            "note": f"{len(lines)} text lines read",
+        }
+
+    results.append(_run_bench_step("paddleocr", "PaddleOCR PP-OCRv5 (Neural OCR)", "Image OCR", bench_paddle))
+
+    # 3. Tesseract 5 Raw 300 DPI
+    def bench_tess_raw():
+        tess_exe = _find_tesseract_exe(root_dir)
+        if not tess_exe:
+            return {"status": "skipped", "note": "tesseract.exe not found on PC."}
+        lines, boxes, conf = run_tesseract_ocr(img_300, root_dir)
+        raw = "\n".join(lines)
+        return {
+            "status": "ok" if lines else "error",
+            "raw_text": raw,
+            "confidence": conf,
+            "parsed": parse_supplier_and_po(raw, boxes),
+            "note": f"{len(lines)} lines at 300 DPI raw ({tess_exe})",
+        }
+
+    results.append(_run_bench_step("tesseract_300", "Tesseract 5 (tha+eng • 300 DPI Raw)", "Image OCR", bench_tess_raw))
+
+    # 4. Tesseract 5 Enhanced 400 DPI
+    def bench_tess_enh():
+        tess_exe = _find_tesseract_exe(root_dir)
+        if not tess_exe:
+            return {"status": "skipped", "note": "tesseract.exe not found on PC."}
+        enh = Preprocessor.deskew_and_enhance(img_400 if img_400 is not None else img_300)
+        lines, boxes, conf = run_tesseract_ocr(enh, root_dir)
+        raw = "\n".join(lines)
+        return {
+            "status": "ok" if lines else "error",
+            "raw_text": raw,
+            "confidence": conf,
+            "parsed": parse_supplier_and_po(raw, boxes),
+            "note": f"{len(lines)} lines at 400 DPI + CLAHE/Deskew",
+        }
+
+    results.append(_run_bench_step("tesseract_400_enh", "Tesseract 5 (tha+eng • 400 DPI Enhanced)", "Image OCR", bench_tess_enh))
+
+    # 5. EasyOCR (if installed in Python env)
+    def bench_easyocr():
+        if importlib.util.find_spec("easyocr") is None:
+            return {"status": "skipped", "note": "Not installed in Python environment (requires easyocr + PyTorch ~2.5 GB)."}
+        import easyocr
+        reader = easyocr.Reader(["th", "en"], gpu=False, verbose=False)
+        res = reader.readtext(img_300)
+        lines, boxes, tot = [], [], 0.0
+        for bbox, txt, conf in res:
+            rep = repair_thai_encoding(str(txt))
+            lines.append(rep)
+            tot += float(conf)
+            boxes.append({"box": bbox, "text": rep, "confidence": float(conf), "type": "ocr"})
+        raw = "\n".join(lines)
+        return {
+            "status": "ok",
+            "raw_text": raw,
+            "confidence": (tot / len(lines)) if lines else 0.0,
+            "parsed": parse_supplier_and_po(raw, boxes),
+            "note": f"{len(lines)} EasyOCR spans",
+        }
+
+    results.append(_run_bench_step("easyocr", "EasyOCR (th+en PyTorch)", "Image OCR", bench_easyocr))
+
+    # 6. Windows Built-In WinRT OCR
+    def bench_winrt():
+        if os.name != "nt":
+            return {"status": "skipped", "note": "Windows-only API."}
+        lines, boxes, conf = run_windows_winrt_ocr(img_300)
+        raw = "\n".join(lines)
+        return {
+            "status": "ok" if lines else "error",
+            "raw_text": raw,
+            "confidence": conf,
+            "parsed": parse_supplier_and_po(raw, boxes),
+            "note": f"{len(lines)} lines via Windows.Media.Ocr",
+        }
+
+    results.append(_run_bench_step("windows_winrt", "Windows Built-In WinRT OCR", "Image OCR", bench_winrt))
+
+    # 7. Built-In GGUF Vision AI Models (discovers all presets)
+    for vm in vision_models:
+        vm_id = str(vm.get("id") or "")
+        vm_name = str(vm.get("name") or vm_id)
+        installed = bool(vm.get("installed", False))
+
+        def bench_builtin_vlm(m_info=vm):
+            if not m_info.get("installed"):
+                return {"status": "skipped", "note": "Not downloaded in Models\\ folder."}
+            v_out = query_local_vision_model(
+                img_300,
+                "builtin",
+                "",
+                str(m_info.get("id") or ""),
+                str(m_info.get("engine_path") or ""),
+                str(m_info.get("model_path") or ""),
+                str(m_info.get("mmproj_path") or ""),
+                quality_preset="max_accuracy",
+            )
+            if not v_out:
+                return {"status": "error", "note": "Built-in Vision engine returned empty/invalid JSON."}
+            pseudo_parsed = {
+                "po_numbers": [],
+                "tax_ids": [],
+                "emails": [],
+                "supplier_candidates": [],
+                "primary_supplier": None,
+                "primary_confidence": 0.0,
+                "primary_supplier_th": None,
+                "primary_supplier_en": None,
+            }
+            _merge_local_vision_into_parsed(pseudo_parsed, v_out, [])
+            em = str(v_out.get("email") or "").strip().lower()
+            if em and "@" in em and "qtc-energy" not in em:
+                pseudo_parsed["emails"] = [em]
+            return {
+                "status": "ok",
+                "raw_text": json.dumps(v_out, ensure_ascii=False, indent=2),
+                "confidence": 0.91 if (pseudo_parsed.get("primary_supplier_th") or pseudo_parsed.get("primary_supplier_en")) else 0.5,
+                "parsed": pseudo_parsed,
+                "note": f"On-device GGUF VLM ({m_info.get('size_label', '')})",
+            }
+
+        results.append(
+            _run_bench_step(
+                f"builtin_{vm_id}",
+                f"Built-In Vision AI: {vm_name}",
+                "Vision AI (VLM)",
+                bench_builtin_vlm,
+            )
+        )
+
+    # 8. External Local Ollama Models if running on 127.0.0.1 (e.g., Typhoon OCR, OpenThaiGPT)
+    ollama_models: List[str] = []
+    if is_strictly_localhost(local_vision_endpoint):
+        try:
+            tags_url = local_vision_endpoint.rstrip("/") + "/api/tags"
+            with urllib.request.urlopen(urllib.request.Request(tags_url, method="GET"), timeout=2) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                ollama_models = [m.get("name", "") for m in data.get("models", []) if m.get("name")][:3]
+        except Exception:
+            ollama_models = []
+
+    if ollama_models:
+        for om in ollama_models:
+            def bench_ollama(model_name=om):
+                v_out = query_local_vision_model(img_300, "ollama", local_vision_endpoint, model_name)
+                if not v_out:
+                    return {"status": "error", "note": "Ollama model returned empty/non-JSON response."}
+                pseudo_parsed = {
+                    "po_numbers": [],
+                    "tax_ids": [],
+                    "emails": [],
+                    "supplier_candidates": [],
+                    "primary_supplier": None,
+                    "primary_confidence": 0.0,
+                    "primary_supplier_th": None,
+                    "primary_supplier_en": None,
+                }
+                _merge_local_vision_into_parsed(pseudo_parsed, v_out, [])
+                return {
+                    "status": "ok",
+                    "raw_text": json.dumps(v_out, ensure_ascii=False, indent=2),
+                    "confidence": 0.90,
+                    "parsed": pseudo_parsed,
+                    "note": "External Ollama localhost model",
+                }
+
+            results.append(
+                _run_bench_step(
+                    f"ollama_{om}",
+                    f"Ollama Local VLM: {om}",
+                    "Vision AI (VLM)",
+                    bench_ollama,
+                )
+            )
+    else:
+        results.append({
+            "id": "ollama_external",
+            "name": "External Ollama VLM (Typhoon OCR / OpenThai 2.0)",
+            "category": "Vision AI (VLM)",
+            "status": "skipped",
+            "note": f"Ollama server not running at {local_vision_endpoint} (optional 3rd-party VLM host).",
+            "duration_ms": 0.0,
+            "confidence": 0.0,
+            "supplier_th": None,
+            "supplier_en": None,
+            "po_numbers": [],
+            "tax_ids": [],
+            "emails": [],
+            "field_score": 0,
+            "chars_count": 0,
+            "raw_preview": "",
+        })
+
+    ok_layers = [r for r in results if r["status"] == "ok" and r["field_score"] > 0]
+    fastest_usable = min(ok_layers, key=lambda r: r["duration_ms"]) if ok_layers else None
+    best_accuracy = (
+        max(ok_layers, key=lambda r: (r["field_score"], r["confidence"], -r["duration_ms"]))
+        if ok_layers
+        else None
+    )
+
+    return {
+        "status": "ok",
+        "file_path": file_path,
+        "total_duration_ms": round((time.perf_counter() - t_total) * 1000.0, 1),
+        "fastest_layer": fastest_usable["name"] if fastest_usable else None,
+        "best_accuracy_layer": best_accuracy["name"] if best_accuracy else None,
+        "layers": results,
+    }
+
+
 def main():
     """Main JSON-lines IPC protocol loop on stdin / stdout."""
     sys.stdin.reconfigure(encoding="utf-8")
@@ -1819,6 +2197,8 @@ def main():
                 }
             elif cmd == "process_file":
                 resp = process_file_request(req)
+            elif cmd == "benchmark_file":
+                resp = benchmark_file_request(req)
             elif cmd == "render_preview":
                 resp = render_preview_request(req)
             elif cmd == "test_local_vision":

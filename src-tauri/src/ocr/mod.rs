@@ -394,7 +394,11 @@ impl OcrManager {
         Ok(val.get("status").and_then(|v| v.as_str()) == Some("ok"))
     }
 
-    pub async fn ping_details(&self, root_dir: &str) -> Result<serde_json::Value, OcrError> {
+    pub async fn send_json_request(
+        &self,
+        req: serde_json::Value,
+        timeout_secs: u64,
+    ) -> Result<serde_json::Value, OcrError> {
         self.ensure_process_running().await?;
         let mut lock = self.process.lock().await;
         let worker = match lock.as_mut() {
@@ -402,7 +406,6 @@ impl OcrManager {
             None => return Err(OcrError::ProcessTerminated),
         };
 
-        let req = serde_json::json!({"command": "ping", "root_dir": root_dir});
         let mut req_str = serde_json::to_string(&req)?;
         req_str.push('\n');
 
@@ -416,8 +419,13 @@ impl OcrManager {
         }
 
         let mut resp_line = String::new();
-        match worker.reader.read_line(&mut resp_line).await {
-            Ok(bytes) => {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            worker.reader.read_line(&mut resp_line),
+        )
+        .await
+        {
+            Ok(Ok(bytes)) => {
                 if bytes == 0 {
                     *lock = None;
                     return Err(OcrError::ProcessTerminated);
@@ -425,11 +433,23 @@ impl OcrManager {
                 let val: serde_json::Value = serde_json::from_str(&resp_line)?;
                 Ok(val)
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 *lock = None;
                 Err(OcrError::Io(e))
             }
+            Err(_) => {
+                *lock = None;
+                Err(OcrError::Timeout)
+            }
         }
+    }
+
+    pub async fn ping_details(&self, root_dir: &str) -> Result<serde_json::Value, OcrError> {
+        self.send_json_request(
+            serde_json::json!({"command": "ping", "root_dir": root_dir}),
+            20,
+        )
+        .await
     }
 
     pub async fn test_local_vision(

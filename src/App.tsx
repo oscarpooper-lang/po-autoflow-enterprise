@@ -12,6 +12,7 @@ import { Analytics } from './pages/Analytics';
 import { Settings } from './pages/Settings';
 import { SetupWizard } from './pages/SetupWizard';
 import { DeveloperOptions } from './pages/DeveloperOptions';
+import { ModelBenchmark } from './pages/ModelBenchmark';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { api, defaultSettings } from './services/tauri';
 import type {
@@ -187,6 +188,12 @@ export const App: React.FC = () => {
   const handleSaveSettings = async (newSettings: AppSettings) => {
     await api.saveSettings(newSettings);
     setSettings(newSettings);
+    if (
+      !newSettings.developer_mode_enabled &&
+      (currentTab === 'developer-options' || currentTab === 'benchmark')
+    ) {
+      setCurrentTab('overview');
+    }
     const modeLabel =
       newSettings.auto_send_email_enabled === false || newSettings.auto_send_mode === 'manual_review_all'
         ? 'OFF (Manual Approval Only)'
@@ -243,6 +250,8 @@ export const App: React.FC = () => {
         return { title: 'Settings', subtitle: 'Folders, Google Sheet/Drive links, auto-send rules, and attachment format' };
       case 'developer-options':
         return { title: 'Terminal & Debug', subtitle: 'Running processes, interactive CLI terminal, and live worker logs' };
+      case 'benchmark':
+        return { title: 'Model Benchmark', subtitle: 'Compare every OCR engine and local Vision AI model head-to-head on real PO files' };
       case 'setup-wizard':
         return { title: 'Quick Setup Guide', subtitle: 'Connect your folders and Google Sheet / Apps Script URL' };
       default:
@@ -250,18 +259,25 @@ export const App: React.FC = () => {
     }
   };
 
+  const activeTab =
+    !settings.developer_mode_enabled &&
+    (currentTab === 'developer-options' || currentTab === 'benchmark')
+      ? 'overview'
+      : currentTab;
+
   const { title, subtitle } = getTabTitle();
 
   return (
     <div className="flex h-screen bg-[#09090b] text-zinc-100 overflow-hidden font-sans">
       {/* Sidebar Navigation */}
       <Sidebar
-        currentTab={currentTab}
+        currentTab={activeTab}
         onSelectTab={setCurrentTab}
         isMonitoringActive={isMonitoringActive}
         rootDir={settings.root_dir}
         needsReviewCount={jobs.filter((j) => j.status === 'needs_review').length}
         companiesCount={companies.length}
+        developerMode={!!settings.developer_mode_enabled}
       />
 
       {/* Main App Container */}
@@ -317,7 +333,7 @@ export const App: React.FC = () => {
         {/* Viewport Content with ErrorBoundary */}
         <main className="flex-1 overflow-y-auto">
           <ErrorBoundary fallbackTitle="View Rendering Error">
-            {currentTab === 'overview' && (
+            {activeTab === 'overview' && (
               <Overview
                 stats={stats}
                 recentJobs={jobs}
@@ -334,7 +350,7 @@ export const App: React.FC = () => {
               />
             )}
 
-            {currentTab === 'live-monitor' && (
+            {activeTab === 'live-monitor' && (
               <LiveMonitor
                 jobs={jobs}
                 events={events}
@@ -343,11 +359,11 @@ export const App: React.FC = () => {
               />
             )}
 
-            {currentTab === 'transactions' && (
+            {activeTab === 'transactions' && (
               <Transactions transactions={transactions} />
             )}
 
-            {currentTab === 'ocr-inspector' && (
+            {activeTab === 'ocr-inspector' && (
               <OcrInspector
                 selectedJobId={selectedJobId}
                 jobs={jobs}
@@ -358,7 +374,7 @@ export const App: React.FC = () => {
               />
             )}
 
-            {currentTab === 'directory' && (
+            {activeTab === 'directory' && (
               <CompanyDirectory
                 companies={companies}
                 aliases={aliases}
@@ -368,11 +384,11 @@ export const App: React.FC = () => {
               />
             )}
 
-            {currentTab === 'email-history' && (
+            {activeTab === 'email-history' && (
               <EmailHistory transactions={transactions} />
             )}
 
-            {currentTab === 'analytics' && (
+            {activeTab === 'analytics' && (
               <Analytics
                 stats={stats}
                 jobs={jobs}
@@ -381,7 +397,7 @@ export const App: React.FC = () => {
               />
             )}
 
-            {currentTab === 'settings' && (
+            {activeTab === 'settings' && (
               <Settings
                 settings={settings}
                 onSaveSettings={handleSaveSettings}
@@ -392,7 +408,11 @@ export const App: React.FC = () => {
               />
             )}
 
-            {currentTab === 'developer-options' && (
+            {activeTab === 'benchmark' && !!settings.developer_mode_enabled && (
+              <ModelBenchmark settings={settings} jobs={jobs} />
+            )}
+
+            {activeTab === 'developer-options' && !!settings.developer_mode_enabled && (
               <DeveloperOptions
                 settings={settings}
                 onSaveSettings={handleSaveSettings}
@@ -401,7 +421,7 @@ export const App: React.FC = () => {
               />
             )}
 
-            {currentTab === 'setup-wizard' && (
+            {activeTab === 'setup-wizard' && (
               <SetupWizard
                 settings={settings}
                 onCompleteWizard={handleCompleteWizard}

@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Download,
   ExternalLink,
+  Gauge,
 } from 'lucide-react';
 import { checkGitHubUpdate, installGitHubUpdate, type GitHubUpdateStatus } from '../services/tauri';
 
@@ -21,6 +22,7 @@ interface SidebarProps {
   rootDir?: string;
   needsReviewCount?: number;
   companiesCount?: number;
+  developerMode?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -30,6 +32,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   rootDir = 'C:\\PO-AutoFlow',
   needsReviewCount = 0,
   companiesCount = 0,
+  developerMode = false,
 }) => {
   const [updateStatus, setUpdateStatus] = useState<GitHubUpdateStatus | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
@@ -112,7 +115,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badgeTone: 'neutral' as const,
     },
     { id: 'transactions', label: 'Sent History', icon: History },
-    { id: 'developer-options', label: 'Terminal & Debug', icon: Terminal },
+    ...(developerMode
+      ? [
+          { id: 'benchmark', label: 'Model Benchmark', icon: Gauge },
+          { id: 'developer-options', label: 'Terminal & Debug', icon: Terminal },
+        ]
+      : []),
   ];
 
   return (
