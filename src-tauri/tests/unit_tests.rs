@@ -169,6 +169,23 @@ fn test_security_path_traversal() {
     let traversal = base.join("Incoming").join("..").join("..").join("Windows");
     let check_traversal = SecurityManager::validate_path_containment(base, &traversal);
     assert!(check_traversal.is_err());
+
+    // UNC extended-prefix normalization (\\?\UNC\server\share -> \\server\share)
+    let unc_resolved = SecurityManager::validate_path_containment(
+        r"\\fileserver\PO-Share",
+        r"\\?\UNC\fileserver\PO-Share\Incoming\PO-26004319\PO.pdf",
+    )
+    .expect("Extended UNC path inside UNC share should be accepted");
+    assert_eq!(
+        unc_resolved.to_string_lossy(),
+        r"\\fileserver\PO-Share\Incoming\PO-26004319\PO.pdf"
+    );
+
+    let unc_escape = SecurityManager::validate_path_containment(
+        r"\\fileserver\PO-Share",
+        r"\\?\UNC\other-server\Other\secret.pdf",
+    );
+    assert!(unc_escape.is_err());
 }
 
 #[test]

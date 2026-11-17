@@ -45,11 +45,18 @@ jobs:
           npm run lint
           npx tsc -b
 
-      - name: Run Rust test suite
-        run: cargo test --manifest-path src-tauri/Cargo.toml
-
       - name: Build frontend
         run: npm run build
+
+      - name: Prepare stub resource directories for Cargo tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "src-tauri/resources/ocr-worker", "src-tauri/resources/models" | Out-Null
+          Set-Content -Path "src-tauri/resources/ocr-worker/.ci-placeholder" -Value "ci" -NoNewline
+          Set-Content -Path "src-tauri/resources/models/.ci-placeholder" -Value "ci" -NoNewline
+
+      - name: Run Rust test suite
+        run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: Check if release assets already exist
         id: check
@@ -78,6 +85,14 @@ jobs:
             }
           }
           Write-Output "skip_build=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build bundled standalone OCR worker (when CI builds release)
+        if: steps.check.outputs.skip_build != 'true'
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pymupdf onnxruntime opencv-python-headless numpy python-docx lxml rapidfuzz pyclipper
+          .\scripts\build-ocr-worker.ps1
 
       - name: Build Windows Tauri Installers
         if: steps.check.outputs.skip_build != 'true'

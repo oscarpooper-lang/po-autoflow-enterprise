@@ -41,5 +41,12 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Prepare stub resource directories for Cargo tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "src-tauri/resources/ocr-worker", "src-tauri/resources/models" | Out-Null
+          Set-Content -Path "src-tauri/resources/ocr-worker/.ci-placeholder" -Value "ci" -NoNewline
+          Set-Content -Path "src-tauri/resources/models/.ci-placeholder" -Value "ci" -NoNewline
+
       - name: Run Rust unit & pipeline tests
         run: cargo test --manifest-path src-tauri/Cargo.toml

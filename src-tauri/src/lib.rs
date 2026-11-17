@@ -263,7 +263,8 @@ pub fn run() {
             // Auto-resume folder monitoring on startup if enabled in settings
             let watcher_instance = if let Ok(settings) = db.get_settings() {
                 if settings.auto_monitoring_active {
-                    let mut watcher = FolderWatcher::new(&settings.incoming_dir, job_tx.clone());
+                    let mut watcher = FolderWatcher::new(&settings.incoming_dir, job_tx.clone())
+                        .with_poll_interval(settings.poll_interval_ms);
                     match watcher.start() {
                         Ok(()) => {
                             coordinator.set_watcher_active_jobs(watcher.active_jobs());

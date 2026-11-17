@@ -17,8 +17,10 @@ pub struct SecurityManager;
 impl SecurityManager {
     fn normalize_path(path: &Path) -> PathBuf {
         let s = path.to_string_lossy();
-        if s.starts_with(r"\\?\") {
-            PathBuf::from(&s[4..])
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            PathBuf::from(format!(r"\\{}", rest))
+        } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+            PathBuf::from(rest)
         } else {
             path.to_path_buf()
         }

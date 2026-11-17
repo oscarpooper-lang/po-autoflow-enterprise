@@ -63,7 +63,8 @@ pub async fn save_settings(state: State<'_, AppState>, mut settings: AppSettings
                 if let Some(mut old) = lock.take() {
                     old.stop();
                 }
-                let mut new_watcher = FolderWatcher::new(&settings.incoming_dir, state.job_tx.clone());
+                let mut new_watcher = FolderWatcher::new(&settings.incoming_dir, state.job_tx.clone())
+                    .with_poll_interval(settings.poll_interval_ms);
                 if let Err(e) = new_watcher.start() {
                     state.db.add_event(None, "warn", &format!("Failed restarting watcher on '{}': {}", settings.incoming_dir, e)).ok();
                 } else {
@@ -407,7 +408,8 @@ pub async fn start_monitoring(state: State<'_, AppState>) -> Result<bool, String
     let mut lock = state.watcher.lock().await;
 
     if lock.is_none() {
-        let mut watcher = FolderWatcher::new(&settings.incoming_dir, state.job_tx.clone());
+        let mut watcher = FolderWatcher::new(&settings.incoming_dir, state.job_tx.clone())
+            .with_poll_interval(settings.poll_interval_ms);
         watcher.start().map_err(|e| e.to_string())?;
         state.coordinator.set_watcher_active_jobs(watcher.active_jobs());
         *lock = Some(watcher);
