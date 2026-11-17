@@ -415,12 +415,44 @@ impl PipelineCoordinator {
             ocr_engine_primary: settings.ocr_engine_primary.clone(),
         };
 
-        let mut all_supplier_candidates = Vec::new();
+        let folder_low = folder_name.trim().to_lowercase();
+        let mut primary_digital_po_candidates = Vec::new();
+        let mut primary_po_ocr_candidates = Vec::new();
+        let mut supporting_doc_candidates = Vec::new();
         let mut all_po_numbers = Vec::new();
         let mut all_extracted_emails: Vec<String> = Vec::new();
         let mut all_tax_ids: Vec<String> = Vec::new();
 
         for doc in &documents {
+            let doc_fname_low = doc
+                .absolute_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let doc_stem_low = doc
+                .absolute_path
+                .file_stem()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+            let is_supporting_filename = doc_fname_low.contains("invoice")
+                || doc_fname_low.contains("quotation")
+                || doc_fname_low.contains("receipt")
+                || doc_fname_low.contains("delivery")
+                || doc_fname_low.contains("ใบกำกับ")
+                || doc_fname_low.contains("ใบแจ้งหนี้")
+                || doc_fname_low.contains("ใบเสนอราคา")
+                || doc_fname_low.contains("ใบเสร็จ")
+                || doc_fname_low.contains("ใบส่งของ");
+            let is_named_like_po = !is_supporting_filename
+                && ((!folder_low.is_empty()
+                    && (doc_stem_low == folder_low || doc_stem_low.starts_with(&folder_low)))
+                    || doc_fname_low.starts_with("po")
+                    || doc_fname_low.contains("purchase order")
+                    || doc_fname_low.contains("ใบสั่งซื้อ"));
+
             match self.ocr_manager.process_file_with_hints(&doc.absolute_path, Some(&ocr_hints)).await {
                 Ok(resp) => {
                     match resp.vision_ai_status.as_deref() {
@@ -464,9 +496,24 @@ impl PipelineCoordinator {
                             };
                             self.db.record_ocr_result(&ocr_rec).ok();
 
+                            let raw_low = page.raw_text.to_lowercase();
+                            let looks_like_po_page = is_named_like_po
+                                || (!is_supporting_filename
+                                    && (raw_low.contains("purchase order") || raw_low.contains("ใบสั่งซื้อ"))
+                                    && !raw_low.contains("tax invoice")
+                                    && !raw_low.contains("ใบกำกับภาษี")
+                                    && !raw_low.contains("ใบแจ้งหนี้"));
+                            let is_native_pdf = page.extraction_method == "native_pdf";
+
                             for c in page.parsed.supplier_candidates {
                                 if !ThaiNormalizer::is_ignored_self_company(&c.name) {
-                                    all_supplier_candidates.push(c);
+                                    if looks_like_po_page && is_native_pdf {
+                                        primary_digital_po_candidates.push(c);
+                                    } else if looks_like_po_page {
+                                        primary_po_ocr_candidates.push(c);
+                                    } else {
+                                        supporting_doc_candidates.push(c);
+                                    }
                                 }
                             }
                             for po in page.parsed.po_numbers {
@@ -513,18 +560,32 @@ impl PipelineCoordinator {
         };
         job.po_number = Some(resolved_po.clone());
 
-        // 4. Stage: Intelligent Company Matching (Thai First -> English Fallback)
+        // 4. Stage: Intelligent Company Matching (Digital PO Authoritative -> OCR PO -> Supporting Docs)
         job.status = "matching_company".to_string();
-        job.stage_message = "Matching extracted supplier entity (Thai-first) against company directory.".to_string();
+        job.stage_message = "Matching extracted supplier entity (Digital PO priority) against company directory.".to_string();
         self.db.update_job(&job).ok();
 
-        all_supplier_candidates.sort_by(|a, b| {
-            let rank_a = if a.language == "th" { 0 } else { 1 };
-            let rank_b = if b.language == "th" { 0 } else { 1 };
-            rank_a
-                .cmp(&rank_b)
-                .then_with(|| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal))
-        });
+        let sort_tier = |list: &mut Vec<crate::ocr::SupplierCandidate>| {
+            list.sort_by(|a, b| {
+                let rank_a = if a.language == "th" { 0 } else { 1 };
+                let rank_b = if b.language == "th" { 0 } else { 1 };
+                rank_a
+                    .cmp(&rank_b)
+                    .then_with(|| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal))
+            });
+        };
+        sort_tier(&mut primary_digital_po_candidates);
+        sort_tier(&mut primary_po_ocr_candidates);
+        sort_tier(&mut supporting_doc_candidates);
+
+        let all_supplier_candidates: Vec<crate::ocr::SupplierCandidate> =
+            if !primary_digital_po_candidates.is_empty() {
+                primary_digital_po_candidates.clone()
+            } else if !primary_po_ocr_candidates.is_empty() {
+                primary_po_ocr_candidates.clone()
+            } else {
+                supporting_doc_candidates.clone()
+            };
 
         let mut directory = self.db.get_companies_cache().unwrap_or_default();
         if directory.is_empty() {
@@ -536,7 +597,7 @@ impl PipelineCoordinator {
         }
         let aliases = self.db.get_company_aliases().unwrap_or_default();
 
-        let match_result = CompanyMatcher::match_candidates_with_memory(
+        let mut match_result = CompanyMatcher::match_candidates_with_memory(
             &all_supplier_candidates,
             &all_tax_ids,
             &all_extracted_emails,
@@ -547,6 +608,33 @@ impl PipelineCoordinator {
             settings.ocr_confidence_threshold_high,
             settings.ocr_confidence_threshold_review,
         );
+
+        // Only consult supporting documents (invoices/quotations) for company name matching if
+        // the authoritative Digital PO candidate did not match any active supplier cleanly.
+        if match_result.category == "no_match" && !primary_digital_po_candidates.is_empty() {
+            let mut backup_candidates = primary_po_ocr_candidates.clone();
+            backup_candidates.extend(supporting_doc_candidates.clone());
+            if !backup_candidates.is_empty() {
+                let backup_match = CompanyMatcher::match_candidates_with_memory(
+                    &backup_candidates,
+                    &all_tax_ids,
+                    &all_extracted_emails,
+                    &directory,
+                    &aliases,
+                    &memories,
+                    settings.ocr_confidence_threshold_verified,
+                    settings.ocr_confidence_threshold_high,
+                    settings.ocr_confidence_threshold_review,
+                );
+                if backup_match.category == "verified" || backup_match.category == "high" {
+                    let clean_po_query = ThaiNormalizer::normalize_unicode(&primary_digital_po_candidates[0].name);
+                    match_result = backup_match;
+                    if !clean_po_query.is_empty() {
+                        match_result.query = clean_po_query;
+                    }
+                }
+            }
+        }
 
         let query_name = if !match_result.query.is_empty() {
             match_result.query.clone()

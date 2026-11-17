@@ -31,6 +31,7 @@ import type {
 } from '../types';
 import { api } from '../services/tauri';
 import { resolveUiLang, tr, tx, type UiLang } from '../i18n';
+import { summarizeOcrRecords } from '../utils/ocrRecords';
 
 interface OverviewProps {
   stats: DashboardStats;
@@ -45,13 +46,6 @@ interface OverviewProps {
   onRetryJob?: (jobId: string) => Promise<void> | void;
   onRefreshData?: () => Promise<void> | void;
   isSyncingSheets: boolean;
-}
-
-interface ParsedEntitiesMini {
-  po_numbers?: string[];
-  emails?: string[];
-  primary_supplier_th?: string | null;
-  primary_supplier_en?: string | null;
 }
 
 const getBasename = (pathStr?: string): string => {
@@ -181,30 +175,17 @@ export const Overview: React.FC<OverviewProps> = ({
     };
   }, [activeJob?.id, currentRecord?.id, currentRecord?.file_path, currentRecord?.page_number]);
 
-  const predictions = useMemo(() => {
-    let primaryTh: string | null = null;
-    let primaryEn: string | null = null;
-    const emails: string[] = [];
-    const poNums: string[] = [];
+  const activeJobFolderName = activeJob?.po_folder_name || '';
 
-    for (const rec of ocrRecords) {
-      if (!rec.detected_entities_json) continue;
-      try {
-        const parsed = JSON.parse(rec.detected_entities_json) as ParsedEntitiesMini;
-        if (!primaryTh && parsed.primary_supplier_th) primaryTh = parsed.primary_supplier_th;
-        if (!primaryEn && parsed.primary_supplier_en) primaryEn = parsed.primary_supplier_en;
-        for (const e of parsed.emails || []) {
-          if (e && !emails.includes(e)) emails.push(e);
-        }
-        for (const p of parsed.po_numbers || []) {
-          if (p && !poNums.includes(p)) poNums.push(p);
-        }
-      } catch {
-        // Ignore malformed entity JSON
-      }
-    }
-    return { primaryTh, primaryEn, emails, poNums };
-  }, [ocrRecords]);
+  const predictions = useMemo(() => {
+    const summary = summarizeOcrRecords(ocrRecords, activeJobFolderName);
+    return {
+      primaryTh: summary.primaryTh,
+      primaryEn: summary.primaryEn,
+      emails: summary.emails,
+      poNums: summary.poNumbers,
+    };
+  }, [ocrRecords, activeJobFolderName]);
 
   const uniqueFiles = useMemo(() => {
     const map = new Map<string, number>();

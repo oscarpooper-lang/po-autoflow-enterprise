@@ -86,26 +86,47 @@ impl DocumentScanner {
             }
         }
 
-        // Prioritize primary PO PDFs/docs ahead of supporting quotations/attachments
-        fn doc_priority(doc: &DiscoveredDocument) -> u8 {
+        let folder_low = po_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .trim()
+            .to_lowercase();
+
+        // Prioritize the Purchase Order PDF matching the folder name first,
+        // ahead of other PO docs and supporting quotations/invoices/attachments.
+        fn doc_priority(doc: &DiscoveredDocument, folder_low: &str) -> u8 {
             let fname = doc
                 .absolute_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_lowercase();
-            if fname.starts_with("po") || fname.contains("ใบสั่งซื้อ") {
+            let stem = doc
+                .absolute_path
+                .file_stem()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+
+            if !folder_low.is_empty() && (stem == folder_low || stem.starts_with(folder_low)) {
                 0
-            } else if fname.contains("ใบเสนอราคา") || fname.contains("quotation") {
+            } else if fname.starts_with("po")
+                || fname.contains("purchase order")
+                || fname.contains("ใบสั่งซื้อ")
+            {
                 1
-            } else {
+            } else if fname.contains("ใบเสนอราคา") || fname.contains("quotation") {
                 2
+            } else {
+                3
             }
         }
 
         documents.sort_by(|a, b| {
-            doc_priority(a)
-                .cmp(&doc_priority(b))
+            doc_priority(a, &folder_low)
+                .cmp(&doc_priority(b, &folder_low))
                 .then_with(|| a.relative_path.cmp(&b.relative_path))
         });
 

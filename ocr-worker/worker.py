@@ -1371,31 +1371,105 @@ def _find_right_adjacent_box(label_box: Dict[str, Any], all_boxes: List[Dict[str
 
 
 def _clean_thai_candidate_tail(candidate: str) -> str:
-    """Stops Thai company name before trailing address clauses, verbs, or contact info."""
+    """Stops Thai company name before trailing address clauses, invoice metadata, or contact info."""
+    # If prefixed with บริษัท / บจก., stop cleanly right after จำกัด (มหาชน) or จำกัด
+    # so trailing invoice/branch/tax noise on the same line never sticks.
+    if re.match(r"^(?:บริษัท|บจก\.?|บ\.\s*จำกัด)", candidate.strip()):
+        corp_end = re.search(
+            r"(จำกัด\s*\(มหาชน\)|มหาชน\s*จำกัด|\(มหาชน\)|จำกัด)",
+            candidate,
+        )
+        if corp_end:
+            candidate = candidate[:corp_end.end()]
+
     stop_markers = [
         r"\s+มีความยินดี",
         r"\s+ขอเสนอราคา",
         r"\s+ขอยืนยัน",
+        r"\s+ขออนุญาต",
+        r"\s+(?:กรุณา|โปรด|หมายเหตุ|ตามที่|สำหรับ|เพื่อ|ธนาคาร|เลข(?:ที่)?บัญชี|โอนเงิน)",
+        r"\s+(?:payment|bank|account|remark|note)\b",
+        r"\s+\(?\s*สำนักงานใหญ่\s*\)?",
+        r"\s+สาขา(?:ที่|\s*\d)",
+        r"\s+\(?\s*branch\b",
+        r"\s+\(?\s*head\s*office\b",
+        r"\s+เลขประจำตัวผู้เสียภาษี",
+        r"\s+ประจำตัวผู้เสียภาษี",
+        r"\s+เลขผู้เสียภาษี",
+        r"\s+ผู้เสียภาษี",
+        r"\s+tax\s*(?:id|no\.?|number)\b",
+        r"\s+tin\b",
+        r"\s+(?:ต้นฉบับ|สำเนา)?\s*(?:ใบกำกับภาษี|ใบแจ้งหนี้|ใบเสร็จรับเงิน|ใบเสนอราคา|ใบส่งของ|ใบส่งสินค้า|ใบวางบิล|ใบสั่งซื้อ)",
+        r"\s+(?:tax\s*)?invoice\b",
+        r"\s+quotation\b",
+        r"\s+receipt\b",
+        r"\s+delivery\s*(?:order|note)\b",
+        r"\s+purchase\s*order\b",
+        r"\s+(?:วันที่|date|page|หน้า|อ้างอิง|ref\.?|doc\.?\s*no)\b",
         r"\s+เลขที่\b",
+        r"\s+no\.\s*[:#]?",
         r"\s+ที่อยู่",
+        r"\s+โทรศัพท์",
+        r"\s+มือถือ",
         r"\s+โทร",
         r"\s+tel\b",
+        r"\s+แฟกซ์",
         r"\s+fax\b",
+        r"\s+อีเมล",
         r"\s+e-?mail\b",
+        r"\s+https?://",
+        r"\s+www\.",
+        r"\s+\S+@\S+",
         r"\s+\d{1,5}/\d+",
         r"\s+ม\.\s*\d",
-        r"\s+หมู่\s*\d",
+        r"\s+หมู่(?:ที่)?\s*\d",
         r"\s+ซอย",
         r"\s+ถนน",
         r"\s+ต\.\s*\S",
         r"\s+อ\.\s*\S",
         r"\s+จ\.\s*\S",
+        r"\s+ตำบล\s*\S",
+        r"\s+อำเภอ\s*\S",
+        r"\s+จังหวัด\s*\S",
+        r"\s+แขวง\s*\S",
+        r"\s+เขต\s*\S",
+        r"\s+\d{10,13}\b",
+        r"\s+\d{5}\b",
+        r"\s+0\d{1,2}[-\s]\d{3}[-\s]\d{3,4}",
     ]
     cleaned = candidate
     for marker in stop_markers:
         cleaned = re.split(marker, cleaned, maxsplit=1, flags=re.IGNORECASE)[0]
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,:;-/|()")
     return cleaned
+
+
+_ENG_LEADING_NOISE_RE = re.compile(
+    r"^(?:"
+    r"(?:supplier|vendor|seller|issued\s*by|bill(?:ed)?\s*(?:to|by)|ship\s*to|deliver\s*to|"
+    r"from|to|buyer|customer|consignee|attn|attention|company\s*name|company|vendor\s*name|name)\s*[:：\-]?\s*|"
+    r"(?:original|copy|tax\s*invoice|commercial\s*invoice|proforma\s*invoice|invoice|quotation|"
+    r"receipt|delivery\s*order|purchase\s*order|debit\s*note|credit\s*note|"
+    r"no\.?|date|page|ref\.?|tax\s*id|tin)\b[\s:：#.\-]*|"
+    r"\d{1,4}(?:[-/.]\d{1,4}){1,2}\s+|"
+    r"\d+\s+"
+    r")+",
+    re.IGNORECASE,
+)
+
+
+def _clean_eng_candidate_edges(candidate: str) -> str:
+    """Strips leading labels/invoice headers/dates and trailing non-company punctuation from English candidates."""
+    cleaned = re.sub(r"\s+", " ", (candidate or "")).strip(" ,-:/()|")
+    for _ in range(4):
+        prev = cleaned
+        cleaned = _ENG_LEADING_NOISE_RE.sub("", cleaned).strip(" ,-:/()|")
+        if cleaned == prev:
+            break
+    # Strip trailing period only if it is not part of a corporate abbreviation (Ltd., Part., Corp., Inc., Pcl., Plc.)
+    if cleaned.endswith(".") and not re.search(r"(?:LTD|PART|CORP|INC|PCL|PLC|CO)\.$", cleaned, re.IGNORECASE):
+        cleaned = cleaned.rstrip(".")
+    return cleaned.strip()
 
 
 def _normalize_po_token(raw_token: str) -> List[str]:
@@ -1485,7 +1559,16 @@ def parse_supplier_and_po(
     """
     neg_list = negative_phrases or []
     text = repair_thai_encoding(text)
-    lines = [re.sub(r"\s+", " ", line).strip() for line in text.split("\n") if line.strip()]
+    # Split wide multi-column gaps (tabs or 3+ spaces) into independent segments before collapsing
+    # single spaces so side-by-side invoice/PO columns never merge unrelated text onto company names.
+    lines: List[str] = []
+    for raw_line in text.split("\n"):
+        if not raw_line.strip():
+            continue
+        for seg in re.split(r"\t+|\s{3,}", raw_line):
+            cleaned_seg = re.sub(r"\s+", " ", seg).strip()
+            if cleaned_seg:
+                lines.append(cleaned_seg)
 
     # 1. PO Number extraction (spatial label pairing + regex with digit validation)
     po_numbers: List[str] = []
@@ -1625,8 +1708,10 @@ def parse_supplier_and_po(
 
         # Extract English candidates
         for m in eng_comp_regex.finditer(line):
-            candidate = re.sub(r"\s+", " ", m.group(1)).strip(" .,-:/()")
-            candidate = re.sub(r"^\d\s+(?=[A-Za-z]{2,})", "", candidate)
+            raw_eng = m.group(1)
+            candidate = _clean_eng_candidate_edges(raw_eng)
+            if "@" in candidate or "http" in candidate.lower() or "www." in candidate.lower():
+                continue
             if len(candidate) <= 4 or is_ignored_self_company(candidate):
                 continue
 

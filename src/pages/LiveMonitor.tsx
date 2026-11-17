@@ -63,7 +63,8 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
       return (
         job.po_folder_name.toLowerCase().includes(q) ||
         (job.po_number && job.po_number.toLowerCase().includes(q)) ||
-        (job.matched_company_name && job.matched_company_name.toLowerCase().includes(q))
+        (job.matched_company_name && job.matched_company_name.toLowerCase().includes(q)) ||
+        (job.detected_company_raw && job.detected_company_raw.toLowerCase().includes(q))
       );
     }
     return true;
@@ -220,6 +221,7 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
               <tr>
                 <th className="py-2.5 px-4">{tx(lang, 'PO Identifier', 'เลขที่ PO / โฟลเดอร์')}</th>
                 <th className="py-2.5 px-4">{tx(lang, 'Status', 'สถานะ')}</th>
+                <th className="py-2.5 px-4">{tx(lang, 'Detected Name (PO / OCR)', 'ชื่อที่อ่านได้จากเอกสาร')}</th>
                 <th className="py-2.5 px-4">{tx(lang, 'Matched Supplier', 'ผู้ขายที่จับคู่ได้')}</th>
                 <th className="py-2.5 px-4">{tx(lang, 'Score', 'คะแนน')}</th>
                 <th className="py-2.5 px-4">{tx(lang, 'Stage Message', 'รายละเอียดสถานะ')}</th>
@@ -229,7 +231,7 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
             <tbody className="divide-y divide-zinc-800/70">
               {filteredJobs.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-8 text-center text-zinc-500">
+                  <td colSpan={7} className="py-8 text-center text-zinc-500">
                     {tx(lang, 'No matching jobs found in queue', 'ไม่พบงานในคิวที่ตรงกับการค้นหา')}
                   </td>
                 </tr>
@@ -244,8 +246,16 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
                       <StatusBadge status={job.status} lang={lang} />
                     </td>
                     <td className="py-3 px-4">
-                      <div className="font-medium text-zinc-200 truncate max-w-[220px]">
-                        {job.matched_company_name || job.detected_company_raw || tx(lang, 'Pending', 'รอดำเนินการ')}
+                      <div
+                        className="font-medium text-amber-200/90 truncate max-w-[200px]"
+                        title={job.detected_company_raw || ''}
+                      >
+                        {job.detected_company_raw || <span className="text-zinc-500">—</span>}
+                      </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="font-medium text-zinc-200 truncate max-w-[220px]" title={job.matched_company_name || ''}>
+                        {job.matched_company_name || tx(lang, 'Not matched', 'ยังไม่ตรงกับรายชื่อ')}
                       </div>
                       {job.matched_email && (
                         <div className="text-[11px] text-zinc-400">{job.matched_email}</div>

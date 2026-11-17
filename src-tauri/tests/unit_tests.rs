@@ -473,4 +473,78 @@ fn test_self_learning_memory_and_ngram_matching() {
     assert_eq!(res_noisy.category, "verified");
 }
 
+#[test]
+fn test_bilingual_and_proofing_sheet_columns() {
+    let matrix = vec![
+        vec![
+            "Thai Name".to_string(),
+            "English Name".to_string(),
+            "Email".to_string(),
+            "Proofing".to_string(),
+        ],
+        vec![
+            "บริษัท สยาม ซัพพลาย จำกัด".to_string(),
+            "SIAM SUPPLY CO., LTD.".to_string(),
+            "sales@siamsupply.co.th".to_string(),
+            "Verified AX2012".to_string(),
+        ],
+        vec![
+            "".to_string(),
+            "ENGLISH ONLY CORP.".to_string(),
+            "ap@englishonly.com".to_string(),
+            "EN only row".to_string(),
+        ],
+        vec![
+            "บริษัท ไทยอย่างเดียว จำกัด".to_string(),
+            "".to_string(),
+            "th@only.co.th".to_string(),
+            "".to_string(),
+        ],
+    ];
+
+    let entries = app_lib::google::sheets::SheetsClient::parse_matrix(matrix).unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].company_name, "บริษัท สยาม ซัพพลาย จำกัด");
+    assert_eq!(entries[0].alternative_name.as_deref(), Some("SIAM SUPPLY CO., LTD."));
+    assert_eq!(entries[0].notes.as_deref(), Some("Verified AX2012"));
+
+    // Row with empty Thai cell still loads cleanly from English Name
+    assert_eq!(entries[1].company_name, "ENGLISH ONLY CORP.");
+    assert_eq!(entries[1].alternative_name, None);
+    assert_eq!(entries[1].notes.as_deref(), Some("EN only row"));
+
+    // Row with empty English cell still loads cleanly from Thai Name
+    assert_eq!(entries[2].company_name, "บริษัท ไทยอย่างเดียว จำกัด");
+    assert_eq!(entries[2].alternative_name, None);
+
+    // Headerless 3-column sheet: Thai | English | Email
+    let headerless = vec![vec![
+        "บริษัท ทดสอบ จำกัด".to_string(),
+        "TEST CO., LTD.".to_string(),
+        "test@example.com".to_string(),
+    ]];
+    let entries_hl = app_lib::google::sheets::SheetsClient::parse_matrix(headerless).unwrap();
+    assert_eq!(entries_hl.len(), 1);
+    assert_eq!(entries_hl[0].company_name, "บริษัท ทดสอบ จำกัด");
+    assert_eq!(entries_hl[0].alternative_name.as_deref(), Some("TEST CO., LTD."));
+    assert_eq!(entries_hl[0].email, "test@example.com");
+}
+
+#[test]
+fn test_digital_po_document_priority() {
+    let tmp = tempdir().unwrap();
+    let po_dir = tmp.path().join("PO-26001212");
+    std::fs::create_dir_all(&po_dir).unwrap();
+
+    // Supporting files alphabetically before "PO-..." must still sort after matching PO PDF
+    File::create(po_dir.join("01_invoice_scan.pdf")).unwrap().write_all(b"%PDF-1.4").unwrap();
+    File::create(po_dir.join("quotation.pdf")).unwrap().write_all(b"%PDF-1.4").unwrap();
+    File::create(po_dir.join("PO-26001212.pdf")).unwrap().write_all(b"%PDF-1.4").unwrap();
+
+    let docs = app_lib::document::DocumentScanner::scan_po_folder(&po_dir).unwrap();
+    assert_eq!(docs.len(), 3);
+    assert_eq!(docs[0].relative_path, "PO-26001212.pdf");
+}
+
+
 

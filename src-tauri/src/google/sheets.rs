@@ -34,6 +34,7 @@ struct GasSupplierItem {
     alternative_name: Option<String>,
     email: String,
     tax_id: Option<String>,
+    notes: Option<String>,
     active: Option<bool>,
 }
 
@@ -168,7 +169,7 @@ impl SheetsClient {
                             email: item.email,
                             active: item.active.unwrap_or(true),
                             tax_id: item.tax_id,
-                            notes: Some("Synced via Google Apps Script Hub".to_string()),
+                            notes: item.notes.filter(|n| !n.trim().is_empty()),
                             synced_at: now.clone(),
                         })
                         .collect();
@@ -333,41 +334,94 @@ impl SheetsClient {
         }
 
         let first_row = &matrix[0];
+        let first_row_has_email = first_row
+            .iter()
+            .any(|c| crate::email::EmailDeliveryClient::is_valid_email(c.trim()));
         let has_header_keyword = find_header_col(
             first_row,
-            &["company", "ชื่อบริษัท", "บริษัท", "supplier", "email", "อีเมล"],
+            &[
+                "company", "ชื่อบริษัท", "ชื่อผู้ขาย", "บริษัท", "supplier", "vendor",
+                "thai", "english", "ชื่อไทย", "ชื่ออังกฤษ", "email", "อีเมล", "proofing",
+            ],
         )
         .is_some();
-        let first_row_has_email = first_row.iter().any(|c| c.contains('@'));
-        let is_headerless = !has_header_keyword && first_row_has_email;
+        let is_headerless = first_row_has_email || !has_header_keyword;
 
-        let (name_idx, email_idx, alt_idx, active_idx, start_row) = if is_headerless {
+        let (name_idx, email_idx, alt_idx, notes_idx, tax_idx, active_idx, start_row) = if is_headerless {
             let e_idx = first_row
                 .iter()
                 .position(|c| c.contains('@'))
                 .unwrap_or(1);
             let n_idx = first_row
                 .iter()
-                .position(|c| !c.trim().is_empty() && !c.contains('@'))
-                .unwrap_or(0);
-            let a_idx = first_row
+                .enumerate()
+                .position(|(idx, c)| idx != e_idx && !c.trim().is_empty())
+                .unwrap_or(if e_idx == 0 { 1 } else { 0 });
+            let mut text_cols = first_row
                 .iter()
                 .enumerate()
-                .find(|(idx, c)| *idx != n_idx && *idx != e_idx && !c.trim().is_empty())
+                .filter(|(idx, c)| *idx != n_idx && *idx != e_idx && !c.trim().is_empty())
                 .map(|(idx, _)| idx);
-            (n_idx, e_idx, a_idx, None, 0usize)
+            let a_idx = text_cols.next();
+            let note_idx = text_cols.next();
+            (n_idx, e_idx, a_idx, note_idx, None, None, 0usize)
         } else {
             if matrix.len() <= 1 {
                 return Err(SheetsError::Empty);
             }
-            let n_idx = find_header_col(first_row, &["company name", "company", "ชื่อบริษัท", "บริษัท"]).unwrap_or(0);
-            let e_idx = find_header_col(first_row, &["email", "email address", "อีเมล", "e-mail"])
-                .unwrap_or(if first_row.len() == 2 { 1 } else { 2 });
-            let a_idx = find_header_col(first_row, &["alternative name", "alt name", "alias", "ชื่อภาษาอังกฤษ", "ชื่อสำรอง"])
-                .filter(|&i| i != n_idx && i != e_idx);
-            let act_idx = find_header_col(first_row, &["active", "status", "สถานะ", "ใช้งาน"])
-                .filter(|&i| i != n_idx && i != e_idx);
-            (n_idx, e_idx, a_idx, act_idx, 1usize)
+            let n_idx = find_header_col_excluding(
+                first_row,
+                &[
+                    "company name", "thai name", "name (th)", "name th", "company (th)",
+                    "ชื่อบริษัท", "ชื่อผู้ขาย", "ชื่อไทย", "ชื่อภาษาไทย", "บริษัท", "company", "supplier",
+                ],
+                &[],
+            )
+            .unwrap_or(0);
+            let e_idx = find_header_col_excluding(
+                first_row,
+                &["email", "email address", "อีเมล", "e-mail"],
+                &[n_idx],
+            )
+            .unwrap_or(if first_row.len() == 2 { 1 } else { 2 });
+            let a_idx = find_header_col_excluding(
+                first_row,
+                &[
+                    "alternative name", "alt name", "english name", "name (en)", "name en",
+                    "company (en)", "company en", "alias", "ชื่ออังกฤษ", "ชื่อภาษาอังกฤษ", "ภาษาอังกฤษ",
+                    "ชื่อสำรอง", "ชื่ออื่น", "thai name", "name (th)", "name th", "ชื่อไทย", "ชื่อภาษาไทย",
+                ],
+                &[n_idx, e_idx],
+            );
+            let mut excluded = vec![n_idx, e_idx];
+            if let Some(a) = a_idx {
+                excluded.push(a);
+            }
+            let note_idx = find_header_col_excluding(
+                first_row,
+                &[
+                    "proofing", "proof", "reference", "ref.", "remark", "remarks", "notes", "note",
+                    "หมายเหตุ", "ตรวจทาน", "ตรวจสอบ", "อ้างอิง",
+                ],
+                &excluded,
+            );
+            if let Some(n) = note_idx {
+                excluded.push(n);
+            }
+            let t_idx = find_header_col_excluding(
+                first_row,
+                &["tax id", "tax_id", "tax no", "tin", "เลขประจำตัวผู้เสียภาษี", "เลขผู้เสียภาษี"],
+                &excluded,
+            );
+            if let Some(t) = t_idx {
+                excluded.push(t);
+            }
+            let act_idx = find_header_col_excluding(
+                first_row,
+                &["active", "status", "สถานะ", "ใช้งาน"],
+                &excluded,
+            );
+            (n_idx, e_idx, a_idx, note_idx, t_idx, act_idx, 1usize)
         };
 
         let mut entries = Vec::new();
@@ -378,17 +432,32 @@ impl SheetsClient {
                 continue;
             }
 
-            let name = row.get(name_idx).map(|s| s.trim()).unwrap_or("");
-            if name.is_empty() {
-                continue;
-            }
+            let primary_raw = row.get(name_idx).map(|s| s.trim()).unwrap_or("");
+            let alt_raw = alt_idx
+                .and_then(|idx| row.get(idx))
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
 
-            let alt = alt_idx
+            // Support keeping both English & Thai, OR filling only one of them per row
+            let (name, alt) = if !primary_raw.is_empty() {
+                (primary_raw.to_string(), alt_raw.map(|s| s.to_string()))
+            } else if let Some(only_alt) = alt_raw {
+                (only_alt.to_string(), None)
+            } else {
+                continue;
+            };
+
+            let email = row.get(email_idx).map(|s| s.trim()).unwrap_or("");
+            let notes = notes_idx
                 .and_then(|idx| row.get(idx))
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
-            let email = row.get(email_idx).map(|s| s.trim()).unwrap_or("");
+            let tax_id = tax_idx
+                .and_then(|idx| row.get(idx))
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
             let active_str = active_idx
                 .and_then(|idx| row.get(idx))
                 .map(|s| s.trim().to_lowercase())
@@ -397,12 +466,12 @@ impl SheetsClient {
 
             entries.push(CompanyCacheEntry {
                 id: format!("sheet_row_{}", i + start_row + 1),
-                company_name: name.to_string(),
+                company_name: name,
                 alternative_name: alt,
                 email: email.to_string(),
                 active,
-                tax_id: None,
-                notes: None,
+                tax_id,
+                notes,
                 synced_at: now.clone(),
             });
         }
@@ -463,7 +532,18 @@ fn split_csv_line(line: &str) -> Vec<String> {
 }
 
 fn find_header_col(header: &[String], targets: &[&str]) -> Option<usize> {
+    find_header_col_excluding(header, targets, &[])
+}
+
+fn find_header_col_excluding(
+    header: &[String],
+    targets: &[&str],
+    excluded: &[usize],
+) -> Option<usize> {
     for (idx, col) in header.iter().enumerate() {
+        if excluded.contains(&idx) {
+            continue;
+        }
         let clean = col.trim().to_lowercase();
         for t in targets {
             if clean == *t || clean.contains(t) {

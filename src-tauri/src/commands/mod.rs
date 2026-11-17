@@ -241,11 +241,31 @@ pub fn spawn_upsert_supplier_to_sheets(
         .get_companies_cache()
         .ok()
         .and_then(|list| {
-            list.into_iter()
-                .find(|c| c.company_name.eq_ignore_ascii_case(company_name))
+            list.into_iter().find(|c| {
+                c.company_name.eq_ignore_ascii_case(company_name)
+                    || c.alternative_name
+                        .as_deref()
+                        .map(|a| a.eq_ignore_ascii_case(company_name))
+                        .unwrap_or(false)
+            })
         });
-    let alt_name = matched_entry.as_ref().and_then(|c| c.alternative_name.clone());
+    let comp_is_thai = crate::matching::thai_normalizer::ThaiNormalizer::contains_thai(company_name);
+    let mut alt_name = matched_entry.as_ref().and_then(|c| c.alternative_name.clone());
+    if alt_name.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        let wanted_signal = if comp_is_thai { "english_name" } else { "thai_name" };
+        if let Ok(memories) = db.get_learning_memories() {
+            alt_name = memories
+                .into_iter()
+                .find(|m| {
+                    m.signal_type == wanted_signal
+                        && m.canonical_company_name.eq_ignore_ascii_case(company_name)
+                        && !m.signal_value.eq_ignore_ascii_case(company_name)
+                })
+                .map(|m| m.signal_value);
+        }
+    }
     let tax_id = matched_entry.as_ref().and_then(|c| c.tax_id.clone());
+    let notes_val = matched_entry.as_ref().and_then(|c| c.notes.clone());
     let webhook = settings.gas_webhook_url.clone();
     let secret = settings.gas_auth_secret.clone();
     let sheet_id = settings.google_sheets_id.clone();
@@ -269,6 +289,7 @@ pub fn spawn_upsert_supplier_to_sheets(
             "tab_name": tab_name,
             "company_name": comp_clone,
             "alternative_name": alt_name.unwrap_or_default(),
+            "notes": notes_val.unwrap_or_default(),
             "email": email_clone,
             "tax_id": tax_id.unwrap_or_default(),
         });

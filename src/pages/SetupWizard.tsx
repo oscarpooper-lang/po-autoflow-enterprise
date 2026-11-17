@@ -349,8 +349,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({
                 <li>
                   {tx(
                     lang,
-                    'Create a Google Sheet (can be private — no need to share publicly). Put your supplier company name in Column A and recipient email in Column B (headers optional; supports Thai names, English names, or both!).',
-                    'สร้างไฟล์ Google Sheet (ตั้งเป็นส่วนตัวได้ ไม่ต้องเปิดสาธารณะ) ใส่ชื่อบริษัทผู้ขายในคอลัมน์ A และอีเมลผู้รับในคอลัมน์ B (รองรับทั้งชื่อไทยและอังกฤษ)'
+                    'Create a Google Sheet (can be private — no need to share publicly). Put your supplier Thai/Primary name in Column A, English/Alternate name in Column B, recipient email in Column C, and optional Proofing/Notes in Column D (headers optional; supports filling Thai, English, or both!).',
+                    'สร้างไฟล์ Google Sheet (ตั้งเป็นส่วนตัวได้ ไม่ต้องเปิดสาธารณะ) ใส่ชื่อบริษัทผู้ขาย (ภาษาไทยหรือชื่อหลัก) ในคอลัมน์ A, ชื่ออังกฤษ/ชื่อสำรองในคอลัมน์ B, อีเมลในคอลัมน์ C และข้อมูลตรวจทาน/หมายเหตุในคอลัมน์ D (จะใส่ทั้งสองชื่อหรือใส่แค่ชื่อเดียวก็ได้!)'
                   )}
                 </li>
                 <li>

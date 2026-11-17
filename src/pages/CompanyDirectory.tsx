@@ -45,6 +45,8 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
     return (
       c.company_name.toLowerCase().includes(q) ||
       (c.alternative_name && c.alternative_name.toLowerCase().includes(q)) ||
+      (c.notes && c.notes.toLowerCase().includes(q)) ||
+      (c.tax_id && c.tax_id.toLowerCase().includes(q)) ||
       c.email.toLowerCase().includes(q)
     );
   });
@@ -165,8 +167,9 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
             <table className="w-full text-left text-xs">
               <thead className="bg-zinc-950/70 text-zinc-400 font-semibold border-b border-zinc-800">
                 <tr>
-                  <th className="py-3 px-4">{tx(lang, 'Supplier Name', 'ชื่อผู้ขาย')}</th>
-                  <th className="py-3 px-4">{tx(lang, 'English / Alternate Name', 'ชื่ออังกฤษ / ชื่อสำรอง')}</th>
+                  <th className="py-3 px-4">{tx(lang, 'Primary / Thai Name', 'ชื่อบริษัทหลัก (ไทย / หลัก)')}</th>
+                  <th className="py-3 px-4">{tx(lang, 'English / Alternate Name', 'ชื่อภาษาอังกฤษ / ชื่อสำรอง')}</th>
+                  <th className="py-3 px-4">{tx(lang, 'Proofing / Notes', 'ข้อมูลตรวจทาน / หมายเหตุ')}</th>
                   <th className="py-3 px-4">{tx(lang, 'Recipient Email', 'อีเมลผู้รับ')}</th>
                   <th className="py-3 px-4">{tx(lang, 'Tax ID', 'เลขผู้เสียภาษี (Tax ID)')}</th>
                   <th className="py-3 px-4">{tx(lang, 'Status', 'สถานะ')}</th>
@@ -176,7 +179,7 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
               <tbody className="divide-y divide-zinc-800/70">
                 {filteredCompanies.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-12 text-center text-zinc-500">
+                    <td colSpan={7} className="py-12 text-center text-zinc-500">
                       {tx(
                         lang,
                         'No companies found. Click "Sync from Google Sheets" to fetch directory.',
@@ -192,6 +195,9 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
                       </td>
                       <td className="py-3 px-4 text-zinc-300">
                         {comp.alternative_name || <span className="text-zinc-600">—</span>}
+                      </td>
+                      <td className="py-3 px-4 text-zinc-300 max-w-[200px] truncate" title={comp.notes || ''}>
+                        {comp.notes || <span className="text-zinc-600">—</span>}
                       </td>
                       <td className="py-3 px-4 font-mono text-blue-400 font-medium">
                         {comp.email}

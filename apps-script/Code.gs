@@ -387,18 +387,22 @@ function buildSuppliersResponse(values, tabUsed) {
 
   const firstRow = values[0].map(h => String(h).trim());
   const firstRowLow = firstRow.map(h => h.toLowerCase());
+  const emailRowRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const firstRowHasEmail = firstRow.some(h => emailRowRegex.test(h));
   const hasHeaderKeyword = firstRowLow.some(h =>
-    h.includes("company") || h.includes("ชื่อ") || h.includes("supplier") || h.includes("email") || h.includes("อีเมล")
+    h.includes("company") || h.includes("ชื่อ") || h.includes("supplier") || h.includes("vendor") ||
+    h.includes("thai") || h.includes("english") || h.includes("email") || h.includes("อีเมล") ||
+    h.includes("proofing") || h.includes("บริษัท")
   );
-  const firstRowHasEmail = firstRow.some(h => h.indexOf("@") > 0);
-  const isHeaderless = !hasHeaderKeyword && firstRowHasEmail;
+  const isHeaderless = firstRowHasEmail || !hasHeaderKeyword;
 
-  let compCol, emailCol, aliasCol, taxCol, startRow;
+  let compCol, emailCol, aliasCol, notesCol, taxCol, startRow;
   if (isHeaderless) {
     emailCol = firstRow.findIndex(h => h.indexOf("@") > 0);
     compCol = firstRow.findIndex((h, idx) => idx !== emailCol && h.length > 0);
-    if (compCol < 0) compCol = 0;
-    aliasCol = -1;
+    if (compCol < 0) compCol = emailCol === 0 ? 1 : 0;
+    aliasCol = firstRow.findIndex((h, idx) => idx !== emailCol && idx !== compCol && h.length > 0);
+    notesCol = firstRow.findIndex((h, idx) => idx !== emailCol && idx !== compCol && idx !== aliasCol && h.length > 0);
     taxCol = -1;
     startRow = 0;
   } else {
@@ -412,26 +416,52 @@ function buildSuppliersResponse(values, tabUsed) {
         message: "Sheet found but contains 0 data rows (only headers or blank)"
       })).setMimeType(ContentService.MimeType.JSON);
     }
-    compCol = firstRowLow.findIndex(h => h.includes("company") || h.includes("ชื่อ") || h.includes("supplier") || h.includes("name"));
+    compCol = firstRowLow.findIndex(h =>
+      h.includes("company name") || h.includes("thai name") || h.includes("name (th)") || h.includes("name th") ||
+      h.includes("ชื่อบริษัท") || h.includes("ชื่อผู้ขาย") || h.includes("ชื่อไทย") ||
+      h.includes("company") || h.includes("ชื่อ") || h.includes("supplier") || h.includes("vendor") || h.includes("name")
+    );
     emailCol = firstRowLow.findIndex(h => h.includes("email") || h.includes("อีเมล") || h.includes("mail"));
     if (emailCol < 0 && firstRowLow.length === 2) emailCol = 1;
-    aliasCol = firstRowLow.findIndex(h => h.includes("alias") || h.includes("alt") || h.includes("อื่น") || h.includes("สำรอง"));
-    taxCol = firstRowLow.findIndex(h => h.includes("tax") || h.includes("ภาษี"));
+    aliasCol = firstRowLow.findIndex((h, idx) =>
+      idx !== compCol && idx !== emailCol && (
+        h.includes("alias") || h.includes("alt") || h.includes("english") || h.includes("name (en)") ||
+        h.includes("name en") || h.includes("company (en)") || h.includes("อังกฤษ") ||
+        h.includes("อื่น") || h.includes("สำรอง") || h.includes("thai") || h.includes("name (th)") || h.includes("ไทย")
+      )
+    );
+    notesCol = firstRowLow.findIndex((h, idx) =>
+      idx !== compCol && idx !== emailCol && idx !== aliasCol && (
+        h.includes("proofing") || h.includes("proof") || h.includes("reference") ||
+        h.includes("remark") || h.includes("note") || h.includes("หมายเหตุ") ||
+        h.includes("ตรวจ") || h.includes("อ้างอิง")
+      )
+    );
+    taxCol = firstRowLow.findIndex((h, idx) =>
+      idx !== compCol && idx !== emailCol && idx !== aliasCol && (
+        h.includes("tax") || h.includes("tin") || h.includes("ภาษี")
+      )
+    );
     startRow = 1;
   }
 
   const suppliers = [];
   for (let r = startRow; r < values.length; r++) {
     const row = values[r];
-    const name = compCol >= 0 ? String(row[compCol] || "").trim() : String(row[0] || "").trim();
+    const primaryRaw = compCol >= 0 ? String(row[compCol] || "").trim() : String(row[0] || "").trim();
+    const altRaw = aliasCol >= 0 && row[aliasCol] ? String(row[aliasCol]).trim() : "";
+    // Support keeping both English & Thai, or just one of them filled on a row
+    const name = primaryRaw || altRaw;
+    const alt = primaryRaw && altRaw ? altRaw : null;
     const email = emailCol >= 0 ? String(row[emailCol] || "").trim() : (row[1] ? String(row[1]).trim() : "");
     if (!name || !email) continue;
 
     suppliers.push({
       company_name: name,
-      alternative_name: aliasCol >= 0 && row[aliasCol] ? String(row[aliasCol]).trim() : null,
+      alternative_name: alt,
       email: email,
       tax_id: taxCol >= 0 && row[taxCol] ? String(row[taxCol]).trim() : null,
+      notes: notesCol >= 0 && row[notesCol] ? String(row[notesCol]).trim() : null,
       active: true
     });
   }
@@ -530,8 +560,8 @@ function handleUpsertSupplier(sheetId, tabName, payload) {
 
     const values = sheet.getDataRange().getValues();
     if (!values || values.length === 0 || (values.length === 1 && values[0].every(c => String(c).trim() === ""))) {
-      sheet.appendRow(["Company Name", "Alternative Name", "Email", "Active", "Tax ID", "Notes"]);
-      sheet.appendRow([companyName, altName, email, "TRUE", taxId, "Auto-learned by PO AutoFlow"]);
+      sheet.appendRow(["Company Name", "English / Alternate Name", "Email", "Proofing / Notes", "Active", "Tax ID"]);
+      sheet.appendRow([companyName, altName, email, safeSheetCell(payload.notes) || "Auto-learned by PO AutoFlow", "TRUE", taxId]);
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         mode: "created_with_headers",
@@ -542,37 +572,60 @@ function handleUpsertSupplier(sheetId, tabName, payload) {
 
     const firstRow = values[0].map(h => String(h).trim());
     const firstRowLow = firstRow.map(h => h.toLowerCase());
+    const emailRowRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const firstRowHasEmail = firstRow.some(h => emailRowRegex.test(h));
     const hasHeaderKeyword = firstRowLow.some(h =>
-      h.includes("company") || h.includes("ชื่อ") || h.includes("supplier") || h.includes("email") || h.includes("อีเมล")
+      h.includes("company") || h.includes("ชื่อ") || h.includes("supplier") || h.includes("vendor") ||
+      h.includes("thai") || h.includes("english") || h.includes("email") || h.includes("อีเมล") || h.includes("proofing")
     );
-    const firstRowHasEmail = firstRow.some(h => h.indexOf("@") > 0);
-    const isHeaderless = !hasHeaderKeyword && firstRowHasEmail;
+    const isHeaderless = firstRowHasEmail || !hasHeaderKeyword;
 
-    let compCol, emailCol, aliasCol, taxCol, startRow;
+    let compCol, emailCol, aliasCol, notesCol, taxCol, startRow;
     if (isHeaderless) {
       emailCol = firstRow.findIndex(h => h.indexOf("@") > 0);
       compCol = firstRow.findIndex((h, idx) => idx !== emailCol && h.length > 0);
-      if (compCol < 0) compCol = 0;
-      aliasCol = -1;
+      if (compCol < 0) compCol = emailCol === 0 ? 1 : 0;
+      aliasCol = firstRow.findIndex((h, idx) => idx !== emailCol && idx !== compCol && h.length > 0);
+      notesCol = -1;
       taxCol = -1;
       startRow = 0;
     } else {
-      compCol = firstRowLow.findIndex(h => h.includes("company") || h.includes("ชื่อ") || h.includes("supplier") || h.includes("name"));
+      compCol = firstRowLow.findIndex(h =>
+        h.includes("company name") || h.includes("thai name") || h.includes("name (th)") || h.includes("ชื่อบริษัท") ||
+        h.includes("company") || h.includes("ชื่อ") || h.includes("supplier") || h.includes("name")
+      );
       if (compCol < 0) compCol = 0;
       emailCol = firstRowLow.findIndex(h => h.includes("email") || h.includes("อีเมล") || h.includes("mail"));
       if (emailCol < 0) emailCol = 1;
-      aliasCol = firstRowLow.findIndex(h => h.includes("alias") || h.includes("alt") || h.includes("อื่น") || h.includes("สำรอง"));
-      taxCol = firstRowLow.findIndex(h => h.includes("tax") || h.includes("ภาษี"));
+      aliasCol = firstRowLow.findIndex((h, idx) =>
+        idx !== compCol && idx !== emailCol && (
+          h.includes("alias") || h.includes("alt") || h.includes("english") || h.includes("name (en)") ||
+          h.includes("อังกฤษ") || h.includes("อื่น") || h.includes("สำรอง") || h.includes("thai") || h.includes("ไทย")
+        )
+      );
+      notesCol = firstRowLow.findIndex((h, idx) =>
+        idx !== compCol && idx !== emailCol && idx !== aliasCol && (
+          h.includes("proofing") || h.includes("proof") || h.includes("remark") || h.includes("note") || h.includes("หมายเหตุ")
+        )
+      );
+      taxCol = firstRowLow.findIndex((h, idx) =>
+        idx !== compCol && idx !== emailCol && idx !== aliasCol && (h.includes("tax") || h.includes("ภาษี"))
+      );
       startRow = 1;
     }
 
+    const notesText = safeSheetCell(payload.notes);
     const targetLow = companyName.toLowerCase();
     for (let r = startRow; r < values.length; r++) {
       const cellName = String(values[r][compCol] || "").trim().toLowerCase();
-      if (cellName === targetLow) {
+      const cellAlias = aliasCol >= 0 ? String(values[r][aliasCol] || "").trim().toLowerCase() : "";
+      if (cellName === targetLow || (cellAlias && cellAlias === targetLow)) {
         sheet.getRange(r + 1, emailCol + 1).setValue(email);
         if (aliasCol >= 0 && altName && !String(values[r][aliasCol] || "").trim()) {
           sheet.getRange(r + 1, aliasCol + 1).setValue(altName);
+        }
+        if (notesCol >= 0 && notesText && !String(values[r][notesCol] || "").trim()) {
+          sheet.getRange(r + 1, notesCol + 1).setValue(notesText);
         }
         if (taxCol >= 0 && taxId && !String(values[r][taxCol] || "").trim()) {
           sheet.getRange(r + 1, taxCol + 1).setValue(taxId);
@@ -589,17 +642,19 @@ function handleUpsertSupplier(sheetId, tabName, payload) {
 
     if (isHeaderless) {
       const row = [];
-      const width = Math.max(2, compCol + 1, emailCol + 1);
+      const width = Math.max(2, compCol + 1, emailCol + 1, aliasCol + 1);
       for (let i = 0; i < width; i++) row.push("");
       row[compCol] = companyName;
       row[emailCol] = email;
+      if (aliasCol >= 0 && altName) row[aliasCol] = altName;
       sheet.appendRow(row);
     } else {
-      const width = Math.max(firstRow.length, compCol + 1, emailCol + 1, aliasCol + 1, taxCol + 1);
+      const width = Math.max(firstRow.length, compCol + 1, emailCol + 1, aliasCol + 1, notesCol + 1, taxCol + 1);
       const row = new Array(width).fill("");
       row[compCol] = companyName;
       row[emailCol] = email;
       if (aliasCol >= 0 && altName) row[aliasCol] = altName;
+      if (notesCol >= 0) row[notesCol] = notesText || "Auto-learned by PO AutoFlow";
       if (taxCol >= 0 && taxId) row[taxCol] = taxId;
       sheet.appendRow(row);
     }

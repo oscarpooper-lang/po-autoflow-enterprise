@@ -28,6 +28,7 @@ import type { Job, OcrResultRecord, CompanyCacheEntry, PagePreviewResponse } fro
 import { api } from '../services/tauri';
 import { StatusBadge } from './Overview';
 import { tr, tx, type UiLang } from '../i18n';
+import { summarizeOcrRecords, type ParsedEntitiesJson } from '../utils/ocrRecords';
 
 interface OcrInspectorProps {
   selectedJobId?: string;
@@ -37,25 +38,6 @@ interface OcrInspectorProps {
   onRefreshData?: () => void;
   onRetryJob?: (jobId: string) => Promise<void> | void;
   lang?: UiLang;
-}
-
-interface ParsedCandidateJson {
-  name: string;
-  confidence: number;
-  language: string;
-  line_index?: number | null;
-  source?: string | null;
-}
-
-interface ParsedEntitiesJson {
-  po_numbers?: string[];
-  tax_ids?: string[];
-  emails?: string[];
-  supplier_candidates?: ParsedCandidateJson[];
-  primary_supplier?: string | null;
-  primary_confidence?: number;
-  primary_supplier_th?: string | null;
-  primary_supplier_en?: string | null;
 }
 
 interface BoundingBoxRecord {
@@ -233,52 +215,27 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     }
   }, [currentRecord]);
 
-  const aggregatedEntities = useMemo(() => {
-    const thNames: string[] = [];
-    const enNames: string[] = [];
-    const emails: string[] = [];
-    const poNumbers: string[] = [];
-    const taxIds: string[] = [];
-    const allCandidates: ParsedCandidateJson[] = [];
+  const currentJobFolder = currentJob?.po_folder_name || '';
 
-    for (const rec of ocrRecords) {
-      if (!rec.detected_entities_json) continue;
-      try {
-        const parsed = JSON.parse(rec.detected_entities_json) as ParsedEntitiesJson;
-        if (parsed.primary_supplier_th && !thNames.includes(parsed.primary_supplier_th)) {
-          thNames.push(parsed.primary_supplier_th);
-        }
-        if (parsed.primary_supplier_en && !enNames.includes(parsed.primary_supplier_en)) {
-          enNames.push(parsed.primary_supplier_en);
-        }
-        for (const e of parsed.emails || []) {
-          if (e && !emails.includes(e)) emails.push(e);
-        }
-        for (const p of parsed.po_numbers || []) {
-          if (p && !poNumbers.includes(p)) poNumbers.push(p);
-        }
-        for (const t of parsed.tax_ids || []) {
-          if (t && !taxIds.includes(t)) taxIds.push(t);
-        }
-        for (const c of parsed.supplier_candidates || []) {
-          if (c?.name && !allCandidates.some((x) => x.name === c.name)) {
-            allCandidates.push(c);
-          }
-        }
-      } catch {
-        // Ignore malformed page JSON
-      }
-    }
+  const aggregatedEntities = useMemo(
+    () => summarizeOcrRecords(ocrRecords, currentJobFolder, parsedEntities),
+    [ocrRecords, currentJobFolder, parsedEntities]
+  );
 
-    return {
-      primaryTh: thNames[0] || parsedEntities.primary_supplier_th || null,
-      primaryEn: enNames[0] || parsedEntities.primary_supplier_en || null,
-      emails,
-      poNumbers,
-      taxIds,
-      candidates: allCandidates,
-    };
-  }, [ocrRecords, parsedEntities]);
+  const currentDetectedRaw = currentJob?.detected_company_raw || '';
+  const currentMatchedName = currentJob?.matched_company_name || '';
+  const currentMatchedEmail = currentJob?.matched_email || '';
+  const currentPoNumber = currentJob?.po_number || '';
+
+  const matchedSheetEntry = useMemo(
+    () =>
+      companies.find(
+        (c) =>
+          Boolean(currentMatchedName) &&
+          (c.company_name === currentMatchedName || c.alternative_name === currentMatchedName)
+      ),
+    [companies, currentMatchedName]
+  );
 
   const boxes: BoundingBoxRecord[] = useMemo(() => {
     const rawBoxes = currentRecord?.bounding_boxes_json;
@@ -300,12 +257,6 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     });
     return Array.from(map.entries());
   }, [ocrRecords]);
-
-  const currentJobFolder = currentJob?.po_folder_name || '';
-  const currentDetectedRaw = currentJob?.detected_company_raw || '';
-  const currentMatchedName = currentJob?.matched_company_name || '';
-  const currentMatchedEmail = currentJob?.matched_email || '';
-  const currentPoNumber = currentJob?.po_number || '';
 
   useEffect(() => {
     setActionBanner(null);
@@ -1009,12 +960,40 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
             <div className="p-3 rounded-lg bg-zinc-950 border border-zinc-800 space-y-1.5 text-xs">
               <div className="flex justify-between gap-2">
                 <span className="text-zinc-500">
+                  {tx(lang, 'Detected From Digital PO / Docs:', 'ชื่อที่อ่านได้จากเอกสารหลัก:')}
+                </span>
+                <span className="text-amber-300 font-medium truncate" title={currentJob?.detected_company_raw || ''}>
+                  {currentJob?.detected_company_raw || '—'}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="text-zinc-500">
                   {tx(lang, 'Matched Sheet Supplier:', 'ผู้ขายที่ตรงใน Google Sheet:')}
                 </span>
                 <span className="text-emerald-400 font-medium truncate">
                   {currentJob?.matched_company_name || tx(lang, 'Not matched', 'ยังไม่ตรงกับรายชื่อ')}
                 </span>
               </div>
+              {matchedSheetEntry?.alternative_name && (
+                <div className="flex justify-between gap-2">
+                  <span className="text-zinc-500">
+                    {tx(lang, 'Sheet Alternate (EN/TH):', 'ชื่ออีกภาษา / สำรองใน Sheet:')}
+                  </span>
+                  <span className="text-zinc-200 truncate" title={matchedSheetEntry.alternative_name}>
+                    {matchedSheetEntry.alternative_name}
+                  </span>
+                </div>
+              )}
+              {matchedSheetEntry?.notes && (
+                <div className="flex justify-between gap-2">
+                  <span className="text-zinc-500">
+                    {tx(lang, 'Sheet Proofing / Notes:', 'ข้อมูลตรวจทาน / หมายเหตุ Sheet:')}
+                  </span>
+                  <span className="text-zinc-300 truncate" title={matchedSheetEntry.notes}>
+                    {matchedSheetEntry.notes}
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between gap-2">
                 <span className="text-zinc-500">{tx(lang, 'Match Score:', 'คะแนนความแม่นยำ:')}</span>
                 <span className="text-zinc-200 font-mono">
