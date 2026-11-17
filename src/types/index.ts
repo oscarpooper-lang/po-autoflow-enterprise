@@ -16,6 +16,7 @@ export interface AppSettings {
   ocr_confidence_threshold_review: number;
   google_sheets_id: string;
   google_sheets_tab_name: string;
+  google_sheets_ov_tab_name?: string;
   google_drive_folder_id: string;
   gas_webhook_url: string;
   gas_auth_secret: string;
@@ -165,6 +166,7 @@ export interface CompanyCacheEntry {
   active: boolean;
   tax_id?: string;
   notes?: string;
+  vendor_group?: string;
   synced_at: string;
 }
 

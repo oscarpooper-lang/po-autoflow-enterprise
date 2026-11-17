@@ -60,6 +60,7 @@ fn test_intelligent_company_matching_with_confidence_categories() {
             active: true,
             tax_id: Some("0105556012345".to_string()),
             notes: None,
+            vendor_group: Some("DV".to_string()),
             synced_at: "2026-11-12T00:00:00Z".to_string(),
         },
         CompanyCacheEntry {
@@ -70,6 +71,7 @@ fn test_intelligent_company_matching_with_confidence_categories() {
             active: true,
             tax_id: None,
             notes: None,
+            vendor_group: Some("DV".to_string()),
             synced_at: "2026-11-12T00:00:00Z".to_string(),
         },
     ];
@@ -251,6 +253,7 @@ fn test_thai_first_candidates_and_cross_script_matching() {
         active: true,
         tax_id: None,
         notes: None,
+        vendor_group: Some("DV".to_string()),
         synced_at: "2026-11-16T00:00:00Z".to_string(),
     }];
 
@@ -545,6 +548,61 @@ fn test_digital_po_document_priority() {
     assert_eq!(docs.len(), 3);
     assert_eq!(docs[0].relative_path, "PO-26001212.pdf");
 }
+
+#[test]
+fn test_dv_ov_multi_tab_and_vendor_classification() {
+    let tabs = app_lib::google::sheets::resolve_sheet_tabs("DV", "OV");
+    assert_eq!(tabs, vec!["DV".to_string(), "OV".to_string()]);
+
+    let combined = app_lib::google::sheets::resolve_sheet_tabs("DV, OV", "");
+    assert_eq!(combined, vec!["DV".to_string(), "OV".to_string()]);
+
+    assert_eq!(app_lib::google::sheets::vendor_group_label("DV", "OV"), "DV");
+    assert_eq!(app_lib::google::sheets::vendor_group_label("OV", "OV"), "OV");
+    assert_eq!(
+        app_lib::google::sheets::vendor_group_label("Oversea Vendors", ""),
+        "OV"
+    );
+    assert_eq!(
+        app_lib::google::sheets::vendor_group_label("Domestic Vendors", ""),
+        "DV"
+    );
+
+    // Domestic classifications
+    assert!(!app_lib::google::sheets::is_overseas_vendor(
+        "บริษัท สยาม ซัพพลาย จำกัด",
+        "",
+        "sales@siam.com",
+        ""
+    ));
+    assert!(!app_lib::google::sheets::is_overseas_vendor(
+        "SIAM SUPPLY CO., LTD.",
+        "",
+        "orders@siamsupply.co.th",
+        ""
+    ));
+    assert!(!app_lib::google::sheets::is_overseas_vendor(
+        "PASINSOOK LIMITED PARTNERSHIP",
+        "",
+        "sales@vendor.com",
+        "0103554009876"
+    ));
+
+    // Overseas classifications
+    assert!(app_lib::google::sheets::is_overseas_vendor(
+        "SIEMENS ENERGY GMBH",
+        "",
+        "orders@siemens-energy.de",
+        ""
+    ));
+    assert!(app_lib::google::sheets::is_overseas_vendor(
+        "ACME ASIA PACIFIC PTE. LTD.",
+        "",
+        "ap@acme.sg",
+        ""
+    ));
+}
+
 
 
 

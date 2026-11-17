@@ -269,7 +269,37 @@ pub fn spawn_upsert_supplier_to_sheets(
     let webhook = settings.gas_webhook_url.clone();
     let secret = settings.gas_auth_secret.clone();
     let sheet_id = settings.google_sheets_id.clone();
-    let tab_name = settings.google_sheets_tab_name.clone();
+    let tabs = crate::google::sheets::resolve_sheet_tabs(
+        &settings.google_sheets_tab_name,
+        &settings.google_sheets_ov_tab_name,
+    );
+    let primary_tab = tabs.first().cloned().unwrap_or_else(|| "Suppliers".to_string());
+    let ov_tab_clean = settings.google_sheets_ov_tab_name.trim().to_string();
+    let tab_name = if let Some(existing_grp) = matched_entry
+        .as_ref()
+        .and_then(|c| c.vendor_group.as_deref())
+        .map(str::trim)
+        .filter(|g| !g.is_empty())
+    {
+        if existing_grp.eq_ignore_ascii_case("OV") && !ov_tab_clean.is_empty() {
+            ov_tab_clean
+        } else if existing_grp.eq_ignore_ascii_case("DV") {
+            primary_tab
+        } else {
+            existing_grp.to_string()
+        }
+    } else if !ov_tab_clean.is_empty()
+        && crate::google::sheets::is_overseas_vendor(
+            company_name,
+            alt_name.as_deref().unwrap_or(""),
+            recipient_email,
+            tax_id.as_deref().unwrap_or(""),
+        )
+    {
+        ov_tab_clean
+    } else {
+        primary_tab
+    };
     let comp_clone = company_name.to_string();
     let email_clone = recipient_email.to_string();
     let db_clone = db.clone();
@@ -471,11 +501,16 @@ pub async fn test_sheets_connection(
     state: State<'_, AppState>,
     spreadsheet_id: String,
     tab_name: String,
+    ov_tab_name: Option<String>,
     gas_url: Option<String>,
     gas_secret: Option<String>,
 ) -> Result<usize, String> {
     let mut settings = state.db.get_settings().map_err(|e| e.to_string())?;
     let client = SheetsClient::new();
+    let target_ov_tab = ov_tab_name
+        .unwrap_or_else(|| settings.google_sheets_ov_tab_name.clone())
+        .trim()
+        .to_string();
 
     // Priority 1: Google Apps Script Webhook (native private access via SpreadsheetApp)
     let target_gas_url = gas_url
@@ -488,7 +523,13 @@ pub async fn test_sheets_connection(
     let mut gas_error = None;
     if !target_gas_url.trim().is_empty() {
         match client
-            .fetch_companies_via_gas(&target_gas_url, &target_gas_secret, &spreadsheet_id, &tab_name)
+            .fetch_companies_for_tabs_via_gas(
+                &target_gas_url,
+                &target_gas_secret,
+                &spreadsheet_id,
+                &tab_name,
+                &target_ov_tab,
+            )
             .await
         {
             Ok(entries) => return Ok(entries.len()),
@@ -514,9 +555,12 @@ pub async fn test_sheets_connection(
         }
     }
 
-    // Priority 3: Direct / Public export
-    match client.test_connection(&spreadsheet_id, &tab_name, token_opt.as_deref()).await {
-        Ok(count) => Ok(count),
+    // Priority 3: Direct / Public export across configured tabs
+    match client
+        .fetch_companies_for_tabs(&spreadsheet_id, &tab_name, &target_ov_tab, token_opt.as_deref())
+        .await
+    {
+        Ok(entries) => Ok(entries.len()),
         Err(e) => {
             if let Some(ge) = gas_error {
                 Err(format!("{}. (Direct Google fallback: {})", ge, e))

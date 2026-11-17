@@ -40,6 +40,7 @@ async fn test_end_to_end_po_pipeline_workflow() {
         active: true,
         tax_id: Some("0105558012345".to_string()),
         notes: Some("Preferred Tier-1 Supplier".to_string()),
+        vendor_group: Some("DV".to_string()),
         synced_at: chrono::Utc::now().to_rfc3339(),
     };
     db.sync_companies_cache(&[sample_company.clone()])

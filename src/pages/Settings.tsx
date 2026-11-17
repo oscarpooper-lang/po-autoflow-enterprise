@@ -348,7 +348,8 @@ export const Settings: React.FC<SettingsProps> = ({
         formData.google_sheets_id,
         formData.google_sheets_tab_name,
         formData.gas_webhook_url,
-        formData.gas_auth_secret
+        formData.gas_auth_secret,
+        formData.google_sheets_ov_tab_name
       );
       setTestStatus((prev) => ({
         ...prev,
@@ -1918,17 +1919,56 @@ export const Settings: React.FC<SettingsProps> = ({
                 </p>
               </div>
 
-              <div>
-                <label className="text-zinc-300 font-semibold block mb-1">
-                  {tx(lang, 'Worksheet / Tab Name:', 'ชื่อแผ่นงาน / Tab ใน Sheet:')}
-                </label>
-                <input
-                  type="text"
-                  value={formData.google_sheets_tab_name}
-                  onChange={(e) => handleChange('google_sheets_tab_name', e.target.value)}
-                  placeholder="Suppliers"
-                  className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 font-medium"
-                />
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <span className="text-zinc-300 font-semibold">
+                    {tx(lang, 'Worksheet / Sheet Tab Names:', 'ชื่อแผ่นงาน (Tabs) ใน Google Sheet:')}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleChange('google_sheets_tab_name', 'DV');
+                      handleChange('google_sheets_ov_tab_name', 'OV');
+                    }}
+                    className="px-2.5 py-1 rounded bg-blue-500/15 hover:bg-blue-500/25 border border-blue-500/30 text-blue-300 text-[11px] font-semibold"
+                  >
+                    {tx(lang, 'Set DV + OV Tabs', 'ตั้งค่าเป็นแท็บ DV + OV')}
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-zinc-400 text-[11px] font-medium block mb-1">
+                      {tx(lang, 'Domestic Vendors Tab (DV):', 'แท็บผู้ขายในประเทศ (DV / หลัก):')}
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.google_sheets_tab_name}
+                      onChange={(e) => handleChange('google_sheets_tab_name', e.target.value)}
+                      placeholder="DV (or Suppliers)"
+                      className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 font-medium"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-zinc-400 text-[11px] font-medium block mb-1">
+                      {tx(lang, 'Overseas Vendors Tab (OV — Optional):', 'แท็บผู้ขายต่างประเทศ (OV — ไม่บังคับ):')}
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.google_sheets_ov_tab_name || ''}
+                      onChange={(e) => handleChange('google_sheets_ov_tab_name', e.target.value)}
+                      placeholder="OV"
+                      className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 font-medium"
+                    />
+                  </div>
+                </div>
+                <p className="text-[11px] text-zinc-500">
+                  {tx(
+                    lang,
+                    'Keep Domestic (DV) and Overseas (OV) vendors separated on two sheet tabs. Leave OV empty to use a single tab.',
+                    'แยกผู้ขายในประเทศ (DV) และต่างประเทศ (OV) ไว้คนละแท็บได้ ระบบจะซิงก์ทั้งคู่ให้อัตโนมัติ (เว้นว่าง OV ได้หากใช้แท็บเดียว)'
+                  )}
+                </p>
               </div>
 
               <div className="pt-2">

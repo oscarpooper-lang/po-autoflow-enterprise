@@ -142,11 +142,12 @@ impl PipelineCoordinator {
         let entries = if !settings.gas_webhook_url.trim().is_empty() {
             match self
                 .sheets_client
-                .fetch_companies_via_gas(
+                .fetch_companies_for_tabs_via_gas(
                     &settings.gas_webhook_url,
                     &settings.gas_auth_secret,
                     &settings.google_sheets_id,
                     &settings.google_sheets_tab_name,
+                    &settings.google_sheets_ov_tab_name,
                 )
                 .await
             {
@@ -167,7 +168,12 @@ impl PipelineCoordinator {
                         }
                     }
                     self.sheets_client
-                        .fetch_companies(&settings.google_sheets_id, &settings.google_sheets_tab_name, token_opt.as_deref())
+                        .fetch_companies_for_tabs(
+                            &settings.google_sheets_id,
+                            &settings.google_sheets_tab_name,
+                            &settings.google_sheets_ov_tab_name,
+                            token_opt.as_deref(),
+                        )
                         .await
                         .map_err(|err| err.to_string())?
                 }
@@ -187,7 +193,12 @@ impl PipelineCoordinator {
                 }
             }
             self.sheets_client
-                .fetch_companies(&settings.google_sheets_id, &settings.google_sheets_tab_name, token_opt.as_deref())
+                .fetch_companies_for_tabs(
+                    &settings.google_sheets_id,
+                    &settings.google_sheets_tab_name,
+                    &settings.google_sheets_ov_tab_name,
+                    token_opt.as_deref(),
+                )
                 .await
                 .map_err(|e| e.to_string())?
         };

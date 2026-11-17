@@ -19,6 +19,8 @@ pub struct AppSettings {
     pub ocr_confidence_threshold_review: f64,
     pub google_sheets_id: String,
     pub google_sheets_tab_name: String,
+    #[serde(default)]
+    pub google_sheets_ov_tab_name: String,
     pub google_drive_folder_id: String,
     pub gas_webhook_url: String,
     pub gas_auth_secret: String,
@@ -172,6 +174,7 @@ impl Default for AppSettings {
             ocr_confidence_threshold_review: 75.0,
             google_sheets_id: "".to_string(),
             google_sheets_tab_name: "Suppliers".to_string(),
+            google_sheets_ov_tab_name: "".to_string(),
             google_drive_folder_id: "".to_string(),
             gas_webhook_url: "".to_string(),
             gas_auth_secret: "po-autoflow-enterprise-secret-key".to_string(),
@@ -308,6 +311,8 @@ pub struct CompanyCacheEntry {
     pub active: bool,
     pub tax_id: Option<String>,
     pub notes: Option<String>,
+    #[serde(default)]
+    pub vendor_group: Option<String>, // "DV" (Domestic), "OV" (Overseas), or source sheet tab
     pub synced_at: String,
 }
 

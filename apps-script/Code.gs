@@ -115,7 +115,8 @@ function doGet(e) {
     }
     const sheetId = (e.parameter && e.parameter.sheet_id) || PropertiesService.getScriptProperties().getProperty("SHEET_ID");
     const tabName = (e.parameter && e.parameter.tab_name) || "Suppliers";
-    return handleGetSuppliers(sheetId, tabName);
+    const strictTab = e.parameter && (e.parameter.strict_tab === "1" || e.parameter.strict_tab === "true");
+    return handleGetSuppliers(sheetId, tabName, strictTab);
   }
 
   // Default: Healthcheck diagnostic
@@ -169,7 +170,8 @@ function doPost(e) {
     if (action === "sync_suppliers" || action === "get_suppliers") {
       const sheetId = payload.sheet_id || (e.parameter && e.parameter.sheet_id) || PropertiesService.getScriptProperties().getProperty("SHEET_ID");
       const tabName = payload.tab_name || (e.parameter && e.parameter.tab_name) || "Suppliers";
-      return handleGetSuppliers(sheetId, tabName);
+      const strictTab = Boolean(payload.strict_tab || (e.parameter && (e.parameter.strict_tab === "1" || e.parameter.strict_tab === "true")));
+      return handleGetSuppliers(sheetId, tabName, strictTab);
     }
 
     // =========================================================================
@@ -445,6 +447,7 @@ function buildSuppliersResponse(values, tabUsed) {
     startRow = 1;
   }
 
+  const grp = deriveVendorGroup(tabUsed);
   const suppliers = [];
   for (let r = startRow; r < values.length; r++) {
     const row = values[r];
@@ -462,6 +465,7 @@ function buildSuppliersResponse(values, tabUsed) {
       email: email,
       tax_id: taxCol >= 0 && row[taxCol] ? String(row[taxCol]).trim() : null,
       notes: notesCol >= 0 && row[notesCol] ? String(row[notesCol]).trim() : null,
+      vendor_group: grp,
       active: true
     });
   }
@@ -476,29 +480,76 @@ function buildSuppliersResponse(values, tabUsed) {
   })).setMimeType(ContentService.MimeType.JSON);
 }
 
+function deriveVendorGroup(tabName) {
+  const low = String(tabName || "").trim().toLowerCase();
+  if (low === "ov" || low.indexOf("oversea") >= 0 || low.indexOf("foreign") >= 0 || low.indexOf("ต่างประเทศ") >= 0) {
+    return "OV";
+  }
+  if (low === "dv" || low.indexOf("domestic") >= 0 || low.indexOf("ในประเทศ") >= 0) {
+    return "DV";
+  }
+  return tabName ? String(tabName).trim() : "DV";
+}
+
+function findSheetTab(ss, tabName, allowFallback) {
+  const allSheets = ss.getSheets();
+  if (tabName) {
+    const exact = ss.getSheetByName(tabName);
+    if (exact) return exact;
+    const low = String(tabName).trim().toLowerCase();
+    for (let i = 0; i < allSheets.length; i++) {
+      if (allSheets[i].getName().trim().toLowerCase() === low) {
+        return allSheets[i];
+      }
+    }
+    if (low === "dv" || low.indexOf("domestic") >= 0) {
+      for (let i = 0; i < allSheets.length; i++) {
+        const sn = allSheets[i].getName().trim().toLowerCase();
+        if (sn === "dv" || sn.indexOf("domestic") >= 0 || sn.indexOf("ในประเทศ") >= 0) {
+          return allSheets[i];
+        }
+      }
+    }
+    if (low === "ov" || low.indexOf("oversea") >= 0) {
+      for (let i = 0; i < allSheets.length; i++) {
+        const sn = allSheets[i].getName().trim().toLowerCase();
+        if (sn === "ov" || sn.indexOf("oversea") >= 0 || sn.indexOf("foreign") >= 0 || sn.indexOf("ต่างประเทศ") >= 0) {
+          return allSheets[i];
+        }
+      }
+    }
+  }
+  if (!allowFallback) return null;
+  for (let i = 0; i < allSheets.length; i++) {
+    const sName = allSheets[i].getName().toLowerCase();
+    if (sName.includes("supplier") || sName.includes("บริษัท") || sName.includes("ผู้ขาย") || sName.includes("sheet1")) {
+      return allSheets[i];
+    }
+  }
+  return allSheets[0];
+}
+
 /**
  * Reads suppliers from private Google Sheet.
- * Tries SpreadsheetApp first; if spreadsheets scope is not yet authorized, falls back to
- * authenticated gviz CSV export using ScriptApp.getOAuthToken() (covered by drive.readonly).
+ * Supports multi-tab layouts (e.g. DV + OV) with strict tab matching so missing tabs do not clone tab 0.
  */
-function handleGetSuppliers(sheetId, tabName) {
+function handleGetSuppliers(sheetId, tabName, strictTab) {
   if (!sheetId) {
     return jsonError("Missing sheet_id parameter. Provide Google Spreadsheet ID in request or in Script Properties (SHEET_ID).", 400);
   }
 
   try {
     const ss = SpreadsheetApp.openById(sheetId);
-    let sheet = tabName ? ss.getSheetByName(tabName) : null;
+    const sheet = findSheetTab(ss, tabName, !strictTab);
     if (!sheet) {
-      const allSheets = ss.getSheets();
-      for (let i = 0; i < allSheets.length; i++) {
-        const sName = allSheets[i].getName().toLowerCase();
-        if (sName.includes("supplier") || sName.includes("บริษัท") || sName.includes("ผู้ขาย") || sName.includes("sheet1")) {
-          sheet = allSheets[i];
-          break;
-        }
-      }
-      if (!sheet) sheet = allSheets[0];
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "ok",
+        count: 0,
+        suppliers: [],
+        tab_used: tabName || "",
+        tab_missing: true,
+        message: "Tab '" + tabName + "' not found in spreadsheet (0 rows)"
+      })).setMimeType(ContentService.MimeType.JSON);
     }
 
     const values = sheet.getDataRange().getValues();
@@ -552,10 +603,12 @@ function handleUpsertSupplier(sheetId, tabName, payload) {
 
   try {
     const ss = SpreadsheetApp.openById(sheetId);
-    let sheet = tabName ? ss.getSheetByName(tabName) : null;
+    let sheet = findSheetTab(ss, tabName, !tabName);
+    if (!sheet && tabName) {
+      sheet = ss.insertSheet(tabName);
+    }
     if (!sheet) {
-      const allSheets = ss.getSheets();
-      sheet = allSheets[0];
+      sheet = ss.getSheets()[0];
     }
 
     const values = sheet.getDataRange().getValues();

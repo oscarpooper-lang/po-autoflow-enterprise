@@ -31,6 +31,7 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
   lang = 'en',
 }) => {
   const [activeTab, setActiveTab] = useState<'directory' | 'aliases'>('directory');
+  const [groupFilter, setGroupFilter] = useState<'all' | 'DV' | 'OV'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newAlias, setNewAlias] = useState('');
@@ -39,7 +40,21 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
 
   const effectiveCanonical = newCanonical || companies[0]?.company_name || '';
 
+  const normalizeVendorGroup = (raw?: string): 'DV' | 'OV' | string => {
+    const clean = (raw || '').trim();
+    const low = clean.toLowerCase();
+    if (low === 'ov' || low.includes('oversea') || low.includes('foreign')) return 'OV';
+    if (!clean || low === 'dv' || low.includes('domestic') || low === 'suppliers') return 'DV';
+    return clean;
+  };
+
+  const dvCount = companies.filter((c) => normalizeVendorGroup(c.vendor_group) === 'DV').length;
+  const ovCount = companies.filter((c) => normalizeVendorGroup(c.vendor_group) === 'OV').length;
+
   const filteredCompanies = companies.filter((c) => {
+    if (groupFilter !== 'all' && normalizeVendorGroup(c.vendor_group) !== groupFilter) {
+      return false;
+    }
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -47,6 +62,7 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
       (c.alternative_name && c.alternative_name.toLowerCase().includes(q)) ||
       (c.notes && c.notes.toLowerCase().includes(q)) ||
       (c.tax_id && c.tax_id.toLowerCase().includes(q)) ||
+      (c.vendor_group && c.vendor_group.toLowerCase().includes(q)) ||
       c.email.toLowerCase().includes(q)
     );
   });
@@ -121,27 +137,61 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
 
       {/* Tab Switcher & Search Bar */}
       <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 flex flex-wrap items-center justify-between gap-3 shadow-sm">
-        <div className="flex items-center space-x-1 bg-zinc-950 p-1 rounded-lg border border-zinc-800">
-          <button
-            onClick={() => setActiveTab('directory')}
-            className={`px-3 py-1.5 rounded text-xs font-semibold transition-all ${
-              activeTab === 'directory'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            {tx(lang, 'Google Sheets Directory', 'รายชื่อจาก Google Sheets')} ({companies.length})
-          </button>
-          <button
-            onClick={() => setActiveTab('aliases')}
-            className={`px-3 py-1.5 rounded text-xs font-semibold transition-all ${
-              activeTab === 'aliases'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            {tx(lang, 'Learned Aliases', 'ชื่อเรียกสำรองที่จำไว้')} ({aliases.length})
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center space-x-1 bg-zinc-950 p-1 rounded-lg border border-zinc-800">
+            <button
+              onClick={() => setActiveTab('directory')}
+              className={`px-3 py-1.5 rounded text-xs font-semibold transition-all ${
+                activeTab === 'directory'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              {tx(lang, 'Google Sheets Directory', 'รายชื่อจาก Google Sheets')} ({companies.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('aliases')}
+              className={`px-3 py-1.5 rounded text-xs font-semibold transition-all ${
+                activeTab === 'aliases'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              {tx(lang, 'Learned Aliases', 'ชื่อเรียกสำรองที่จำไว้')} ({aliases.length})
+            </button>
+          </div>
+
+          {activeTab === 'directory' && (
+            <div className="flex items-center space-x-1 bg-zinc-950 p-1 rounded-lg border border-zinc-800">
+              <button
+                type="button"
+                onClick={() => setGroupFilter('all')}
+                className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-colors ${
+                  groupFilter === 'all' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                {tx(lang, 'All', 'ทั้งหมด')} ({companies.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setGroupFilter('DV')}
+                className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-colors ${
+                  groupFilter === 'DV' ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                DV ({dvCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setGroupFilter('OV')}
+                className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-colors ${
+                  groupFilter === 'OV' ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                OV ({ovCount})
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="relative">
@@ -167,6 +217,7 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
             <table className="w-full text-left text-xs">
               <thead className="bg-zinc-950/70 text-zinc-400 font-semibold border-b border-zinc-800">
                 <tr>
+                  <th className="py-3 px-4">{tx(lang, 'Tab', 'กลุ่ม (DV/OV)')}</th>
                   <th className="py-3 px-4">{tx(lang, 'Primary / Thai Name', 'ชื่อบริษัทหลัก (ไทย / หลัก)')}</th>
                   <th className="py-3 px-4">{tx(lang, 'English / Alternate Name', 'ชื่อภาษาอังกฤษ / ชื่อสำรอง')}</th>
                   <th className="py-3 px-4">{tx(lang, 'Proofing / Notes', 'ข้อมูลตรวจทาน / หมายเหตุ')}</th>
@@ -179,7 +230,7 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
               <tbody className="divide-y divide-zinc-800/70">
                 {filteredCompanies.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-12 text-center text-zinc-500">
+                    <td colSpan={8} className="py-12 text-center text-zinc-500">
                       {tx(
                         lang,
                         'No companies found. Click "Sync from Google Sheets" to fetch directory.',
@@ -188,8 +239,21 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
                     </td>
                   </tr>
                 ) : (
-                  filteredCompanies.map((comp) => (
+                  filteredCompanies.map((comp) => {
+                    const grp = normalizeVendorGroup(comp.vendor_group);
+                    return (
                     <tr key={comp.id} className="hover:bg-zinc-900/50 transition-colors">
+                      <td className="py-3 px-4">
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${
+                            grp === 'OV'
+                              ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                              : 'bg-blue-500/15 text-blue-300 border-blue-500/30'
+                          }`}
+                        >
+                          {grp}
+                        </span>
+                      </td>
                       <td className="py-3 px-4">
                         <span className="font-bold text-white text-xs">{comp.company_name}</span>
                       </td>
@@ -220,7 +284,8 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
                         {new Date(comp.synced_at).toLocaleDateString()}
                       </td>
                     </tr>
-                  ))
+                    );
+                  })
                 )}
               </tbody>
             </table>

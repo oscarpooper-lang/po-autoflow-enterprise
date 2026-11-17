@@ -145,6 +145,7 @@ impl Database {
                 active INTEGER NOT NULL DEFAULT 1,
                 tax_id TEXT,
                 notes TEXT,
+                vendor_group TEXT,
                 synced_at TEXT NOT NULL
             );
 
@@ -201,6 +202,16 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_learning_signal ON learning_memory(signal_type, signal_value);
             "#,
         )?;
+
+        // Ensure `vendor_group` column exists on upgraded databases
+        let has_vendor_group: bool = {
+            let mut stmt = conn.prepare("PRAGMA table_info(companies_cache)")?;
+            let cols = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            cols.filter_map(|r| r.ok()).any(|c| c == "vendor_group")
+        };
+        if !has_vendor_group {
+            conn.execute("ALTER TABLE companies_cache ADD COLUMN vendor_group TEXT", [])?;
+        }
 
         Ok(())
     }
@@ -719,7 +730,7 @@ impl Database {
         // Preserve locally auto-learned suppliers not yet reflected in the incoming Google Sheet
         let existing_learned: Vec<CompanyCacheEntry> = {
             let mut stmt = conn.prepare(
-                "SELECT id, company_name, alternative_name, email, active, tax_id, notes, synced_at FROM companies_cache WHERE notes LIKE 'AUTO_LEARNED%'",
+                "SELECT id, company_name, alternative_name, email, active, tax_id, notes, vendor_group, synced_at FROM companies_cache WHERE notes LIKE 'AUTO_LEARNED%'",
             )?;
             let rows = stmt.query_map([], |row| {
                 let active_int: i32 = row.get(4)?;
@@ -731,7 +742,8 @@ impl Database {
                     active: active_int == 1,
                     tax_id: row.get(5)?,
                     notes: row.get(6)?,
-                    synced_at: row.get(7)?,
+                    vendor_group: row.get(7)?,
+                    synced_at: row.get(8)?,
                 })
             })?;
             let mut out = Vec::new();
@@ -754,8 +766,8 @@ impl Database {
                 r#"
                 INSERT INTO companies_cache (
                     id, company_name, alternative_name, email,
-                    active, tax_id, notes, synced_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    active, tax_id, notes, vendor_group, synced_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 "#,
                 params![
                     c.id,
@@ -765,6 +777,7 @@ impl Database {
                     if c.active { 1 } else { 0 },
                     c.tax_id,
                     c.notes,
+                    c.vendor_group,
                     c.synced_at
                 ],
             )?;
@@ -777,8 +790,8 @@ impl Database {
                     r#"
                     INSERT OR IGNORE INTO companies_cache (
                         id, company_name, alternative_name, email,
-                        active, tax_id, notes, synced_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                        active, tax_id, notes, vendor_group, synced_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                     "#,
                     params![
                         learned.id,
@@ -788,6 +801,7 @@ impl Database {
                         if learned.active { 1 } else { 0 },
                         learned.tax_id,
                         learned.notes,
+                        learned.vendor_group,
                         learned.synced_at
                     ],
                 )?;
@@ -844,9 +858,20 @@ impl Database {
                 active: true,
                 tax_id: final_tax,
                 notes: found.notes,
+                vendor_group: found.vendor_group,
                 synced_at: now,
             })
         } else {
+            let inferred_group = if crate::google::sheets::is_overseas_vendor(
+                company_name,
+                alternative_name.unwrap_or(""),
+                email,
+                tax_id.unwrap_or(""),
+            ) {
+                Some("OV".to_string())
+            } else {
+                Some("DV".to_string())
+            };
             let entry = CompanyCacheEntry {
                 id: format!("learned_{}", uuid::Uuid::new_v4()),
                 company_name: company_name.trim().to_string(),
@@ -855,14 +880,15 @@ impl Database {
                 active: true,
                 tax_id: tax_id.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
                 notes: notes.map(|s| s.to_string()),
+                vendor_group: inferred_group,
                 synced_at: now.clone(),
             };
             conn.execute(
                 r#"
                 INSERT INTO companies_cache (
                     id, company_name, alternative_name, email,
-                    active, tax_id, notes, synced_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    active, tax_id, notes, vendor_group, synced_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 "#,
                 params![
                     entry.id,
@@ -872,6 +898,7 @@ impl Database {
                     1,
                     entry.tax_id,
                     entry.notes,
+                    entry.vendor_group,
                     entry.synced_at
                 ],
             )?;
@@ -885,7 +912,7 @@ impl Database {
             r#"
             SELECT
                 id, company_name, alternative_name, email,
-                active, tax_id, notes, synced_at
+                active, tax_id, notes, vendor_group, synced_at
             FROM companies_cache ORDER BY company_name ASC
             "#,
         )?;
@@ -900,7 +927,8 @@ impl Database {
                 active: active_int == 1,
                 tax_id: row.get(5)?,
                 notes: row.get(6)?,
-                synced_at: row.get(7)?,
+                vendor_group: row.get(7)?,
+                synced_at: row.get(8)?,
             })
         })?;
 

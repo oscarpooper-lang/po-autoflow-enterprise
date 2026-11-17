@@ -971,6 +971,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                   {tx(lang, 'Matched Sheet Supplier:', 'ผู้ขายที่ตรงใน Google Sheet:')}
                 </span>
                 <span className="text-emerald-400 font-medium truncate">
+                  {matchedSheetEntry?.vendor_group ? `[${matchedSheetEntry.vendor_group}] ` : ''}
                   {currentJob?.matched_company_name || tx(lang, 'Not matched', 'ยังไม่ตรงกับรายชื่อ')}
                 </span>
               </div>

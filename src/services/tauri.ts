@@ -171,6 +171,7 @@ export const defaultSettings: AppSettings = {
   ocr_confidence_threshold_review: 75.0,
   google_sheets_id: '',
   google_sheets_tab_name: 'Suppliers',
+  google_sheets_ov_tab_name: '',
   google_drive_folder_id: '',
   gas_webhook_url: '',
   gas_auth_secret: 'po-autoflow-enterprise-secret-key',
@@ -210,6 +211,7 @@ let mockCompanies: CompanyCacheEntry[] = [
     email: 'billing@siamsupply.co.th',
     active: true,
     tax_id: '0105556012345',
+    vendor_group: 'DV',
     synced_at: new Date().toISOString(),
   },
   {
@@ -219,6 +221,7 @@ let mockCompanies: CompanyCacheEntry[] = [
     email: 'po@bangkok-auto.com',
     active: true,
     tax_id: '0105557089123',
+    vendor_group: 'DV',
     synced_at: new Date().toISOString(),
   },
   {
@@ -228,15 +231,17 @@ let mockCompanies: CompanyCacheEntry[] = [
     email: 'orders@thaiindustrial.com',
     active: true,
     tax_id: '0103554009876',
+    vendor_group: 'DV',
     synced_at: new Date().toISOString(),
   },
   {
     id: 'comp_4',
-    company_name: 'บริษัท แอดวานซ์ ดิจิทัล โลจิสติกส์ จำกัด (มหาชน)',
-    alternative_name: 'ADVANCED DIGITAL LOGISTICS PCL',
-    email: 'finance@advanced-logistics.co.th',
+    company_name: 'SIEMENS ENERGY GLOBAL GMBH & CO. KG',
+    alternative_name: undefined,
+    email: 'orders@siemens-energy.example',
     active: true,
-    tax_id: '0107559001122',
+    notes: 'Overseas Transformer Core Supplier',
+    vendor_group: 'OV',
     synced_at: new Date().toISOString(),
   },
 ];
@@ -557,12 +562,14 @@ export const api = {
     spreadsheetId: string,
     tabName: string,
     gasUrl?: string,
-    gasSecret?: string
+    gasSecret?: string,
+    ovTabName?: string
   ): Promise<number> => {
     if (isTauriEnvironment()) {
       return await invoke<number>('test_sheets_connection', {
         spreadsheetId,
         tabName,
+        ovTabName: ovTabName || null,
         gasUrl: gasUrl || null,
         gasSecret: gasSecret || null,
       });

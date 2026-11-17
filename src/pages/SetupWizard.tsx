@@ -101,7 +101,8 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({
           settings.google_sheets_id,
           settings.google_sheets_tab_name,
           settings.gas_webhook_url,
-          settings.gas_auth_secret
+          settings.gas_auth_secret,
+          settings.google_sheets_ov_tab_name
         );
         setTestLog((prev) => ({
           ...prev,
@@ -383,17 +384,48 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({
                 />
               </div>
 
-              <div>
-                <label className="text-zinc-300 font-medium block mb-1">
-                  {tx(lang, 'Sheet Tab Name:', 'ชื่อแท็บ (Tab Name):')}
-                </label>
-                <input
-                  type="text"
-                  value={settings.google_sheets_tab_name}
-                  onChange={(e) => updateSetting('google_sheets_tab_name', e.target.value)}
-                  placeholder="Suppliers"
-                  className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-2"
-                />
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <label className="text-zinc-300 font-medium">
+                    {tx(lang, 'Sheet Tab Names (Domestic DV & Overseas OV):', 'ชื่อแท็บใน Google Sheet (ในประเทศ DV และต่างประเทศ OV):')}
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateSetting('google_sheets_tab_name', 'DV');
+                      updateSetting('google_sheets_ov_tab_name', 'OV');
+                    }}
+                    className="px-2.5 py-1 rounded bg-blue-500/15 hover:bg-blue-500/25 border border-blue-500/30 text-blue-300 text-[11px] font-semibold"
+                  >
+                    {tx(lang, 'Use DV + OV Tabs', 'ใช้แท็บ DV + OV')}
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-zinc-400 text-[11px] block mb-1">
+                      {tx(lang, 'Domestic Vendors Tab (DV):', 'แท็บผู้ขายในประเทศ (DV):')}
+                    </label>
+                    <input
+                      type="text"
+                      value={settings.google_sheets_tab_name}
+                      onChange={(e) => updateSetting('google_sheets_tab_name', e.target.value)}
+                      placeholder="DV (or Suppliers)"
+                      className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-zinc-400 text-[11px] block mb-1">
+                      {tx(lang, 'Overseas Vendors Tab (OV — Optional):', 'แท็บผู้ขายต่างประเทศ (OV — ไม่บังคับ):')}
+                    </label>
+                    <input
+                      type="text"
+                      value={settings.google_sheets_ov_tab_name || ''}
+                      onChange={(e) => updateSetting('google_sheets_ov_tab_name', e.target.value)}
+                      placeholder="OV"
+                      className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-2"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
 

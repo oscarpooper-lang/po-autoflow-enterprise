@@ -24,6 +24,8 @@ struct SheetsApiResponse {
 struct GasSuppliersResponse {
     status: String,
     suppliers: Option<Vec<GasSupplierItem>>,
+    tab_used: Option<String>,
+    tab_missing: Option<bool>,
     access_token: Option<String>,
     error: Option<String>,
 }
@@ -35,7 +37,115 @@ struct GasSupplierItem {
     email: String,
     tax_id: Option<String>,
     notes: Option<String>,
+    vendor_group: Option<String>,
     active: Option<bool>,
+}
+
+pub fn resolve_sheet_tabs(primary_tab: &str, ov_tab: &str) -> Vec<String> {
+    let mut tabs: Vec<String> = Vec::new();
+    for raw in [primary_tab, ov_tab] {
+        for part in raw.split([',', ';']) {
+            let trimmed = part.trim();
+            if !trimmed.is_empty() && !tabs.iter().any(|t| t.eq_ignore_ascii_case(trimmed)) {
+                tabs.push(trimmed.to_string());
+            }
+        }
+    }
+    if tabs.is_empty() {
+        tabs.push("Suppliers".to_string());
+    }
+    tabs
+}
+
+pub fn vendor_group_label(tab_name: &str, ov_tab: &str) -> String {
+    let clean = tab_name.trim();
+    let low = clean.to_lowercase();
+    let ov_low = ov_tab.trim().to_lowercase();
+    if (!ov_low.is_empty() && low == ov_low)
+        || low == "ov"
+        || low.contains("oversea")
+        || low.contains("foreign")
+        || low.contains("ต่างประเทศ")
+    {
+        "OV".to_string()
+    } else if low == "dv" || low.contains("domestic") || low.contains("ในประเทศ") {
+        "DV".to_string()
+    } else if clean.is_empty() {
+        "DV".to_string()
+    } else {
+        clean.to_string()
+    }
+}
+
+/// Classifies whether a newly discovered vendor appears to be an overseas supplier (`OV`)
+/// vs a domestic Thai supplier (`DV`) based on Thai script, Tax ID length, email TLD, and legal forms.
+pub fn is_overseas_vendor(
+    company_name: &str,
+    alternative_name: &str,
+    email: &str,
+    tax_id: &str,
+) -> bool {
+    if crate::matching::thai_normalizer::ThaiNormalizer::contains_thai(company_name)
+        || crate::matching::thai_normalizer::ThaiNormalizer::contains_thai(alternative_name)
+    {
+        return false;
+    }
+
+    let tax_digits: String = tax_id.chars().filter(|c| c.is_ascii_digit()).collect();
+    if tax_digits.len() == 13 {
+        return false;
+    }
+
+    let email_low = email.trim().to_lowercase();
+    if email_low.ends_with(".co.th")
+        || email_low.ends_with(".in.th")
+        || email_low.ends_with(".or.th")
+        || email_low.ends_with(".ac.th")
+        || email_low.ends_with(".go.th")
+        || email_low.ends_with(".th")
+    {
+        return false;
+    }
+
+    let combined_low = format!("{} {}", company_name, alternative_name).to_lowercase();
+    let overseas_markers = [
+        "pte. ltd",
+        "pte ltd",
+        "gmbh",
+        "sdn. bhd",
+        "sdn bhd",
+        "k.k.",
+        "b.v.",
+        "n.v.",
+        "s.a.",
+        "s.r.l.",
+        "s.p.a.",
+        "pty. ltd",
+        "pty ltd",
+        "ag",
+        "llc",
+        "llp",
+        "inc.",
+        "incorporated",
+        "corp.",
+        "corporation",
+    ];
+    if overseas_markers.iter().any(|m| combined_low.contains(m)) {
+        return true;
+    }
+
+    // Foreign non-.th corporate domain without any Thai name or Tax ID defaults cleanly only if clearly foreign TLD
+    if let Some(domain) = email_low.split('@').nth(1) {
+        let country_tlds = [
+            ".sg", ".jp", ".cn", ".tw", ".kr", ".de", ".uk", ".co.uk", ".us", ".eu",
+            ".my", ".vn", ".id", ".in", ".fr", ".it", ".ch", ".nl", ".au", ".hk",
+        ];
+        if country_tlds.iter().any(|tld| domain.ends_with(tld)) {
+            return true;
+        }
+    }
+
+    false
 }
 
 enum GasParseFailure {
@@ -159,6 +269,7 @@ impl SheetsClient {
             if data.status == "ok" {
                 if let Some(items) = data.suppliers {
                     let now = chrono::Utc::now().to_rfc3339();
+                    let tab_hint = data.tab_used.clone();
                     let entries = items
                         .into_iter()
                         .enumerate()
@@ -170,10 +281,21 @@ impl SheetsClient {
                             active: item.active.unwrap_or(true),
                             tax_id: item.tax_id,
                             notes: item.notes.filter(|n| !n.trim().is_empty()),
+                            vendor_group: item
+                                .vendor_group
+                                .filter(|v| !v.trim().is_empty())
+                                .or_else(|| tab_hint.clone()),
                             synced_at: now.clone(),
                         })
                         .collect();
-                    return Ok(Some((entries, data.access_token)));
+                    return Ok(Some((
+                        entries,
+                        if data.tab_missing.unwrap_or(false) {
+                            None
+                        } else {
+                            data.access_token
+                        },
+                    )));
                 }
                 // HTTP ok healthcheck without `suppliers` array (e.g. GET hit v1 script) -> try POST
                 return Ok(None);
@@ -216,6 +338,18 @@ impl SheetsClient {
         spreadsheet_id: &str,
         tab_name: &str,
     ) -> Result<Vec<CompanyCacheEntry>, SheetsError> {
+        self.fetch_companies_via_gas_with_options(gas_url, gas_secret, spreadsheet_id, tab_name, false)
+            .await
+    }
+
+    pub async fn fetch_companies_via_gas_with_options(
+        &self,
+        gas_url: &str,
+        gas_secret: &str,
+        spreadsheet_id: &str,
+        tab_name: &str,
+        strict_tab: bool,
+    ) -> Result<Vec<CompanyCacheEntry>, SheetsError> {
         let clean_url = gas_url.trim();
         if clean_url.is_empty() {
             return Err(SheetsError::Parse("Apps Script Webhook URL is not configured".to_string()));
@@ -223,15 +357,17 @@ impl SheetsClient {
 
         let secrets = crate::google::auth::candidate_gas_secrets(gas_secret);
         let mut last_error = String::from("No response from Apps Script");
+        let strict_q = if strict_tab { "&strict_tab=1" } else { "" };
 
         for secret in &secrets {
             // Try GET first with query parameters (robust across Google redirect hops)
             let get_url = format!(
-                "{}?action=sync_suppliers&auth={}&sheet_id={}&tab_name={}",
+                "{}?action=sync_suppliers&auth={}&sheet_id={}&tab_name={}{}",
                 clean_url,
                 urlencoding::encode(secret),
                 urlencoding::encode(spreadsheet_id),
                 urlencoding::encode(tab_name),
+                strict_q,
             );
 
             let mut secret_unauthorized = false;
@@ -281,7 +417,8 @@ impl SheetsClient {
                 "action": "sync_suppliers",
                 "auth_secret": secret,
                 "sheet_id": spreadsheet_id,
-                "tab_name": tab_name
+                "tab_name": tab_name,
+                "strict_tab": strict_tab
             });
 
             match self.client.post(clean_url).json(&payload).send().await {
@@ -326,6 +463,133 @@ impl SheetsClient {
         }
 
         Err(SheetsError::Parse(last_error))
+    }
+
+    pub async fn fetch_companies_for_tabs_via_gas(
+        &self,
+        gas_url: &str,
+        gas_secret: &str,
+        spreadsheet_id: &str,
+        primary_tab: &str,
+        ov_tab: &str,
+    ) -> Result<Vec<CompanyCacheEntry>, SheetsError> {
+        let tabs = resolve_sheet_tabs(primary_tab, ov_tab);
+        if tabs.len() == 1 {
+            let mut entries = self
+                .fetch_companies_via_gas(gas_url, gas_secret, spreadsheet_id, &tabs[0])
+                .await?;
+            let grp = vendor_group_label(&tabs[0], ov_tab);
+            for entry in &mut entries {
+                if entry.vendor_group.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                    entry.vendor_group = Some(grp.clone());
+                } else if let Some(ref g) = entry.vendor_group {
+                    entry.vendor_group = Some(vendor_group_label(g, ov_tab));
+                }
+            }
+            return Ok(entries);
+        }
+
+        let mut merged: Vec<CompanyCacheEntry> = Vec::new();
+        let mut seen_keys = std::collections::HashSet::<String>::new();
+        let mut errors: Vec<String> = Vec::new();
+
+        for (tab_idx, tab) in tabs.iter().enumerate() {
+            match self
+                .fetch_companies_via_gas_with_options(gas_url, gas_secret, spreadsheet_id, tab, true)
+                .await
+            {
+                Ok(mut entries) => {
+                    let grp = vendor_group_label(tab, ov_tab);
+                    for (row_idx, entry) in entries.iter_mut().enumerate() {
+                        entry.id = format!("gas_t{}_{}_{}", tab_idx, row_idx, uuid::Uuid::new_v4().simple());
+                        entry.vendor_group = Some(
+                            entry
+                                .vendor_group
+                                .as_deref()
+                                .map(|g| vendor_group_label(g, ov_tab))
+                                .unwrap_or_else(|| grp.clone()),
+                        );
+                        let key = format!(
+                            "{}|{}",
+                            entry.company_name.trim().to_lowercase(),
+                            entry.email.trim().to_lowercase()
+                        );
+                        if seen_keys.insert(key) {
+                            merged.push(entry.clone());
+                        }
+                    }
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    // Empty data rows on an optional second tab (e.g. brand-new empty OV sheet) shouldn't block DV
+                    if msg.contains("No data") || msg.contains("0 rows") || msg.contains("0 data rows") {
+                        continue;
+                    }
+                    errors.push(format!("Tab '{}': {}", tab, msg));
+                }
+            }
+        }
+
+        if merged.is_empty() && !errors.is_empty() {
+            return Err(SheetsError::Parse(errors.join(" | ")));
+        }
+        Ok(merged)
+    }
+
+    pub async fn fetch_companies_for_tabs(
+        &self,
+        spreadsheet_id: &str,
+        primary_tab: &str,
+        ov_tab: &str,
+        access_token: Option<&str>,
+    ) -> Result<Vec<CompanyCacheEntry>, SheetsError> {
+        let tabs = resolve_sheet_tabs(primary_tab, ov_tab);
+        if tabs.len() == 1 {
+            let mut entries = self
+                .fetch_companies(spreadsheet_id, &tabs[0], access_token)
+                .await?;
+            let grp = vendor_group_label(&tabs[0], ov_tab);
+            for entry in &mut entries {
+                if entry.vendor_group.is_none() {
+                    entry.vendor_group = Some(grp.clone());
+                }
+            }
+            return Ok(entries);
+        }
+
+        let mut merged: Vec<CompanyCacheEntry> = Vec::new();
+        let mut seen_keys = std::collections::HashSet::<String>::new();
+        let mut errors: Vec<String> = Vec::new();
+
+        for (tab_idx, tab) in tabs.iter().enumerate() {
+            match self.fetch_companies(spreadsheet_id, tab, access_token).await {
+                Ok(entries) => {
+                    let grp = vendor_group_label(tab, ov_tab);
+                    for (row_idx, mut entry) in entries.into_iter().enumerate() {
+                        entry.id = format!("sheet_t{}_{}", tab_idx, row_idx + 1);
+                        entry.vendor_group = Some(grp.clone());
+                        let key = format!(
+                            "{}|{}",
+                            entry.company_name.trim().to_lowercase(),
+                            entry.email.trim().to_lowercase()
+                        );
+                        if seen_keys.insert(key) {
+                            merged.push(entry);
+                        }
+                    }
+                }
+                Err(SheetsError::Empty) => continue,
+                Err(e) => errors.push(format!("Tab '{}': {}", tab, e)),
+            }
+        }
+
+        if merged.is_empty() {
+            if !errors.is_empty() {
+                return Err(SheetsError::Parse(errors.join(" | ")));
+            }
+            return Err(SheetsError::Empty);
+        }
+        Ok(merged)
     }
 
     pub fn parse_matrix(matrix: Vec<Vec<String>>) -> Result<Vec<CompanyCacheEntry>, SheetsError> {
@@ -472,6 +736,7 @@ impl SheetsClient {
                 active,
                 tax_id,
                 notes,
+                vendor_group: None,
                 synced_at: now.clone(),
             });
         }
