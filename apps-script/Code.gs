@@ -232,9 +232,9 @@ function doPost(e) {
       return jsonError("Missing required delivery parameters (po_number, recipient_email, idempotency_key)", 400);
     }
 
-    // Email validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(recipient_email.trim())) {
+    // Email validation (supports single or comma/semicolon-separated recipients: "a@x.com, b@y.com")
+    const normalizedRecipients = parseRecipientEmails(recipient_email);
+    if (!normalizedRecipients) {
       return jsonError("Invalid recipient email address format: " + recipient_email, 400);
     }
 
@@ -333,7 +333,7 @@ function doPost(e) {
       mailOptions.attachments = attachments;
     }
 
-    GmailApp.sendEmail(recipient_email.trim(), emailSubject, emailBody, mailOptions);
+    GmailApp.sendEmail(normalizedRecipients, emailSubject, emailBody, mailOptions);
 
     const executionId = Utilities.getUuid();
     const nowIso = new Date().toISOString();
@@ -343,7 +343,7 @@ function doPost(e) {
       execution_id: executionId,
       transaction_id: transaction_id || executionId,
       po_number: po_number,
-      recipient: recipient_email,
+      recipient: normalizedRecipients,
       timestamp: nowIso
     };
     props.setProperty("IDEMP_" + idempotency_key, JSON.stringify(resultRecord));
@@ -353,7 +353,7 @@ function doPost(e) {
       execution_id: executionId,
       transaction_id: transaction_id,
       po_number: po_number,
-      recipient: recipient_email,
+      recipient: normalizedRecipients,
       timestamp: nowIso,
       attachment_sent: attachments.length > 0
     })).setMimeType(ContentService.MimeType.JSON);
@@ -363,6 +363,24 @@ function doPost(e) {
   } finally {
     lock.releaseLock();
   }
+}
+
+function parseRecipientEmails(raw) {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const parts = String(raw || "")
+    .split(/[,;]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return null;
+  const deduped = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (!emailRegex.test(parts[i])) return null;
+    const low = parts[i].toLowerCase();
+    if (!deduped.some(x => x.toLowerCase() === low)) {
+      deduped.push(parts[i]);
+    }
+  }
+  return deduped.join(",");
 }
 
 /**
@@ -389,8 +407,7 @@ function buildSuppliersResponse(values, tabUsed) {
 
   const firstRow = values[0].map(h => String(h).trim());
   const firstRowLow = firstRow.map(h => h.toLowerCase());
-  const emailRowRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  const firstRowHasEmail = firstRow.some(h => emailRowRegex.test(h));
+  const firstRowHasEmail = firstRow.some(h => Boolean(parseRecipientEmails(h)));
   const hasHeaderKeyword = firstRowLow.some(h =>
     h.includes("company") || h.includes("ชื่อ") || h.includes("supplier") || h.includes("vendor") ||
     h.includes("thai") || h.includes("english") || h.includes("email") || h.includes("อีเมล") ||
@@ -625,8 +642,7 @@ function handleUpsertSupplier(sheetId, tabName, payload) {
 
     const firstRow = values[0].map(h => String(h).trim());
     const firstRowLow = firstRow.map(h => h.toLowerCase());
-    const emailRowRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    const firstRowHasEmail = firstRow.some(h => emailRowRegex.test(h));
+    const firstRowHasEmail = firstRow.some(h => Boolean(parseRecipientEmails(h)));
     const hasHeaderKeyword = firstRowLow.some(h =>
       h.includes("company") || h.includes("ชื่อ") || h.includes("supplier") || h.includes("vendor") ||
       h.includes("thai") || h.includes("english") || h.includes("email") || h.includes("อีเมล") || h.includes("proofing")

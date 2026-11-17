@@ -127,6 +127,13 @@ fn test_intelligent_company_matching_with_confidence_categories() {
 fn test_email_validation() {
     assert!(EmailDeliveryClient::is_valid_email("billing@siamsupply.co.th"));
     assert!(EmailDeliveryClient::is_valid_email("procurement.office@domain.com"));
+    assert!(EmailDeliveryClient::is_valid_email("ooo@email.com,aaa@gmail.com"));
+    assert!(EmailDeliveryClient::is_valid_email("ooo@email.com; aaa@gmail.com , OOO@email.com "));
+    assert_eq!(
+        EmailDeliveryClient::normalize_recipient_list("ooo@email.com; aaa@gmail.com, OOO@EMAIL.COM").unwrap(),
+        "ooo@email.com, aaa@gmail.com"
+    );
+    assert!(!EmailDeliveryClient::is_valid_email("ooo@email.com, bad-email"));
     assert!(!EmailDeliveryClient::is_valid_email(""));
     assert!(!EmailDeliveryClient::is_valid_email("not-an-email"));
     assert!(!EmailDeliveryClient::is_valid_email("user@nodomain"));
@@ -599,6 +606,14 @@ fn test_dv_ov_multi_tab_and_vendor_classification() {
         "ACME ASIA PACIFIC PTE. LTD.",
         "",
         "ap@acme.sg",
+        ""
+    ));
+
+    // Multi-email list containing a .co.th address + gmail fallback remains DV
+    assert!(!app_lib::google::sheets::is_overseas_vendor(
+        "SIAM SUPPLY CO., LTD.",
+        "",
+        "sales@siamsupply.co.th, backup@gmail.com",
         ""
     ));
 }

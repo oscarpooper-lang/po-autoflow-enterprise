@@ -751,11 +751,17 @@ impl PipelineCoordinator {
             return Ok(());
         }
 
-        if recipient_email.is_empty()
-            || !EmailDeliveryClient::is_valid_email(&recipient_email)
-            || recipient_email.to_lowercase().contains("qtc-energy")
-            || ThaiNormalizer::is_ignored_self_company(&recipient_email)
-        {
+        let parsed_recipients = EmailDeliveryClient::parse_recipient_emails(&recipient_email);
+        let has_self_recipient = parsed_recipients
+            .as_ref()
+            .map(|list| {
+                list.iter().any(|e| {
+                    e.to_lowercase().contains("qtc-energy")
+                        || ThaiNormalizer::is_ignored_self_company(e)
+                })
+            })
+            .unwrap_or(true);
+        if parsed_recipients.is_err() || has_self_recipient {
             job.status = "needs_review".to_string();
             job.stage_message = format!("Invalid, empty, or self-company email for '{}'. Moved to Review.", approved_company_name);
             if let Ok(review_path) = move_folder_to_dir(&processing_po_dir, &settings.review_dir) {
@@ -764,6 +770,7 @@ impl PipelineCoordinator {
             self.db.update_job(&job).ok();
             return Ok(());
         }
+        let recipient_email = parsed_recipients.unwrap().join(", ");
 
         // Self-learning loop: reinforce Thai<->English names, Tax ID, email domain, and layout zone
         if settings.self_learning_enabled {

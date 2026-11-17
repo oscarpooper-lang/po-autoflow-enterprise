@@ -459,17 +459,17 @@ impl CompanyMatcher {
             if let Some(ref matched_comp) = res.matched_company {
                 let mut extra_boost = 0.0_f64;
 
-                if let Some(comp_domain) = matched_comp
-                    .email
-                    .split('@')
-                    .nth(1)
-                    .map(|d| d.trim().to_lowercase())
-                {
-                    if !GENERIC_DOMAINS.contains(&comp_domain.as_str())
-                        && doc_domains.contains(&comp_domain)
-                    {
-                        extra_boost += 8.0;
-                    }
+                let comp_domain_hit = matched_comp.email.split([',', ';']).any(|single| {
+                    single
+                        .trim()
+                        .split('@')
+                        .nth(1)
+                        .map(|d| d.trim().to_lowercase())
+                        .map(|dom| !GENERIC_DOMAINS.contains(&dom.as_str()) && doc_domains.contains(&dom))
+                        .unwrap_or(false)
+                });
+                if comp_domain_hit {
+                    extra_boost += 8.0;
                 }
 
                 let learned_email_hit = memories.iter().any(|m| {
@@ -532,14 +532,18 @@ impl CompanyMatcher {
                 .iter()
                 .filter(|c| c.active && !ThaiNormalizer::is_ignored_self_company(&c.company_name))
                 .filter(|c| {
-                    let comp_dom = c
-                        .email
-                        .split('@')
-                        .nth(1)
-                        .map(|d| d.trim().to_lowercase())
-                        .unwrap_or_default();
-                    let direct = !GENERIC_DOMAINS.contains(&comp_dom.as_str())
-                        && doc_domains.contains(&comp_dom);
+                    let direct = c.email.split([',', ';']).any(|single| {
+                        single
+                            .trim()
+                            .split('@')
+                            .nth(1)
+                            .map(|d| d.trim().to_lowercase())
+                            .map(|comp_dom| {
+                                !GENERIC_DOMAINS.contains(&comp_dom.as_str())
+                                    && doc_domains.contains(&comp_dom)
+                            })
+                            .unwrap_or(false)
+                    });
                     let mem = memories.iter().any(|m| {
                         m.signal_type == "email_domain"
                             && doc_domains.contains(&m.signal_value.to_lowercase())

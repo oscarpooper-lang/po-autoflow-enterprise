@@ -866,11 +866,11 @@ export const Overview: React.FC<OverviewProps> = ({
                       {tx(lang, 'Send To Email:', 'ส่งไปยังอีเมล:')}
                     </label>
                     <input
-                      type="email"
+                      type="text"
                       required
                       value={approveEmail}
                       onChange={(e) => setApproveEmail(e.target.value)}
-                      placeholder="supplier@company.com"
+                      placeholder="ooo@email.com, aaa@gmail.com"
                       className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-blue-500"
                     />
                   </div>

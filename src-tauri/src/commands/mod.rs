@@ -365,7 +365,6 @@ pub async fn approve_and_send_job(
     save_alias: Option<bool>,
 ) -> Result<Job, String> {
     let clean_company = company_name.trim().to_string();
-    let clean_email = recipient_email.trim().to_string();
 
     if clean_company.is_empty() {
         return Err("Supplier company name is required".to_string());
@@ -373,12 +372,16 @@ pub async fn approve_and_send_job(
     if crate::matching::thai_normalizer::ThaiNormalizer::is_ignored_self_company(&clean_company) {
         return Err("Cannot dispatch to QTC Energy (self-company). Select the external supplier instead.".to_string());
     }
-    if !EmailDeliveryClient::is_valid_email(&clean_email)
-        || clean_email.to_lowercase().contains("qtc-energy")
-        || crate::matching::thai_normalizer::ThaiNormalizer::is_ignored_self_company(&clean_email)
-    {
-        return Err(format!("Invalid or self-company recipient email address: '{}'", clean_email));
+    let parsed_emails = EmailDeliveryClient::parse_recipient_emails(&recipient_email)
+        .map_err(|_| format!("Invalid recipient email address: '{}'", recipient_email.trim()))?;
+    for single in &parsed_emails {
+        if single.to_lowercase().contains("qtc-energy")
+            || crate::matching::thai_normalizer::ThaiNormalizer::is_ignored_self_company(single)
+        {
+            return Err(format!("Invalid or self-company recipient email address: '{}'", single));
+        }
     }
+    let clean_email = parsed_emails.join(", ");
 
     let mut job = state
         .db

@@ -99,17 +99,52 @@ impl EmailDeliveryClient {
         }
     }
 
-    /// Validates standard email address syntax.
-    pub fn is_valid_email(email: &str) -> bool {
+    /// Validates a single trimmed email address syntax (no delimiters/whitespace).
+    pub fn is_valid_single_email(email: &str) -> bool {
         let trimmed = email.trim();
-        if trimmed.len() < 5 || !trimmed.contains('@') {
+        if trimmed.len() < 5
+            || !trimmed.contains('@')
+            || trimmed.chars().any(|c| c.is_whitespace() || c == ',' || c == ';')
+        {
             return false;
         }
         let parts: Vec<&str> = trimmed.split('@').collect();
         if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
             return false;
         }
-        parts[1].contains('.')
+        parts[1].contains('.') && !parts[1].starts_with('.') && !parts[1].ends_with('.')
+    }
+
+    /// Parses one or more recipient emails separated by commas (`,`) or semicolons (`;`).
+    /// Returns deduplicated, trimmed addresses, or an error if empty or any entry is malformed.
+    pub fn parse_recipient_emails(raw: &str) -> Result<Vec<String>, String> {
+        let mut out: Vec<String> = Vec::new();
+        for part in raw.split([',', ';']) {
+            let trimmed = part.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if !Self::is_valid_single_email(trimmed) {
+                return Err(format!("Invalid email address: '{}'", trimmed));
+            }
+            if !out.iter().any(|existing| existing.eq_ignore_ascii_case(trimmed)) {
+                out.push(trimmed.to_string());
+            }
+        }
+        if out.is_empty() {
+            return Err("Recipient email is empty".to_string());
+        }
+        Ok(out)
+    }
+
+    /// Normalizes a single or comma/semicolon-separated recipient list into `"a@b.com, c@d.com"`.
+    pub fn normalize_recipient_list(raw: &str) -> Result<String, String> {
+        Ok(Self::parse_recipient_emails(raw)?.join(", "))
+    }
+
+    /// Validates one or more comma/semicolon-separated email addresses.
+    pub fn is_valid_email(email: &str) -> bool {
+        Self::parse_recipient_emails(email).is_ok()
     }
 
     /// Delivers PO package through Google Apps Script endpoint with idempotency and retry protection.
@@ -165,9 +200,8 @@ impl EmailDeliveryClient {
             ));
         }
 
-        if !Self::is_valid_email(recipient_email) {
-            return Err(EmailError::InvalidEmail(recipient_email.to_string()));
-        }
+        let normalized_recipients = Self::normalize_recipient_list(recipient_email)
+            .map_err(|_| EmailError::InvalidEmail(recipient_email.to_string()))?;
 
         let now_str = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let subject = Self::format_template(subject_template, po_number, company_name, &now_str);
@@ -181,7 +215,7 @@ impl EmailDeliveryClient {
                 transaction_id: tx_id.to_string(),
                 po_number: po_number.to_string(),
                 company_name: company_name.to_string(),
-                recipient_email: recipient_email.trim().to_string(),
+                recipient_email: normalized_recipients.clone(),
                 drive_file_id: drive_file_id.map(|s| s.to_string()),
                 idempotency_key: idempotency_key.to_string(),
                 auth_secret: secret.clone(),

@@ -96,14 +96,19 @@ pub fn is_overseas_vendor(
         return false;
     }
 
-    let email_low = email.trim().to_lowercase();
-    if email_low.ends_with(".co.th")
-        || email_low.ends_with(".in.th")
-        || email_low.ends_with(".or.th")
-        || email_low.ends_with(".ac.th")
-        || email_low.ends_with(".go.th")
-        || email_low.ends_with(".th")
-    {
+    let emails: Vec<String> = email
+        .split([',', ';'])
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if emails.iter().any(|e| {
+        e.ends_with(".co.th")
+            || e.ends_with(".in.th")
+            || e.ends_with(".or.th")
+            || e.ends_with(".ac.th")
+            || e.ends_with(".go.th")
+            || e.ends_with(".th")
+    }) {
         return false;
     }
 
@@ -135,13 +140,15 @@ pub fn is_overseas_vendor(
     }
 
     // Foreign non-.th corporate domain without any Thai name or Tax ID defaults cleanly only if clearly foreign TLD
-    if let Some(domain) = email_low.split('@').nth(1) {
-        let country_tlds = [
-            ".sg", ".jp", ".cn", ".tw", ".kr", ".de", ".uk", ".co.uk", ".us", ".eu",
-            ".my", ".vn", ".id", ".in", ".fr", ".it", ".ch", ".nl", ".au", ".hk",
-        ];
-        if country_tlds.iter().any(|tld| domain.ends_with(tld)) {
-            return true;
+    for e in &emails {
+        if let Some(domain) = e.split('@').nth(1) {
+            let country_tlds = [
+                ".sg", ".jp", ".cn", ".tw", ".kr", ".de", ".uk", ".co.uk", ".us", ".eu",
+                ".my", ".vn", ".id", ".in", ".fr", ".it", ".ch", ".nl", ".au", ".hk",
+            ];
+            if country_tlds.iter().any(|tld| domain.ends_with(tld)) {
+                return true;
+            }
         }
     }
 

@@ -1355,16 +1355,18 @@ impl Database {
             signals_learned += 1;
         }
 
-        // 4. Link corporate vendor email domain (ignore generic webmail providers)
-        if let Some(domain) = clean_email.split('@').nth(1).map(|d| d.trim().to_lowercase()) {
-            const GENERIC_DOMAINS: &[&str] = &[
-                "gmail.com", "googlemail.com", "hotmail.com", "outlook.com", "live.com",
-                "msn.com", "yahoo.com", "yahoo.co.th", "icloud.com", "me.com",
-                "protonmail.com", "mail.com", "qtc-energy.com",
-            ];
-            if !domain.is_empty() && !GENERIC_DOMAINS.contains(&domain.as_str()) {
-                self.record_learning_signal("email_domain", &domain, clean_comp, Some(clean_email), 8.0)?;
-                signals_learned += 1;
+        // 4. Link corporate vendor email domains (supports comma/semicolon-separated recipient lists)
+        const GENERIC_DOMAINS: &[&str] = &[
+            "gmail.com", "googlemail.com", "hotmail.com", "outlook.com", "live.com",
+            "msn.com", "yahoo.com", "yahoo.co.th", "icloud.com", "me.com",
+            "protonmail.com", "mail.com", "qtc-energy.com",
+        ];
+        for single_email in clean_email.split([',', ';']) {
+            if let Some(domain) = single_email.trim().split('@').nth(1).map(|d| d.trim().to_lowercase()) {
+                if !domain.is_empty() && !GENERIC_DOMAINS.contains(&domain.as_str()) {
+                    self.record_learning_signal("email_domain", &domain, clean_comp, Some(single_email.trim()), 8.0)?;
+                    signals_learned += 1;
+                }
             }
         }
 
