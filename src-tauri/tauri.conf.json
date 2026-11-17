@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "PO AutoFlow Enterprise",
-  "version": "1.2.8",
+  "version": "1.2.9",
   "identifier": "com.autoflow.enterprise",
   "build": {
     "frontendDist": "../dist",
@@ -28,6 +28,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": [
+      "resources/ocr-worker/**/*",
+      "resources/models/**/*"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -51,6 +51,10 @@ try {
     $cargoToml = [regex]::Replace($cargoToml, '(?m)^version\s*=\s*"[^"]+"', "version = `"$cleanVersion`"", 1)
     [System.IO.File]::WriteAllText($cargoPath, $cargoToml, [System.Text.UTF8Encoding]::new($false))
 
+    Write-Host "==> Building bundled standalone OCR worker (ocr-worker.exe + OpenThai 2.0)..." -ForegroundColor Cyan
+    & (Join-Path $PSScriptRoot "build-ocr-worker.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "build-ocr-worker.ps1 failed." }
+
     Write-Host "==> Running quality gates (lint, frontend build, cargo test)..." -ForegroundColor Cyan
     npm run lint
     if ($LASTEXITCODE -ne 0) { throw "npm run lint failed." }

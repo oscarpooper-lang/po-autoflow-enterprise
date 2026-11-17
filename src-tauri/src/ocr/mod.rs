@@ -189,9 +189,26 @@ impl OcrManager {
         let mut lock = self.process.lock().await;
         if lock.is_none() {
             info!("Spawning managed OCR worker: {:?}", self.worker_script);
-            let mut cmd = Command::new("python");
-            cmd.arg(&self.worker_script)
-                .stdin(Stdio::piped())
+            let is_standalone_exe = self
+                .worker_script
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("exe"))
+                .unwrap_or(false);
+
+            let mut cmd = if is_standalone_exe {
+                Command::new(&self.worker_script)
+            } else {
+                let mut py_cmd = Command::new("python");
+                py_cmd.arg(&self.worker_script);
+                py_cmd
+            };
+            if let Some(parent_dir) = self.worker_script.parent() {
+                if parent_dir.exists() {
+                    cmd.current_dir(parent_dir);
+                }
+            }
+            cmd.stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
 

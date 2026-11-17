@@ -112,27 +112,55 @@ pub fn run() {
             info!("Initializing SQLite database at: {:?}", db_path);
             let db = Database::new(&db_path).expect("Failed to open SQLite database");
 
-            // Resolve OCR worker path (dev CWD, parent dir, executable dir, or manifest fallback)
+            // Resolve OCR worker path: prefer bundled standalone exe in release installs, live worker.py in dev runs
             let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let mut candidates = vec![
-                current_dir.join("ocr-worker").join("worker.py"),
-                current_dir.join("..").join("ocr-worker").join("worker.py"),
-            ];
+            let mut exe_candidates: Vec<PathBuf> = Vec::new();
+            let mut script_candidates: Vec<PathBuf> = Vec::new();
+
+            if let Ok(res_dir) = app.path().resource_dir() {
+                exe_candidates.push(res_dir.join("resources").join("ocr-worker").join("ocr-worker.exe"));
+                exe_candidates.push(res_dir.join("ocr-worker").join("ocr-worker.exe"));
+                script_candidates.push(res_dir.join("resources").join("ocr-worker").join("worker.py"));
+                script_candidates.push(res_dir.join("ocr-worker").join("worker.py"));
+            }
             if let Ok(exe_path) = std::env::current_exe() {
                 if let Some(exe_dir) = exe_path.parent() {
-                    candidates.push(exe_dir.join("ocr-worker").join("worker.py"));
-                    candidates.push(exe_dir.join("resources").join("ocr-worker").join("worker.py"));
+                    exe_candidates.push(exe_dir.join("resources").join("ocr-worker").join("ocr-worker.exe"));
+                    exe_candidates.push(exe_dir.join("ocr-worker").join("ocr-worker.exe"));
+                    script_candidates.push(exe_dir.join("resources").join("ocr-worker").join("worker.py"));
+                    script_candidates.push(exe_dir.join("ocr-worker").join("worker.py"));
                 }
             }
+
+            script_candidates.push(current_dir.join("ocr-worker").join("worker.py"));
+            script_candidates.push(current_dir.join("..").join("ocr-worker").join("worker.py"));
             if let Some(project_root) = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent() {
-                candidates.push(project_root.join("ocr-worker").join("worker.py"));
+                exe_candidates.push(
+                    project_root
+                        .join("src-tauri")
+                        .join("resources")
+                        .join("ocr-worker")
+                        .join("ocr-worker.exe"),
+                );
+                script_candidates.push(project_root.join("ocr-worker").join("worker.py"));
             }
-            let worker_path = candidates
-                .iter()
-                .find(|p| p.exists())
-                .cloned()
-                .unwrap_or_else(|| current_dir.join("ocr-worker").join("worker.py"));
-            info!("Configured OCR worker script path: {:?}", worker_path);
+
+            let worker_path = if cfg!(debug_assertions) {
+                script_candidates
+                    .iter()
+                    .chain(exe_candidates.iter())
+                    .find(|p| p.exists())
+                    .cloned()
+                    .unwrap_or_else(|| current_dir.join("ocr-worker").join("worker.py"))
+            } else {
+                exe_candidates
+                    .iter()
+                    .chain(script_candidates.iter())
+                    .find(|p| p.exists())
+                    .cloned()
+                    .unwrap_or_else(|| current_dir.join("ocr-worker").join("worker.py"))
+            };
+            info!("Configured OCR worker path: {:?}", worker_path);
 
             let ocr_manager = OcrManager::new(&worker_path);
             let coordinator = Arc::new(PipelineCoordinator::new(db.clone(), ocr_manager.clone()));

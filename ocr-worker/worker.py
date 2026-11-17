@@ -999,30 +999,48 @@ def _resolve_openthaigpt_dir(root_dir: str = "") -> Optional[str]:
     env_root = os.environ.get("PO_AUTOFLOW_ROOT", "").strip()
     if env_root:
         candidates.append(os.path.join(env_root, "Models", "openthaigpt-ocr-text"))
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        candidates.extend([
+            os.path.join(meipass, "openthaigpt-ocr-text"),
+            os.path.join(meipass, "models", "openthaigpt-ocr-text"),
+        ])
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
     candidates.extend([
+        os.path.join(exe_dir, "models", "openthaigpt-ocr-text"),
+        os.path.join(exe_dir, "..", "models", "openthaigpt-ocr-text"),
+        os.path.join(exe_dir, "resources", "models", "openthaigpt-ocr-text"),
         r"D:\PO-AutoFlow\Models\openthaigpt-ocr-text",
         r"C:\PO-AutoFlow\Models\openthaigpt-ocr-text",
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "openthaigpt-ocr-text"),
     ])
     for d in candidates:
+        norm = os.path.normpath(d) if d else ""
         if (
-            d
-            and os.path.isfile(os.path.join(d, "det.onnx"))
-            and os.path.isfile(os.path.join(d, "rec.onnx"))
-            and os.path.isfile(os.path.join(d, "runtime", "line_engine.py"))
+            norm
+            and os.path.isfile(os.path.join(norm, "det.onnx"))
+            and os.path.isfile(os.path.join(norm, "rec.onnx"))
+            and os.path.isfile(os.path.join(norm, "runtime", "line_engine.py"))
         ):
-            return d
+            return norm
     return None
 
 
 def _openthaigpt_runtime_backend() -> Optional[str]:
-    if importlib.util.find_spec("pyclipper") is None:
+    try:
+        import pyclipper  # noqa: F401
+    except ImportError:
         return None
-    if importlib.util.find_spec("openvino") is not None:
+    try:
+        import openvino  # noqa: F401
         return "openvino"
-    if importlib.util.find_spec("onnxruntime") is not None:
+    except ImportError:
+        pass
+    try:
+        import onnxruntime  # noqa: F401
         return "onnxruntime"
-    return None
+    except ImportError:
+        return None
 
 
 def get_openthaigpt_ocr(root_dir: str = "", relaxed: bool = False):
@@ -2027,7 +2045,11 @@ def get_engine_capabilities(root_dir: str = "") -> Dict[str, Any]:
     openthaigpt_dir = _resolve_openthaigpt_dir(root_dir)
     openthaigpt_backend = _openthaigpt_runtime_backend()
     openthaigpt_ok = bool(openthaigpt_dir and openthaigpt_backend)
-    py_ver = platform.python_version()
+    py_ver = (
+        f"Bundled ({platform.python_version()})"
+        if getattr(sys, "frozen", False)
+        else platform.python_version()
+    )
     if openthaigpt_ok:
         openthaigpt_note = f"Ready ({openthaigpt_backend}) — Winner for fast Thai & English scans"
     elif openthaigpt_dir and not openthaigpt_backend:

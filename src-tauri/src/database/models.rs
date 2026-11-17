@@ -175,7 +175,7 @@ impl Default for AppSettings {
             auto_monitoring_active: false,
             dark_mode: true,
             setup_completed: false,
-            developer_mode_enabled: true,
+            developer_mode_enabled: false,
             debug_logging_enabled: true,
             dry_run_simulation_mode: false,
             save_debug_ocr_images: false,
@@ -192,7 +192,7 @@ impl Default for AppSettings {
             local_vision_enabled: false,
             local_vision_provider: "builtin".to_string(),
             local_vision_endpoint: "http://127.0.0.1:11434".to_string(),
-            local_vision_model: "smolvlm2-2.2b".to_string(),
+            local_vision_model: "qwen2.5-vl-3b".to_string(),
             local_vision_trigger_mode: "fallback".to_string(),
             ocr_quality_preset: "balanced".to_string(),
         }

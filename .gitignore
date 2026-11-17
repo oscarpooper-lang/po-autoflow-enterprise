@@ -27,12 +27,17 @@ dist-ssr
 src-tauri/target/
 target/
 
-# Python OCR worker cache & virtualenvs
+# Python OCR worker cache & virtualenvs & generated standalone bundle
 __pycache__/
 *.py[cod]
 *.pyo
 .venv/
 venv/
+build/
+dist/
+*.spec
+src-tauri/resources/ocr-worker/
+src-tauri/resources/models/
 
 # Local databases & secrets
 *.db
