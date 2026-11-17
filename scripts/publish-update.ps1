@@ -62,6 +62,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "cargo test failed." }
 
     if (-not $SkipBuild) {
+        # Remove older versioned bundles so target\release\bundle stays uncluttered
+        foreach ($sub in @("msi", "nsis")) {
+            $bDir = Join-Path $repoRoot "src-tauri\target\release\bundle\$sub"
+            if (Test-Path $bDir) {
+                Get-ChildItem -Path $bDir -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+            }
+        }
         Write-Host "==> Building Windows release installers (.exe + .msi)..." -ForegroundColor Cyan
         npm run tauri build
         if ($LASTEXITCODE -ne 0) { throw "npm run tauri build failed." }

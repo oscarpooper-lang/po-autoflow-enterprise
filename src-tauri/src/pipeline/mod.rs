@@ -411,6 +411,7 @@ impl PipelineCoordinator {
             builtin_mmproj_path: builtin_mmproj_path.to_string_lossy().to_string(),
             force_vision: force_vision
                 || (settings.local_vision_enabled && settings.local_vision_trigger_mode == "always"),
+            ocr_quality_preset: settings.ocr_quality_preset.clone(),
         };
 
         let mut all_supplier_candidates = Vec::new();

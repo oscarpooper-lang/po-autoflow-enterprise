@@ -147,6 +147,7 @@ export const defaultSettings: AppSettings = {
   local_vision_endpoint: 'http://127.0.0.1:11434',
   local_vision_model: 'smolvlm2-2.2b',
   local_vision_trigger_mode: 'fallback',
+  ocr_quality_preset: 'balanced',
 };
 
 let mockSettings: AppSettings = { ...defaultSettings };

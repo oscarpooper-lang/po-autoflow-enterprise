@@ -95,6 +95,8 @@ pub struct OcrHints {
     pub builtin_mmproj_path: String,
     #[serde(default)]
     pub force_vision: bool,
+    #[serde(default)]
+    pub ocr_quality_preset: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

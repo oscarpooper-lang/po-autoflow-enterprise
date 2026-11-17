@@ -540,6 +540,7 @@ pub async fn test_ocr_on_file(
         builtin_model_path: model_path.to_string_lossy().to_string(),
         builtin_mmproj_path: mmproj_path.to_string_lossy().to_string(),
         force_vision: false,
+        ocr_quality_preset: settings.ocr_quality_preset,
     };
     let resp = state
         .ocr_manager

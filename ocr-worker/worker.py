@@ -90,12 +90,14 @@ def _extract_json_object(raw: str) -> Dict[str, Any]:
     return {}
 
 
-def _prepare_vision_crop(img_np: np.ndarray, max_width: int = 960) -> np.ndarray:
-    """Focuses VLM input on the header band of portrait pages and caps width for fast inference."""
+def _prepare_vision_crop(
+    img_np: np.ndarray, max_width: int = 960, crop_ratio: float = 0.55
+) -> np.ndarray:
+    """Focuses VLM input on the header band of portrait pages and caps width."""
     h, w = img_np.shape[:2]
     vision_img = img_np
-    if h > int(w * 1.05):
-        crop_h = max(1, int(h * 0.55))
+    if h > int(w * 1.05) and crop_ratio < 0.99:
+        crop_h = max(1, int(h * crop_ratio))
         vision_img = img_np[:crop_h, :]
     vh, vw = vision_img.shape[:2]
     if vw > max_width:
@@ -112,6 +114,7 @@ def query_local_vision_model(
     engine_path: str = "",
     model_path: str = "",
     mmproj_path: str = "",
+    quality_preset: str = "balanced",
 ) -> Dict[str, Any]:
     """Queries 100% offline on-device Vision AI (Built-in llama-mtmd-cli, Ollama, or Python transformers)."""
     prompt = (
@@ -135,7 +138,12 @@ def query_local_vision_model(
             ):
                 return {}
 
-            vision_img = _prepare_vision_crop(img_np, max_width=960)
+            is_max = (quality_preset or "balanced").strip().lower() == "max_accuracy"
+            vision_img = _prepare_vision_crop(
+                img_np,
+                max_width=1280 if is_max else 960,
+                crop_ratio=0.78 if is_max else 0.55,
+            )
             ok, buf = cv2.imencode(".png", vision_img)
             if not ok:
                 return {}
@@ -157,7 +165,7 @@ def query_local_vision_model(
                     "-p",
                     prompt,
                     "-n",
-                    "200",
+                    "320" if is_max else "200",
                     "--temp",
                     "0.1",
                     "--repeat-penalty",
@@ -169,7 +177,7 @@ def query_local_vision_model(
                     "text": True,
                     "encoding": "utf-8",
                     "errors": "ignore",
-                    "timeout": 60,
+                    "timeout": 120 if is_max else 60,
                     "cwd": os.path.dirname(engine_path),
                 }
                 if os.name == "nt":
@@ -875,9 +883,12 @@ def run_windows_winrt_ocr(img_np: np.ndarray) -> tuple:
                 pass
 
 
-def _run_image_ocr_cascade(img_np: np.ndarray, root_dir: str = "") -> tuple:
+def _run_image_ocr_cascade(
+    img_np: np.ndarray, root_dir: str = "", quality_preset: str = "balanced"
+) -> tuple:
     """Runs available on-device OCR engines (PaddleOCR -> Tesseract tha+eng -> Windows WinRT OCR)."""
     enhanced_img: Optional[np.ndarray] = None
+    is_max = (quality_preset or "balanced").strip().lower() == "max_accuracy"
 
     ocr_engine = get_paddle_ocr()
     if ocr_engine is not None:
@@ -905,10 +916,12 @@ def _run_image_ocr_cascade(img_np: np.ndarray, root_dir: str = "") -> tuple:
             sys.stderr.write(f"PaddleOCR runtime fallback: {e}\n")
 
     tess_lines, tess_boxes, tess_conf = run_tesseract_ocr(img_np, root_dir)
-    if not tess_lines:
+    if not tess_lines or (is_max and (len(tess_lines) < 4 or tess_conf < 0.72)):
         if enhanced_img is None:
             enhanced_img = Preprocessor.deskew_and_enhance(img_np)
-        tess_lines, tess_boxes, tess_conf = run_tesseract_ocr(enhanced_img, root_dir)
+        enh_lines, enh_boxes, enh_conf = run_tesseract_ocr(enhanced_img, root_dir)
+        if enh_lines and (not tess_lines or len(enh_lines) > len(tess_lines) or enh_conf > tess_conf + 0.03):
+            tess_lines, tess_boxes, tess_conf = enh_lines, enh_boxes, enh_conf
     if tess_lines:
         return tess_lines, tess_boxes, tess_conf, "tesseract_tha_eng"
 
@@ -1485,6 +1498,10 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
 
     hints = request.get("hints") or {}
     root_dir = str(hints.get("root_dir") or "")
+    quality_preset = str(hints.get("ocr_quality_preset") or "balanced").strip().lower()
+    if quality_preset not in ("fast", "balanced", "max_accuracy"):
+        quality_preset = "balanced"
+    scan_dpi = 200 if quality_preset == "fast" else (400 if quality_preset == "max_accuracy" else 300)
     neg_phrases = [str(x) for x in (hints.get("negative_phrases") or []) if x]
     pref_y_raw = hints.get("preferred_y_band")
     pref_y = float(pref_y_raw) if pref_y_raw is not None else None
@@ -1524,10 +1541,12 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 )
 
                 if needs_ocr:
-                    img = render_pdf_page_to_image(file_path, page_num, dpi=300)
+                    img = render_pdf_page_to_image(file_path, page_num, dpi=scan_dpi)
                     if page_num == 1:
                         first_page_img = img
-                    ocr_lines, ocr_boxes, ocr_conf, ocr_method = _run_image_ocr_cascade(img, root_dir)
+                    ocr_lines, ocr_boxes, ocr_conf, ocr_method = _run_image_ocr_cascade(
+                        img, root_dir, quality_preset
+                    )
                     if ocr_lines:
                         native_clean = raw_text.strip()
                         ocr_joined = "\n".join(ocr_lines)
@@ -1556,7 +1575,9 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 return {"status": "error", "message": f"Could not read image (or unsupported format): {file_path}"}
 
             first_page_img = img
-            ocr_lines, boxes, confidence, ocr_method = _run_image_ocr_cascade(img, root_dir)
+            ocr_lines, boxes, confidence, ocr_method = _run_image_ocr_cascade(
+                img, root_dir, quality_preset
+            )
             raw_text = "\n".join(ocr_lines)
             parsed = parse_supplier_and_po(raw_text, boxes, neg_phrases, pref_y)
             overall_text_parts.append(raw_text)
@@ -1624,6 +1645,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                     builtin_engine_path,
                     builtin_model_path,
                     builtin_mmproj_path,
+                    quality_preset="max_accuracy" if (force_vision or quality_preset == "max_accuracy") else quality_preset,
                 )
                 if vision_out:
                     _merge_local_vision_into_parsed(agg_parsed, vision_out, neg_phrases)

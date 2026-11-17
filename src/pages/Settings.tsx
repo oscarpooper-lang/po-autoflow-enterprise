@@ -790,6 +790,136 @@ export const Settings: React.FC<SettingsProps> = ({
               </div>
 
               <div className="space-y-4">
+                {/* Performance vs Accuracy Preset */}
+                <div className="p-4 rounded-xl bg-zinc-950/70 border border-zinc-800 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h4 className="font-semibold text-zinc-100">Performance vs. Accuracy Mode</h4>
+                      <p className="text-[11px] text-zinc-400">
+                        Pick a preset to tune scan DPI, Tesseract enhancements, and local Vision AI depth.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                    {(
+                      [
+                        {
+                          id: 'fast',
+                          title: 'Fast / Eco',
+                          badge: 'Fastest (~1–2s)',
+                          summary: '200 DPI scan OCR • Vision AI off unless forced manually. Ideal for crisp digital PDFs.',
+                        },
+                        {
+                          id: 'balanced',
+                          title: 'Balanced',
+                          badge: 'Recommended',
+                          summary: '300 DPI scan OCR + Smart Fallback Vision AI only when confidence < 85%.',
+                        },
+                        {
+                          id: 'max_accuracy',
+                          title: 'Maximum Accuracy',
+                          badge: 'Deepest • Slowest',
+                          summary: '400 DPI multi-pass OCR + Always-On high-detail Vision AI (prefers Qwen2.5-VL-3B).',
+                        },
+                      ] as const
+                    ).map((preset) => {
+                      const active = (formData.ocr_quality_preset || 'balanced') === preset.id;
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => {
+                            const installedModels = (builtInVision?.models || []).filter((m) => m.installed);
+                            const hasQwen = installedModels.some((m) => m.id === 'qwen2.5-vl-3b');
+                            const hasSmol22 = installedModels.some((m) => m.id === 'smolvlm2-2.2b');
+                            const bestInstalled =
+                              installedModels.find((m) => m.id === 'qwen2.5-vl-3b')?.id ||
+                              installedModels.find((m) => m.id === 'smolvlm2-2.2b')?.id ||
+                              installedModels[0]?.id;
+
+                            setFormData((prev) => {
+                              if (preset.id === 'fast') {
+                                return {
+                                  ...prev,
+                                  ocr_quality_preset: 'fast',
+                                  local_vision_enabled: false,
+                                  local_vision_trigger_mode: 'fallback',
+                                  ocr_confidence_threshold_verified: 97.0,
+                                  ocr_confidence_threshold_high: 88.0,
+                                  ocr_confidence_threshold_review: 70.0,
+                                };
+                              }
+                              if (preset.id === 'max_accuracy') {
+                                return {
+                                  ...prev,
+                                  ocr_quality_preset: 'max_accuracy',
+                                  local_vision_enabled: true,
+                                  local_vision_provider: 'builtin',
+                                  local_vision_trigger_mode: 'always',
+                                  local_vision_model: hasQwen
+                                    ? 'qwen2.5-vl-3b'
+                                    : bestInstalled || 'qwen2.5-vl-3b',
+                                  ocr_confidence_threshold_verified: 98.5,
+                                  ocr_confidence_threshold_high: 92.0,
+                                  ocr_confidence_threshold_review: 75.0,
+                                };
+                              }
+                              return {
+                                ...prev,
+                                ocr_quality_preset: 'balanced',
+                                local_vision_enabled: installedModels.length > 0 ? true : prev.local_vision_enabled,
+                                local_vision_provider: 'builtin',
+                                local_vision_trigger_mode: 'fallback',
+                                local_vision_model: hasSmol22
+                                  ? 'smolvlm2-2.2b'
+                                  : bestInstalled || 'smolvlm2-2.2b',
+                                ocr_confidence_threshold_verified: 98.0,
+                                ocr_confidence_threshold_high: 90.0,
+                                ocr_confidence_threshold_review: 75.0,
+                              };
+                            });
+                          }}
+                          className={`p-3 rounded-lg border text-left transition-colors space-y-1 ${
+                            active
+                              ? 'bg-blue-600/15 border-blue-500/60 text-zinc-100'
+                              : 'bg-zinc-900/70 border-zinc-800 text-zinc-300 hover:border-zinc-700'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="font-semibold text-xs">{preset.title}</span>
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                active
+                                  ? 'bg-blue-500/25 text-blue-200 border border-blue-400/40'
+                                  : 'bg-zinc-800 text-zinc-400'
+                              }`}
+                            >
+                              {preset.badge}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-zinc-400 leading-relaxed">{preset.summary}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {(formData.ocr_quality_preset || 'balanced') === 'max_accuracy' &&
+                    !(builtInVision?.models || []).some((m) => m.id === 'qwen2.5-vl-3b' && m.installed) && (
+                      <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-200 text-[11px] flex flex-wrap items-center justify-between gap-2">
+                        <span>
+                          Tip: For true Maximum Accuracy on Thai scans, download <strong>Qwen2.5-VL-3B (2.65 GB)</strong> below.
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadBuiltInModel('qwen2.5-vl-3b')}
+                          disabled={!!downloadingModelId || !!builtInVision?.download?.active}
+                          className="px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-[10px] disabled:opacity-50"
+                        >
+                          Download Qwen2.5-VL-3B
+                        </button>
+                      </div>
+                    )}
+                </div>
+
                 <div>
                   <label className="text-zinc-300 font-semibold block mb-1">OCR Pipeline Mode:</label>
                   <select

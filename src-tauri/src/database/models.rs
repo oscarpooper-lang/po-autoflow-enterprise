@@ -74,6 +74,8 @@ pub struct AppSettings {
     pub local_vision_model: String,
     #[serde(default = "default_local_vision_trigger_mode")]
     pub local_vision_trigger_mode: String, // "fallback" | "always"
+    #[serde(default = "default_ocr_quality_preset")]
+    pub ocr_quality_preset: String, // "fast" | "balanced" | "max_accuracy"
 }
 
 fn default_true() -> bool {
@@ -102,6 +104,10 @@ fn default_local_vision_model() -> String {
 
 fn default_local_vision_trigger_mode() -> String {
     "fallback".to_string()
+}
+
+fn default_ocr_quality_preset() -> String {
+    "balanced".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,6 +194,7 @@ impl Default for AppSettings {
             local_vision_endpoint: "http://127.0.0.1:11434".to_string(),
             local_vision_model: "smolvlm2-2.2b".to_string(),
             local_vision_trigger_mode: "fallback".to_string(),
+            ocr_quality_preset: "balanced".to_string(),
         }
     }
 }
