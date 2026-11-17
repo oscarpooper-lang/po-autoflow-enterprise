@@ -6,9 +6,11 @@ import {
   LogOut,
   Minimize2,
   ShieldCheck,
+  Languages,
 } from 'lucide-react';
 import type { AppSettings, GoogleAccountInfo } from '../types';
 import { api } from '../services/tauri';
+import { resolveUiLang, tr, tx, type UiLang } from '../i18n';
 
 interface HeaderProps {
   title: string;
@@ -41,12 +43,13 @@ export const Header: React.FC<HeaderProps> = ({
   isLoggingIn,
 }) => {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const lang: UiLang = resolveUiLang(settings);
 
   const currentAutoSendKey: 'verified_and_high' | 'verified_only' | 'manual_review_all' =
-    !settings || settings.auto_send_email_enabled === false || settings.auto_send_mode === 'manual_review_all'
-      ? settings?.auto_send_email_enabled === false || settings?.auto_send_mode === 'manual_review_all'
-        ? 'manual_review_all'
-        : 'verified_and_high'
+    !settings
+      ? 'verified_and_high'
+      : settings.auto_send_email_enabled === false || settings.auto_send_mode === 'manual_review_all'
+      ? 'manual_review_all'
       : settings.auto_send_mode || 'verified_and_high';
 
   const handleAutoSendChange = async (mode: 'verified_and_high' | 'verified_only' | 'manual_review_all') => {
@@ -58,6 +61,14 @@ export const Header: React.FC<HeaderProps> = ({
     });
   };
 
+  const handleLanguageChange = async (nextLang: UiLang) => {
+    if (!settings || !onSaveSettings || nextLang === lang) return;
+    await onSaveSettings({
+      ...settings,
+      ui_language: nextLang,
+    });
+  };
+
   return (
     <header className="h-16 bg-[#121215] border-b border-zinc-800 px-6 flex items-center justify-between gap-4 shrink-0 z-10">
       <div className="min-w-0">
@@ -66,17 +77,45 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       <div className="flex items-center gap-2.5 shrink-0">
+        {/* Thai / English Language Switcher */}
+        {settings && onSaveSettings && (
+          <div
+            className="flex items-center bg-zinc-900 border border-zinc-800 rounded-lg p-0.5 text-xs"
+            title={tx(lang, 'Switch interface language (English / ภาษาไทย)', 'สลับภาษาเมนูและหน้าจอ (English / ภาษาไทย)')}
+          >
+            <Languages className="w-3.5 h-3.5 text-zinc-400 ml-1.5 mr-1 hidden sm:block" />
+            {(['en', 'th'] as const).map((code) => (
+              <button
+                key={code}
+                type="button"
+                onClick={() => handleLanguageChange(code)}
+                className={`px-2 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                  lang === code
+                    ? 'bg-zinc-700 text-white'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                {code === 'en' ? 'EN' : 'ไทย'}
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* Auto-Send Segmented Policy Control */}
         {settings && onSaveSettings && (
           <div
             className="hidden lg:flex items-center bg-zinc-900 border border-zinc-800 rounded-lg p-0.5 text-xs"
-            title="Choose whether PO emails ask for approval first or send automatically"
+            title={tx(
+              lang,
+              'Choose whether PO emails ask for approval first or send automatically',
+              'เลือกว่าจะให้พักรอคุณอนุมัติก่อนส่งอีเมล หรือส่งอัตโนมัติ'
+            )}
           >
             {(
               [
-                { id: 'manual_review_all', label: 'Ask First' },
-                { id: 'verified_and_high', label: 'Auto ≥90%' },
-                { id: 'verified_only', label: 'Strict ≥98%' },
+                { id: 'manual_review_all', label: tr(lang, 'askFirst') },
+                { id: 'verified_and_high', label: tr(lang, 'auto90') },
+                { id: 'verified_only', label: tr(lang, 'strict98') },
               ] as const
             ).map((opt) => {
               const active = currentAutoSendKey === opt.id;
@@ -113,12 +152,12 @@ export const Header: React.FC<HeaderProps> = ({
           {isMonitoringActive ? (
             <>
               <Pause className="w-3.5 h-3.5" />
-              <span>Watching</span>
+              <span>{tr(lang, 'watching')}</span>
             </>
           ) : (
             <>
               <Play className="w-3.5 h-3.5" />
-              <span>Start Watching</span>
+              <span>{tr(lang, 'startWatching')}</span>
             </>
           )}
         </button>
@@ -127,11 +166,15 @@ export const Header: React.FC<HeaderProps> = ({
         <button
           type="button"
           onClick={() => api.minimizeToTray()}
-          title="Hide to Windows System Tray — folder watching continues in the background"
+          title={tx(
+            lang,
+            'Hide to Windows System Tray — folder watching continues in the background',
+            'ซ่อนลงถาดระบบ Windows — ระบบเฝ้าโฟลเดอร์จะยังคงทำงานอยู่เบื้องหลัง'
+          )}
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-zinc-300 transition-colors"
         >
           <Minimize2 className="w-3.5 h-3.5 text-zinc-400" />
-          <span className="hidden xl:inline">Tray</span>
+          <span className="hidden xl:inline">{tr(lang, 'tray')}</span>
         </button>
 
         {/* Google Account */}
@@ -154,13 +197,13 @@ export const Header: React.FC<HeaderProps> = ({
                 <div className="absolute right-0 mt-2 w-60 bg-[#18181b] border border-zinc-800 rounded-xl shadow-xl p-3 z-50 text-xs space-y-2.5">
                   <div className="pb-2 border-b border-zinc-800">
                     <p className="font-semibold text-zinc-100 truncate">
-                      {googleAccount.name || 'Connected Google Account'}
+                      {googleAccount.name || tx(lang, 'Connected Google Account', 'บัญชี Google ที่เชื่อมต่อ')}
                     </p>
                     <p className="text-zinc-400 truncate">{googleAccount.email}</p>
                   </div>
                   <div className="flex items-center gap-1.5 text-emerald-400 text-[11px]">
                     <ShieldCheck className="w-3.5 h-3.5" />
-                    <span>Google Cloud connected</span>
+                    <span>{tx(lang, 'Google Cloud connected', 'เชื่อมต่อ Google Cloud แล้ว')}</span>
                   </div>
                   {onGoogleLogout && (
                     <button
@@ -172,7 +215,7 @@ export const Header: React.FC<HeaderProps> = ({
                       className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 font-medium"
                     >
                       <LogOut className="w-3.5 h-3.5" />
-                      <span>Disconnect</span>
+                      <span>{tx(lang, 'Disconnect', 'ออกจากระบบ')}</span>
                     </button>
                   )}
                 </div>
@@ -186,7 +229,7 @@ export const Header: React.FC<HeaderProps> = ({
                 disabled={isLoggingIn}
                 className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-medium text-zinc-200 transition-colors"
               >
-                {isLoggingIn ? 'Connecting...' : 'Connect Google'}
+                {isLoggingIn ? tr(lang, 'signingIn') : tr(lang, 'signInGoogle')}
               </button>
             )
           )}
@@ -199,7 +242,7 @@ export const Header: React.FC<HeaderProps> = ({
             onClick={onRefreshData}
             disabled={isRefreshing}
             className="p-2 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-lg transition-colors border border-zinc-800"
-            title="Refresh"
+            title={tx(lang, 'Refresh', 'รีเฟรชข้อมูล')}
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-blue-400' : ''}`} />
           </button>

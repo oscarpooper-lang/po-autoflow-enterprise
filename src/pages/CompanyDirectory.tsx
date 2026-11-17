@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import type { CompanyCacheEntry, CompanyAlias } from '../types';
 import { api } from '../services/tauri';
+import { tr, tx, type UiLang } from '../i18n';
 
 interface CompanyDirectoryProps {
   companies: CompanyCacheEntry[];
@@ -18,6 +19,7 @@ interface CompanyDirectoryProps {
   onRefreshCompanies: () => void;
   onSyncSheets?: () => void;
   isSyncing: boolean;
+  lang?: UiLang;
 }
 
 export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
@@ -26,6 +28,7 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
   onRefreshCompanies,
   onSyncSheets,
   isSyncing,
+  lang = 'en',
 }) => {
   const [activeTab, setActiveTab] = useState<'directory' | 'aliases'>('directory');
   const [searchQuery, setSearchQuery] = useState('');
@@ -87,10 +90,10 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
         <div>
           <h2 className="text-base font-bold text-white flex items-center gap-2">
             <Building2 className="w-5 h-5 text-blue-400" />
-            Suppliers &amp; Alternate Names
+            {tr(lang, 'dirHeading')}
           </h2>
           <p className="text-xs text-zinc-400">
-            Synced from your Google Sheet plus any alternate Thai/English spellings remembered from PDFs
+            {tr(lang, 'dirSub')}
           </p>
         </div>
 
@@ -100,7 +103,7 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
             className="px-3.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 text-xs font-semibold transition-colors flex items-center space-x-1.5 shadow-sm"
           >
             <Plus className="w-4 h-4 text-blue-400" />
-            <span>Add Custom Alias</span>
+            <span>{tr(lang, 'addAlias')}</span>
           </button>
 
           <button
@@ -109,7 +112,7 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
             className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition-colors flex items-center space-x-1.5 shadow-sm shadow-blue-500/20"
           >
             <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
-            <span>{isSyncing ? 'Syncing...' : 'Sync from Google Sheets'}</span>
+            <span>{isSyncing ? tr(lang, 'syncing') : tr(lang, 'syncSheet')}</span>
           </button>
         </div>
       </div>
@@ -125,7 +128,7 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
                 : 'text-zinc-400 hover:text-zinc-200'
             }`}
           >
-            Google Sheets Directory ({companies.length})
+            {tx(lang, 'Google Sheets Directory', 'รายชื่อจาก Google Sheets')} ({companies.length})
           </button>
           <button
             onClick={() => setActiveTab('aliases')}
@@ -135,7 +138,7 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
                 : 'text-zinc-400 hover:text-zinc-200'
             }`}
           >
-            Learned Aliases ({aliases.length})
+            {tx(lang, 'Learned Aliases', 'ชื่อเรียกสำรองที่จำไว้')} ({aliases.length})
           </button>
         </div>
 
@@ -143,7 +146,11 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
           <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-2.5" />
           <input
             type="text"
-            placeholder={activeTab === 'directory' ? 'Search companies or email...' : 'Search aliases...'}
+            placeholder={
+              activeTab === 'directory'
+                ? tx(lang, 'Search companies or email...', 'ค้นหาชื่อบริษัทหรืออีเมล...')
+                : tx(lang, 'Search aliases...', 'ค้นหาชื่อเรียกสำรอง...')
+            }
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="bg-zinc-800 border border-zinc-700 text-zinc-200 text-xs rounded-lg pl-9 pr-3 py-2 w-72 focus:ring-1 focus:ring-blue-500 placeholder-zinc-500 font-medium"
@@ -158,19 +165,23 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
             <table className="w-full text-left text-xs">
               <thead className="bg-zinc-950/70 text-zinc-400 font-semibold border-b border-zinc-800">
                 <tr>
-                  <th className="py-3 px-4">Supplier Name</th>
-                  <th className="py-3 px-4">English / Alternate Name</th>
-                  <th className="py-3 px-4">Recipient Email</th>
-                  <th className="py-3 px-4">Tax ID</th>
-                  <th className="py-3 px-4">Status</th>
-                  <th className="py-3 px-4 text-right">Synced At</th>
+                  <th className="py-3 px-4">{tx(lang, 'Supplier Name', 'ชื่อผู้ขาย')}</th>
+                  <th className="py-3 px-4">{tx(lang, 'English / Alternate Name', 'ชื่ออังกฤษ / ชื่อสำรอง')}</th>
+                  <th className="py-3 px-4">{tx(lang, 'Recipient Email', 'อีเมลผู้รับ')}</th>
+                  <th className="py-3 px-4">{tx(lang, 'Tax ID', 'เลขผู้เสียภาษี (Tax ID)')}</th>
+                  <th className="py-3 px-4">{tx(lang, 'Status', 'สถานะ')}</th>
+                  <th className="py-3 px-4 text-right">{tx(lang, 'Synced At', 'วันที่ซิงก์')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/70">
                 {filteredCompanies.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="py-12 text-center text-zinc-500">
-                      No companies found. Click "Sync from Google Sheets" to fetch directory.
+                      {tx(
+                        lang,
+                        'No companies found. Click "Sync from Google Sheets" to fetch directory.',
+                        'ไม่พบข้อมูลผู้ขาย กรุณากด "ซิงก์ Google Sheet" เพื่อดึงรายชื่อ'
+                      )}
                     </td>
                   </tr>
                 ) : (
@@ -191,11 +202,11 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
                       <td className="py-3 px-4">
                         {comp.active ? (
                           <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400">
-                            <CheckCircle2 className="w-3.5 h-3.5" /> Active
+                            <CheckCircle2 className="w-3.5 h-3.5" /> {tx(lang, 'Active', 'ใช้งานอยู่')}
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-zinc-500">
-                            <XCircle className="w-3.5 h-3.5" /> Inactive
+                            <XCircle className="w-3.5 h-3.5" /> {tx(lang, 'Inactive', 'ปิดใช้งาน')}
                           </span>
                         )}
                       </td>
@@ -215,18 +226,22 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
             <table className="w-full text-left text-xs">
               <thead className="bg-zinc-950/70 text-zinc-400 font-semibold border-b border-zinc-800">
                 <tr>
-                  <th className="py-3 px-4">Name Found in PDF</th>
-                  <th className="py-3 px-4">Google Sheet Supplier</th>
-                  <th className="py-3 px-4">Added By</th>
-                  <th className="py-3 px-4 text-right">Date Added</th>
-                  <th className="py-3 px-4 text-right">Actions</th>
+                  <th className="py-3 px-4">{tx(lang, 'Name Found in PDF', 'ชื่อที่พบใน PDF')}</th>
+                  <th className="py-3 px-4">{tx(lang, 'Google Sheet Supplier', 'ผู้ขายหลักใน Google Sheet')}</th>
+                  <th className="py-3 px-4">{tx(lang, 'Added By', 'บันทึกโดย')}</th>
+                  <th className="py-3 px-4 text-right">{tx(lang, 'Date Added', 'วันที่บันทึก')}</th>
+                  <th className="py-3 px-4 text-right">{tx(lang, 'Actions', 'จัดการ')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/70">
                 {filteredAliases.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="py-12 text-center text-zinc-500">
-                      No custom aliases recorded yet. Use the OCR Inspector or "Add Custom Alias" to map irregular OCR strings.
+                      {tx(
+                        lang,
+                        'No custom aliases recorded yet. Use the OCR Inspector or "Add Custom Alias" to map irregular OCR strings.',
+                        'ยังไม่มีชื่อเรียกสำรอง สามารถเพิ่มได้จากหน้าตรวจเอกสาร หรือกด "เพิ่มชื่อสำรอง"'
+                      )}
                     </td>
                   </tr>
                 ) : (
@@ -249,11 +264,11 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
                           type="button"
                           onClick={() => handleDeleteAlias(a.id)}
                           disabled={deletingAliasId === a.id}
-                          title="Delete alias"
+                          title={tx(lang, 'Delete alias', 'ลบชื่อเรียกสำรอง')}
                           className="inline-flex items-center gap-1 px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-[11px] font-medium disabled:opacity-50"
                         >
                           <Trash2 className="w-3 h-3" />
-                          <span>Delete</span>
+                          <span>{tx(lang, 'Delete', 'ลบ')}</span>
                         </button>
                       </td>
                     </tr>
@@ -272,7 +287,7 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
             <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <BookmarkPlus className="w-4 h-4 text-blue-400" />
-                Add OCR Alias Mapping
+                {tx(lang, 'Add OCR Alias Mapping', 'เพิ่มการจับคู่ชื่อผู้ขายสำรอง')}
               </h3>
               <button
                 onClick={() => setIsModalOpen(false)}
@@ -285,12 +300,16 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
             <form onSubmit={handleCreateAlias} className="space-y-4 text-xs">
               <div>
                 <label className="text-zinc-300 font-medium block mb-1">
-                  OCR Variant or Abbreviation:
+                  {tx(lang, 'OCR Variant or Abbreviation:', 'ชื่อที่อ่านได้จากเอกสาร หรือชื่อย่อ:')}
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. บจก. สยาม ซัพพลาย หรือ Siam Supply Co"
+                  placeholder={tx(
+                    lang,
+                    'e.g. บจก. สยาม ซัพพลาย or Siam Supply Co',
+                    'เช่น บจก. สยาม ซัพพลาย หรือ Siam Supply Co'
+                  )}
                   value={newAlias}
                   onChange={(e) => setNewAlias(e.target.value)}
                   className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 font-medium"
@@ -299,7 +318,7 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
 
               <div>
                 <label className="text-zinc-300 font-medium block mb-1">
-                  Canonical Company in Google Sheets:
+                  {tx(lang, 'Canonical Company in Google Sheets:', 'จับคู่กับผู้ขายหลักใน Google Sheets:')}
                 </label>
                 <select
                   value={effectiveCanonical}
@@ -320,13 +339,13 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
                   onClick={() => setIsModalOpen(false)}
                   className="px-3.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium"
                 >
-                  Cancel
+                  {tx(lang, 'Cancel', 'ยกเลิก')}
                 </button>
                 <button
                   type="submit"
                   className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-sm"
                 >
-                  Save Alias
+                  {tx(lang, 'Save Alias', 'บันทึกชื่อสำรอง')}
                 </button>
               </div>
             </form>

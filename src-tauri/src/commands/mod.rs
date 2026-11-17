@@ -222,6 +222,87 @@ pub async fn deep_scan_job_with_vision(
         .await
 }
 
+pub fn spawn_upsert_supplier_to_sheets(
+    db: &Database,
+    ocr_manager: &OcrManager,
+    settings: &AppSettings,
+    company_name: &str,
+    recipient_email: &str,
+) {
+    if !settings.auto_sync_learned_suppliers_to_sheets
+        || settings.gas_webhook_url.trim().is_empty()
+        || settings.google_sheets_id.trim().is_empty()
+    {
+        return;
+    }
+
+    let matched_entry = db
+        .get_companies_cache()
+        .ok()
+        .and_then(|list| {
+            list.into_iter()
+                .find(|c| c.company_name.eq_ignore_ascii_case(company_name))
+        });
+    let alt_name = matched_entry.as_ref().and_then(|c| c.alternative_name.clone());
+    let tax_id = matched_entry.as_ref().and_then(|c| c.tax_id.clone());
+    let webhook = settings.gas_webhook_url.clone();
+    let secret = settings.gas_auth_secret.clone();
+    let sheet_id = settings.google_sheets_id.clone();
+    let tab_name = settings.google_sheets_tab_name.clone();
+    let comp_clone = company_name.to_string();
+    let email_clone = recipient_email.to_string();
+    let db_clone = db.clone();
+    let mgr_clone = ocr_manager.clone();
+
+    tokio::spawn(async move {
+        let Ok(client) = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+        else {
+            return;
+        };
+        let payload = serde_json::json!({
+            "action": "upsert_supplier",
+            "auth_secret": secret,
+            "sheet_id": sheet_id,
+            "tab_name": tab_name,
+            "company_name": comp_clone,
+            "alternative_name": alt_name.unwrap_or_default(),
+            "email": email_clone,
+            "tax_id": tax_id.unwrap_or_default(),
+        });
+        match client.post(&webhook).json(&payload).send().await {
+            Ok(resp) => {
+                let status_code = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if val.get("status").and_then(|v| v.as_str()) == Some("ok") {
+                        let mode = val.get("mode").and_then(|v| v.as_str()).unwrap_or("saved");
+                        mgr_clone.push_log(format!(
+                            "[sheets OK] Supplier '{}' ({}) synced back to Google Sheet ({}).",
+                            comp_clone, email_clone, mode
+                        ));
+                    } else {
+                        let err = val.get("error").and_then(|v| v.as_str()).unwrap_or(&text);
+                        let msg = format!("Google Sheet supplier auto-save warning for '{}': {}", comp_clone, err);
+                        mgr_clone.push_log(format!("[sheets WARN] {}", msg));
+                        db_clone.add_event(None, "warn", &msg).ok();
+                    }
+                } else if !status_code.is_success() {
+                    let msg = format!("Google Sheet supplier auto-save HTTP {} for '{}'", status_code, comp_clone);
+                    mgr_clone.push_log(format!("[sheets WARN] {}", msg));
+                    db_clone.add_event(None, "warn", &msg).ok();
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed auto-saving supplier '{}' to Google Sheet: {}", comp_clone, e);
+                mgr_clone.push_log(format!("[sheets WARN] {}", msg));
+                db_clone.add_event(None, "warn", &msg).ok();
+            }
+        }
+    });
+}
+
 #[tauri::command]
 pub async fn approve_and_send_job(
     state: State<'_, AppState>,
@@ -240,8 +321,11 @@ pub async fn approve_and_send_job(
     if crate::matching::thai_normalizer::ThaiNormalizer::is_ignored_self_company(&clean_company) {
         return Err("Cannot dispatch to QTC Energy (self-company). Select the external supplier instead.".to_string());
     }
-    if !EmailDeliveryClient::is_valid_email(&clean_email) {
-        return Err(format!("Invalid recipient email address: '{}'", clean_email));
+    if !EmailDeliveryClient::is_valid_email(&clean_email)
+        || clean_email.to_lowercase().contains("qtc-energy")
+        || crate::matching::thai_normalizer::ThaiNormalizer::is_ignored_self_company(&clean_email)
+    {
+        return Err(format!("Invalid or self-company recipient email address: '{}'", clean_email));
     }
 
     let mut job = state
@@ -281,46 +365,13 @@ pub async fn approve_and_send_job(
             ));
         }
 
-        if settings.auto_sync_learned_suppliers_to_sheets
-            && !settings.gas_webhook_url.trim().is_empty()
-            && !settings.google_sheets_id.trim().is_empty()
-        {
-            let matched_entry = state
-                .db
-                .get_companies_cache()
-                .ok()
-                .and_then(|list| {
-                    list.into_iter()
-                        .find(|c| c.company_name.eq_ignore_ascii_case(&clean_company))
-                });
-            let alt_name = matched_entry.as_ref().and_then(|c| c.alternative_name.clone());
-            let tax_id = matched_entry.as_ref().and_then(|c| c.tax_id.clone());
-            let webhook = settings.gas_webhook_url.clone();
-            let secret = settings.gas_auth_secret.clone();
-            let sheet_id = settings.google_sheets_id.clone();
-            let tab_name = settings.google_sheets_tab_name.clone();
-            let comp_clone = clean_company.clone();
-            let email_clone = clean_email.clone();
-
-            tokio::spawn(async move {
-                if let Ok(client) = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(15))
-                    .build()
-                {
-                    let payload = serde_json::json!({
-                        "action": "upsert_supplier",
-                        "auth_secret": secret,
-                        "sheet_id": sheet_id,
-                        "tab_name": tab_name,
-                        "company_name": comp_clone,
-                        "alternative_name": alt_name.unwrap_or_default(),
-                        "email": email_clone,
-                        "tax_id": tax_id.unwrap_or_default(),
-                    });
-                    let _ = client.post(&webhook).json(&payload).send().await;
-                }
-            });
-        }
+        spawn_upsert_supplier_to_sheets(
+            &state.db,
+            &state.ocr_manager,
+            &settings,
+            &clean_company,
+            &clean_email,
+        );
     } else if save_alias.unwrap_or(true) {
         if let Some(ref detected) = job.detected_company_raw {
             let det_clean = detected.trim();
@@ -575,6 +626,13 @@ pub fn close_devtools(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn open_path_in_explorer(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    if path.contains('\0')
+        || PathBuf::from(&path)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("Invalid path segments rejected for security".to_string());
+    }
     let target = PathBuf::from(&path);
     if !target.exists() {
         let is_workflow_dir = target.extension().is_none()
@@ -605,20 +663,11 @@ pub fn open_path_in_explorer(state: State<'_, AppState>, path: String) -> Result
     }
     #[cfg(target_os = "windows")]
     {
-        if target.is_file() {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            std::process::Command::new("cmd")
-                .args(["/C", "start", "", &path])
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()
-                .map_err(|e| format!("Failed to open file: {}", e))?;
-        } else {
-            std::process::Command::new("explorer")
-                .arg(&path)
-                .spawn()
-                .map_err(|e| format!("Failed to open Windows Explorer: {}", e))?;
-        }
+        // Launch Windows Explorer directly without `cmd /C` so special characters in paths cannot trigger shell injection
+        std::process::Command::new("explorer")
+            .arg(&target)
+            .spawn()
+            .map_err(|e| format!("Failed to open path in Windows Explorer: {}", e))?;
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -658,8 +707,18 @@ pub fn open_job_document(
     }
 
     let target_to_open: PathBuf = if let Some(rel_str) = file_path.filter(|s| !s.trim().is_empty()) {
+        if rel_str.contains('\0')
+            || PathBuf::from(&rel_str)
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err("Invalid document path segments rejected".to_string());
+        }
         let direct = PathBuf::from(&rel_str);
-        if direct.is_absolute() && direct.exists() {
+        if direct.is_absolute()
+            && direct.exists()
+            && crate::security::SecurityManager::validate_path_containment(&settings.root_dir, &direct).is_ok()
+        {
             direct
         } else {
             let file_name_only = direct.file_name().map(|n| n.to_os_string());
@@ -669,13 +728,19 @@ pub fn open_job_document(
                     continue;
                 }
                 let cand = root.join(&direct);
-                if cand.exists() && cand.is_file() {
+                if cand.exists()
+                    && cand.is_file()
+                    && crate::security::SecurityManager::validate_path_containment(root, &cand).is_ok()
+                {
                     found = Some(cand);
                     break;
                 }
                 if let Some(ref fname) = file_name_only {
                     let by_name = root.join(fname);
-                    if by_name.exists() && by_name.is_file() {
+                    if by_name.exists()
+                        && by_name.is_file()
+                        && crate::security::SecurityManager::validate_path_containment(root, &by_name).is_ok()
+                    {
                         found = Some(by_name);
                         break;
                     }
@@ -701,20 +766,10 @@ pub fn open_job_document(
 
     #[cfg(target_os = "windows")]
     {
-        if target_to_open.is_file() {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            std::process::Command::new("cmd")
-                .args(["/C", "start", "", &target_to_open.to_string_lossy()])
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()
-                .map_err(|e| format!("Failed to launch PDF/file viewer: {}", e))?;
-        } else {
-            std::process::Command::new("explorer")
-                .arg(&target_to_open)
-                .spawn()
-                .map_err(|e| format!("Failed to open Windows Explorer: {}", e))?;
-        }
+        std::process::Command::new("explorer")
+            .arg(&target_to_open)
+            .spawn()
+            .map_err(|e| format!("Failed to open document or folder: {}", e))?;
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1050,9 +1105,9 @@ pub async fn run_developer_command(
             "  test-gas     - Ping Google Apps Script webhook hub endpoint",
             "  test-sheets  - Live-fetch Google Sheet supplier directory & print parsed entries",
             "  reset-stuck  - Unlock any jobs stuck in processing/uploading_drive and move to needs_review",
-            "  ping-ocr     - Ping managed Python OCR worker sidecar and measure latency",
+            "  ping-ocr     - Ping managed OCR worker sidecar and measure latency",
             "  learning     - Show Self-Learning Memory statistics (learned names, Tax IDs, negative filters)",
-            "  test-vision  - Test 100% offline Local Vision AI (SmolVLM2-2.2B / Ollama 127.0.0.1)",
+            "  test-vision  - Test 100% offline Local Vision AI (Qwen2.5-VL-3B / SmolVLM2 / Ollama)",
             "  scan         - Immediately scan Incoming folder and enqueue waiting PO directories",
         ]
         .join("\n"),
@@ -1071,7 +1126,7 @@ pub async fn run_developer_command(
             let worker_pid = state.ocr_manager.worker_pid().await;
             let db_size = std::fs::metadata(&state.db.db_path).map(|m| m.len()).unwrap_or(0);
             format!(
-                "PROCESSES & THREADS:\n  po-autoflow.exe      PID={}  [RUNNING - Tray & WebView2]\n  python.exe (OCR)     PID={}  [{}] ({})\n  FolderWatcher        {}  dir='{}' queued={}\n  PipelineCoordinator  in_flight_locks={}\nSTORAGE & CLOUD:\n  SQLite DB            {} ({} bytes)\n  Google Account       {}\n  Sheets ID / Tab      {} / {}\n  Drive Folder ID      {}\n  GAS Webhook          {}",
+                "PROCESSES & THREADS:\n  po-autoflow.exe      PID={}  [RUNNING - Tray & WebView2]\n  ocr-worker           PID={}  [{}] ({})\n  FolderWatcher        {}  dir='{}' queued={}\n  PipelineCoordinator  in_flight_locks={}\nSTORAGE & CLOUD:\n  SQLite DB            {} ({} bytes)\n  Google Account       {}\n  Sheets ID / Tab      {} / {}\n  Drive Folder ID      {}\n  GAS Webhook          {}",
                 std::process::id(),
                 worker_pid.map(|p| p.to_string()).unwrap_or_else(|| "NOT_SPAWNED_YET".to_string()),
                 if worker_pid.is_some() { "ALIVE" } else { "IDLE" },

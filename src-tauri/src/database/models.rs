@@ -76,6 +76,12 @@ pub struct AppSettings {
     pub local_vision_trigger_mode: String, // "fallback" | "always"
     #[serde(default = "default_ocr_quality_preset")]
     pub ocr_quality_preset: String, // "fast" | "balanced" | "max_accuracy"
+    #[serde(default = "default_ui_language")]
+    pub ui_language: String, // "en" | "th"
+}
+
+fn default_ui_language() -> String {
+    "en".to_string()
 }
 
 fn default_true() -> bool {
@@ -99,7 +105,7 @@ fn default_local_vision_endpoint() -> String {
 }
 
 fn default_local_vision_model() -> String {
-    "smolvlm2-2.2b".to_string()
+    "qwen2.5-vl-3b".to_string()
 }
 
 fn default_local_vision_trigger_mode() -> String {
@@ -195,6 +201,7 @@ impl Default for AppSettings {
             local_vision_model: "qwen2.5-vl-3b".to_string(),
             local_vision_trigger_mode: "fallback".to_string(),
             ocr_quality_preset: "balanced".to_string(),
+            ui_language: "en".to_string(),
         }
     }
 }

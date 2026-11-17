@@ -652,9 +652,13 @@ impl PipelineCoordinator {
             return Ok(());
         }
 
-        if recipient_email.is_empty() || !EmailDeliveryClient::is_valid_email(&recipient_email) {
+        if recipient_email.is_empty()
+            || !EmailDeliveryClient::is_valid_email(&recipient_email)
+            || recipient_email.to_lowercase().contains("qtc-energy")
+            || ThaiNormalizer::is_ignored_self_company(&recipient_email)
+        {
             job.status = "needs_review".to_string();
-            job.stage_message = format!("Invalid or empty email for company {}. Moved to Review.", approved_company_name);
+            job.stage_message = format!("Invalid, empty, or self-company email for '{}'. Moved to Review.", approved_company_name);
             if let Ok(review_path) = move_folder_to_dir(&processing_po_dir, &settings.review_dir) {
                 job.source_path = review_path.to_string_lossy().to_string();
             }
@@ -672,6 +676,13 @@ impl PipelineCoordinator {
                     ));
                 }
             }
+            crate::commands::spawn_upsert_supplier_to_sheets(
+                &self.db,
+                &self.ocr_manager,
+                &settings,
+                &approved_company_name,
+                &recipient_email,
+            );
         }
 
         self.deliver_po_package(

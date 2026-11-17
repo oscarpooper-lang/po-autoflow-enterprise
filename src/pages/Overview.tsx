@@ -30,6 +30,7 @@ import type {
   PagePreviewResponse,
 } from '../types';
 import { api } from '../services/tauri';
+import { resolveUiLang, tr, tx, type UiLang } from '../i18n';
 
 interface OverviewProps {
   stats: DashboardStats;
@@ -73,6 +74,7 @@ export const Overview: React.FC<OverviewProps> = ({
   onRefreshData,
   isSyncingSheets = false,
 }) => {
+  const lang: UiLang = resolveUiLang(settings);
   const incomingDir = settings?.incoming_dir || 'C:\\PO-AutoFlow\\Incoming';
   const [filterTab, setFilterTab] = useState<'all' | 'needs_review' | 'completed' | 'failed'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -163,7 +165,7 @@ export const Overview: React.FC<OverviewProps> = ({
           setPreview(res);
         } else {
           setPreview(null);
-          setPreviewError(res.message || 'Preview not available for this file.');
+          setPreviewError(res.message || '__UNAVAILABLE__');
         }
       })
       .catch((err: unknown) => {
@@ -253,7 +255,10 @@ export const Overview: React.FC<OverviewProps> = ({
       const count = await api.triggerFolderScan();
       setActionMsg({
         type: 'info',
-        text: count > 0 ? `Found ${count} folder(s) in Incoming.` : 'No new PO folders in Incoming right now.',
+        text:
+          count > 0
+            ? tx(lang, `Found ${count} folder(s) in Incoming.`, `พบโฟลเดอร์ใหม่ ${count} รายการใน Incoming`)
+            : tx(lang, 'No new PO folders in Incoming right now.', 'ยังไม่มีโฟลเดอร์ PO ใหม่ใน Incoming'),
       });
       await onRefreshData?.();
     } finally {
@@ -285,9 +290,15 @@ export const Overview: React.FC<OverviewProps> = ({
       );
       setActionMsg({
         type: 'success',
-        text: `Sent PO ${updated.po_number || activeJob.po_folder_name} to ${
-          updated.matched_email || approveEmail
-        }.`,
+        text: tx(
+          lang,
+          `Sent PO ${updated.po_number || activeJob.po_folder_name} to ${
+            updated.matched_email || approveEmail
+          }.`,
+          `ส่งใบสั่งซื้อ ${updated.po_number || activeJob.po_folder_name} ไปยัง ${
+            updated.matched_email || approveEmail
+          } สำเร็จ`
+        ),
       });
       await onRefreshData?.();
     } catch (err: unknown) {
@@ -308,7 +319,10 @@ export const Overview: React.FC<OverviewProps> = ({
       await onRetryJob(activeJob.id);
       const recs = await api.getOcrResults(activeJob.id);
       setOcrRecords(recs || []);
-      setActionMsg({ type: 'info', text: 'Re-scanned PO folder and updated supplier match.' });
+      setActionMsg({
+        type: 'info',
+        text: tx(lang, 'Re-scanned PO folder and updated supplier match.', 'สแกนโฟลเดอร์ PO และอัปเดตผลจับคู่ผู้ขายใหม่แล้ว'),
+      });
     } catch (err: unknown) {
       setActionMsg({ type: 'error', text: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -325,7 +339,14 @@ export const Overview: React.FC<OverviewProps> = ({
       const recs = await api.getOcrResults(activeJob.id);
       setOcrRecords(recs || []);
       await onRefreshData?.();
-      setActionMsg({ type: 'success', text: 'AI Deep Scan completed and updated supplier prediction.' });
+      setActionMsg({
+        type: 'success',
+        text: tx(
+          lang,
+          'AI Deep Scan completed and updated supplier prediction.',
+          'สแกนด้วย Vision AI เสร็จสิ้น และอัปเดตผลชื่อผู้ขายแล้ว'
+        ),
+      });
     } catch (err: unknown) {
       setActionMsg({ type: 'error', text: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -345,14 +366,14 @@ export const Overview: React.FC<OverviewProps> = ({
         <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 flex flex-col justify-between gap-3">
           <div>
             <div className="flex items-center justify-between text-xs text-zinc-400">
-              <span className="font-medium text-zinc-200">1. Incoming PO Folder</span>
+              <span className="font-medium text-zinc-200">{tr(lang, 'step1Title')}</span>
               <FolderOpen className="w-4 h-4 text-blue-400" />
             </div>
             <p className="mt-1.5 text-xs font-mono text-zinc-300 truncate" title={incomingDir}>
               {incomingDir}
             </p>
             <p className="mt-1 text-[11px] text-zinc-500">
-              Drop a PO folder here to start. Closing window minimizes to tray.
+              {tr(lang, 'step1Desc')}
             </p>
           </div>
           <div className="flex items-center gap-2 pt-1">
@@ -361,7 +382,7 @@ export const Overview: React.FC<OverviewProps> = ({
               onClick={() => api.openPathInExplorer(incomingDir)}
               className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium transition-colors"
             >
-              Open Folder
+              {tr(lang, 'openIncoming')}
             </button>
             <button
               type="button"
@@ -369,7 +390,7 @@ export const Overview: React.FC<OverviewProps> = ({
               disabled={isScanning}
               className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 text-xs font-medium transition-colors"
             >
-              {isScanning ? 'Scanning...' : 'Scan Now'}
+              {isScanning ? '...' : tr(lang, 'scanNow')}
             </button>
           </div>
         </div>
@@ -378,17 +399,17 @@ export const Overview: React.FC<OverviewProps> = ({
         <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 flex flex-col justify-between gap-3">
           <div>
             <div className="flex items-center justify-between text-xs text-zinc-400">
-              <span className="font-medium text-zinc-200">2. Supplier Directory</span>
+              <span className="font-medium text-zinc-200">{tr(lang, 'step2Title')}</span>
               <Building2 className="w-4 h-4 text-zinc-400" />
             </div>
             <div className="mt-1.5 flex items-baseline gap-2">
               <span className="text-xl font-semibold text-zinc-100">{companies.length}</span>
-              <span className="text-xs text-zinc-400">suppliers synced</span>
+              <span className="text-xs text-zinc-400">{tr(lang, 'suppliersSynced')}</span>
             </div>
             <p className="mt-1 text-[11px] text-zinc-500 truncate">
               {companies[0]?.company_name
-                ? `Example: ${companies[0].company_name}`
-                : 'No suppliers synced yet — click Sync Sheet.'}
+                ? `${companies[0].company_name}`
+                : tx(lang, 'No suppliers synced yet — click Sync Sheet.', 'ยังไม่ได้ซิงก์รายชื่อผู้ขาย — กดปุ่มซิงก์ Google Sheet')}
             </p>
           </div>
           <div className="flex items-center gap-2 pt-1">
@@ -399,14 +420,14 @@ export const Overview: React.FC<OverviewProps> = ({
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium transition-colors"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheets ? 'animate-spin' : ''}`} />
-              <span>{isSyncingSheets ? 'Syncing...' : 'Sync Sheet'}</span>
+              <span>{isSyncingSheets ? tr(lang, 'syncing') : tr(lang, 'syncSheet')}</span>
             </button>
             <button
               type="button"
               onClick={() => onNavigateTab('directory')}
               className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
             >
-              Manage
+              {tr(lang, 'manage')}
             </button>
           </div>
         </div>
@@ -415,20 +436,19 @@ export const Overview: React.FC<OverviewProps> = ({
         <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 flex flex-col justify-between gap-3">
           <div>
             <div className="flex items-center justify-between text-xs text-zinc-400">
-              <span className="font-medium text-zinc-200">3. Email Sending Rule</span>
+              <span className="font-medium text-zinc-200">{tr(lang, 'step3Title')}</span>
               <Send className="w-4 h-4 text-emerald-400" />
             </div>
             <p className="mt-1.5 text-xs text-zinc-200 font-medium">
               {isManualOnly
-                ? 'Hold for my approval before sending'
-                : 'Auto-send matched POs directly'}
+                ? tr(lang, 'holdApproval')
+                : tr(lang, 'autoSendActive')}
             </p>
             <p className="mt-1 text-[11px] text-zinc-500">
-              Attachments:{' '}
               {settings?.email_attachment_mode === 'zip_archive'
-                ? 'Single ZIP file'
-                : 'Individual previewable PDFs & images'}
-              {' • '}Sent: {stats.successfully_sent}
+                ? 'ZIP'
+                : tx(lang, 'PDF / Image', 'ไฟล์ PDF / รูปภาพ')}{' '}
+              • {tr(lang, 'filterSent')}: {stats.successfully_sent}
             </p>
           </div>
           <div className="flex items-center gap-2 pt-1">
@@ -441,14 +461,14 @@ export const Overview: React.FC<OverviewProps> = ({
                   : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
               }`}
             >
-              {isManualOnly ? 'Switch to Auto-Send' : 'Switch to Ask First'}
+              {isManualOnly ? tr(lang, 'switchToAuto') : tr(lang, 'switchToAsk')}
             </button>
             <button
               type="button"
               onClick={() => onNavigateTab('settings')}
               className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
             >
-              Email Options
+              {tr(lang, 'emailOptions')}
             </button>
           </div>
         </div>
@@ -460,8 +480,8 @@ export const Overview: React.FC<OverviewProps> = ({
         <div className="lg:col-span-5 rounded-xl bg-[#121215] border border-zinc-800 overflow-hidden">
           <div className="p-4 border-b border-zinc-800 space-y-3">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-zinc-100">PO Queue</h3>
-              <span className="text-xs text-zinc-400">{recentJobs.length} total</span>
+              <h3 className="text-sm font-semibold text-zinc-100">{tr(lang, 'poQueue')}</h3>
+              <span className="text-xs text-zinc-400">{recentJobs.length} {tr(lang, 'totalLabel')}</span>
             </div>
 
             <div className="relative">
@@ -470,7 +490,7 @@ export const Overview: React.FC<OverviewProps> = ({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search PO number or supplier..."
+                placeholder={tr(lang, 'searchPoPlaceholder')}
                 className="w-full bg-zinc-900 border border-zinc-800 text-zinc-200 text-xs rounded-lg pl-8 pr-3 py-2 focus:outline-none focus:border-blue-500 placeholder-zinc-500"
               />
             </div>
@@ -478,10 +498,10 @@ export const Overview: React.FC<OverviewProps> = ({
             <div className="flex flex-wrap gap-1.5 text-[11px]">
               {(
                 [
-                  { id: 'all', label: `All (${recentJobs.length})` },
-                  { id: 'needs_review', label: `Review (${reviewCount})` },
-                  { id: 'completed', label: `Sent (${sentCount})` },
-                  { id: 'failed', label: `Failed (${failedCount})` },
+                  { id: 'all', label: `${tr(lang, 'filterAll')} (${recentJobs.length})` },
+                  { id: 'needs_review', label: `${tr(lang, 'filterReview')} (${reviewCount})` },
+                  { id: 'completed', label: `${tr(lang, 'filterSent')} (${sentCount})` },
+                  { id: 'failed', label: `${tr(lang, 'filterFailed')} (${failedCount})` },
                 ] as const
               ).map((tab) => (
                 <button
@@ -504,9 +524,11 @@ export const Overview: React.FC<OverviewProps> = ({
             {filteredJobs.length === 0 ? (
               <div className="p-8 text-center space-y-2">
                 <FileText className="w-8 h-8 text-zinc-700 mx-auto" />
-                <p className="text-sm font-medium text-zinc-300">No PO folders in this view</p>
+                <p className="text-sm font-medium text-zinc-300">{tr(lang, 'noPoFolders')}</p>
                 <p className="text-xs text-zinc-500 max-w-xs mx-auto">
-                  Drop a PO folder inside <code className="text-zinc-300">{incomingDir}</code> and click Scan Now.
+                  {tx(lang, 'Drop a PO folder inside', 'นำโฟลเดอร์ PO มาวางใน')}{' '}
+                  <code className="text-zinc-300">{incomingDir}</code>{' '}
+                  {tx(lang, 'and click Scan Now.', 'แล้วกดสแกนทันที')}
                 </p>
               </div>
             ) : (
@@ -525,13 +547,17 @@ export const Overview: React.FC<OverviewProps> = ({
                       <span className="text-sm font-semibold text-zinc-100 truncate">
                         {job.po_number || job.po_folder_name}
                       </span>
-                      <StatusBadge status={job.status} />
+                      <StatusBadge status={job.status} lang={lang} />
                     </div>
                     <p className="mt-1 text-xs text-zinc-300 truncate">
-                      {job.matched_company_name || job.detected_company_raw || 'Detecting supplier...'}
+                      {job.matched_company_name ||
+                        job.detected_company_raw ||
+                        tx(lang, 'Detecting supplier...', 'กำลังอ่านชื่อผู้ขาย...')}
                     </p>
                     <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-zinc-500">
-                      <span className="truncate font-mono">{job.matched_email || 'No email yet'}</span>
+                      <span className="truncate font-mono">
+                        {job.matched_email || tx(lang, 'No email yet', 'ยังไม่มีอีเมล')}
+                      </span>
                       {typeof job.match_confidence === 'number' && (
                         <span className="font-mono text-zinc-400 shrink-0">
                           {job.match_confidence.toFixed(0)}%
@@ -550,9 +576,15 @@ export const Overview: React.FC<OverviewProps> = ({
           {!activeJob ? (
             <div className="p-12 text-center space-y-2 text-zinc-500">
               <FileText className="w-10 h-10 text-zinc-700 mx-auto" />
-              <p className="text-sm font-medium text-zinc-300">Select a PO from the list on the left</p>
+              <p className="text-sm font-medium text-zinc-300">
+                {tx(lang, 'Select a PO from the list on the left', 'เลือกรายการใบสั่งซื้อจากคิวด้านซ้าย')}
+              </p>
               <p className="text-xs">
-                You will see every attached PDF right here and can verify or send the email in one click.
+                {tx(
+                  lang,
+                  'You will see every attached PDF right here and can verify or send the email in one click.',
+                  'ดูไฟล์ PDF แนบทั้งหมดได้ที่นี่ และกดตรวจสอบหรืออนุมัติส่งอีเมลได้ในคลิกเดียว'
+                )}
               </p>
             </div>
           ) : (
@@ -564,7 +596,7 @@ export const Overview: React.FC<OverviewProps> = ({
                     <h3 className="text-base font-semibold text-zinc-100">
                       {activeJob.po_number || activeJob.po_folder_name}
                     </h3>
-                    <StatusBadge status={activeJob.status} />
+                    <StatusBadge status={activeJob.status} lang={lang} />
                   </div>
                   <p className="text-xs text-zinc-400 mt-0.5 truncate" title={activeJob.stage_message}>
                     {activeJob.stage_message}
@@ -580,7 +612,7 @@ export const Overview: React.FC<OverviewProps> = ({
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-medium text-zinc-200 transition-colors disabled:opacity-50"
                     >
                       <RotateCw className={`w-3.5 h-3.5 ${isRetrying ? 'animate-spin' : ''}`} />
-                      <span>{isRetrying ? 'Scanning...' : 'Re-Scan'}</span>
+                      <span>{isRetrying ? tx(lang, 'Scanning...', 'กำลังสแกน...') : tr(lang, 'rescan')}</span>
                     </button>
                   )}
                   <button
@@ -588,10 +620,10 @@ export const Overview: React.FC<OverviewProps> = ({
                     onClick={handleDeepScanActive}
                     disabled={isDeepScanning || isRetrying}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/40 text-xs font-medium text-purple-200 transition-colors disabled:opacity-50"
-                    title="Force-run Built-In Vision AI on this PO now"
+                    title={tx(lang, 'Force-run Built-In Vision AI on this PO now', 'บังคับใช้ Vision AI ช่วยอ่านเอกสาร PO ใบนี้')}
                   >
                     <Sparkles className={`w-3.5 h-3.5 ${isDeepScanning ? 'animate-pulse' : ''}`} />
-                    <span>{isDeepScanning ? 'AI Scanning...' : 'AI Deep Scan'}</span>
+                    <span>{isDeepScanning ? tx(lang, 'AI Scanning...', 'AI กำลังอ่าน...') : tr(lang, 'deepScanAi')}</span>
                   </button>
                   <button
                     type="button"
@@ -599,7 +631,7 @@ export const Overview: React.FC<OverviewProps> = ({
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-100 transition-colors"
                   >
                     <Maximize2 className="w-3.5 h-3.5" />
-                    <span>Full Viewer</span>
+                    <span>{tx(lang, 'Full Viewer', 'มุมมองเต็มจอ')}</span>
                   </button>
                 </div>
               </div>
@@ -634,7 +666,7 @@ export const Overview: React.FC<OverviewProps> = ({
                         }`}
                       >
                         <Eye className="w-3 h-3" />
-                        <span>Page</span>
+                        <span>{tx(lang, 'Page', 'ภาพหน้า')}</span>
                       </button>
                       <button
                         type="button"
@@ -644,7 +676,7 @@ export const Overview: React.FC<OverviewProps> = ({
                         }`}
                       >
                         <FileText className="w-3 h-3" />
-                        <span>Text</span>
+                        <span>{tx(lang, 'Text', 'ข้อความ')}</span>
                       </button>
                     </div>
 
@@ -653,7 +685,7 @@ export const Overview: React.FC<OverviewProps> = ({
                         type="button"
                         onClick={() => setPreviewZoom((z) => Math.max(60, z - 20))}
                         className="p-1 hover:bg-zinc-800 text-zinc-300"
-                        title="Zoom out"
+                        title={tx(lang, 'Zoom out', 'ซูมออก')}
                       >
                         <ZoomOut className="w-3 h-3" />
                       </button>
@@ -662,7 +694,7 @@ export const Overview: React.FC<OverviewProps> = ({
                         type="button"
                         onClick={() => setPreviewZoom((z) => Math.min(200, z + 20))}
                         className="p-1 hover:bg-zinc-800 text-zinc-300"
-                        title="Zoom in"
+                        title={tx(lang, 'Zoom in', 'ซูมเข้า')}
                       >
                         <ZoomIn className="w-3 h-3" />
                       </button>
@@ -670,7 +702,7 @@ export const Overview: React.FC<OverviewProps> = ({
                         type="button"
                         onClick={() => setPreviewZoom(100)}
                         className="p-1 hover:bg-zinc-800 text-zinc-400 border-l border-zinc-800"
-                        title="Reset zoom"
+                        title={tx(lang, 'Reset zoom', 'ขนาดปกติ')}
                       >
                         <RotateCcw className="w-3 h-3" />
                       </button>
@@ -681,10 +713,10 @@ export const Overview: React.FC<OverviewProps> = ({
                         type="button"
                         onClick={() => api.openJobDocument(activeJob.id, currentRecord.file_path)}
                         className="px-2 py-1 rounded-md bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 text-[11px] flex items-center gap-1"
-                        title="Open file in Windows PDF viewer"
+                        title={tx(lang, 'Open file in Windows PDF viewer', 'เปิดไฟล์ด้วยโปรแกรมอ่าน PDF ของ Windows')}
                       >
                         <ExternalLink className="w-3 h-3 text-blue-400" />
-                        <span>Open PDF</span>
+                        <span>{tr(lang, 'openPdf')}</span>
                       </button>
                     )}
 
@@ -692,7 +724,7 @@ export const Overview: React.FC<OverviewProps> = ({
                       type="button"
                       onClick={() => api.openJobDocument(activeJob.id)}
                       className="px-2 py-1 rounded-md bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 text-[11px] flex items-center gap-1"
-                      title="Open job folder in Windows Explorer"
+                      title={tx(lang, 'Open job folder in Windows Explorer', 'เปิดโฟลเดอร์งานนี้ใน Windows Explorer')}
                     >
                       <FolderOpen className="w-3 h-3 text-amber-400" />
                     </button>
@@ -703,19 +735,19 @@ export const Overview: React.FC<OverviewProps> = ({
                   {!currentRecord ? (
                     <div className="h-full flex flex-col items-center justify-center text-xs text-zinc-500 gap-2">
                       <FileText className="w-7 h-7 text-zinc-700" />
-                      <span>No extracted document pages yet. Click Re-Scan above.</span>
+                      <span>{tx(lang, 'No extracted document pages yet. Click Re-Scan above.', 'ยังไม่มีหน้าที่แยกข้อความไว้ กด "สแกนใหม่" ด้านบน')}</span>
                     </div>
                   ) : viewerMode === 'text' ? (
                     <pre
                       style={{ fontSize: `${Math.round((12 * previewZoom) / 100)}px` }}
                       className="font-mono text-zinc-300 whitespace-pre-wrap leading-relaxed select-text"
                     >
-                      {currentRecord.raw_text || 'No text content'}
+                      {currentRecord.raw_text || tx(lang, 'No text content', 'ไม่มีข้อความ')}
                     </pre>
                   ) : isLoadingPreview ? (
                     <div className="h-full flex flex-col items-center justify-center text-xs text-zinc-400 gap-2">
                       <Loader2 className="w-6 h-6 animate-spin text-blue-400" />
-                      <span>Rendering PDF page...</span>
+                      <span>{tx(lang, 'Rendering PDF page...', 'กำลังโหลดภาพหน้า PDF...')}</span>
                     </div>
                   ) : preview?.data_url ? (
                     <div
@@ -731,10 +763,14 @@ export const Overview: React.FC<OverviewProps> = ({
                   ) : (
                     <div className="w-full text-left space-y-2 p-2">
                       {previewError && (
-                        <p className="text-[11px] text-amber-400">{previewError}</p>
+                        <p className="text-[11px] text-amber-400">
+                          {previewError === '__UNAVAILABLE__'
+                            ? tx(lang, 'Preview not available for this file.', 'ไม่สามารถแสดงพรีวิวของไฟล์นี้ได้')
+                            : previewError}
+                        </p>
                       )}
                       <pre className="text-xs font-mono text-zinc-300 whitespace-pre-wrap leading-relaxed">
-                        {currentRecord.raw_text || 'No text content'}
+                        {currentRecord.raw_text || tx(lang, 'No text content', 'ไม่มีข้อความ')}
                       </pre>
                     </div>
                   )}
@@ -765,7 +801,7 @@ export const Overview: React.FC<OverviewProps> = ({
                 {/* Predicted Values Pills (Thai first, then English, then PDF email) */}
                 {(predictions.primaryTh || predictions.primaryEn || predictions.emails.length > 0) && (
                   <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                    <span className="text-zinc-500">Detected in PDF:</span>
+                    <span className="text-zinc-500">{tx(lang, 'Detected in PDF:', 'พบในเอกสาร PDF:')}</span>
                     {predictions.primaryTh && (
                       <button
                         type="button"
@@ -799,7 +835,9 @@ export const Overview: React.FC<OverviewProps> = ({
 
                 {companies.length > 0 && (
                   <div className="text-xs">
-                    <label className="text-zinc-400 block mb-1">Choose Supplier from Google Sheet:</label>
+                    <label className="text-zinc-400 block mb-1">
+                      {tx(lang, 'Choose Supplier from Google Sheet:', 'เลือกชื่อผู้ขายจาก Google Sheet:')}
+                    </label>
                     <select
                       value=""
                       onChange={(e) => {
@@ -811,7 +849,13 @@ export const Overview: React.FC<OverviewProps> = ({
                       }}
                       className="w-full bg-zinc-900 border border-zinc-800 text-zinc-200 rounded-lg px-3 py-2 text-xs"
                     >
-                      <option value="">-- Fill from synced Google Sheet ({companies.length}) --</option>
+                      <option value="">
+                        {tx(
+                          lang,
+                          `-- Fill from synced Google Sheet (${companies.length}) --`,
+                          `-- เลือกข้อมูลจาก Google Sheet (${companies.length} ราย) --`
+                        )}
+                      </option>
                       {companies.map((c) => (
                         <option key={c.id} value={c.company_name}>
                           {c.company_name} ({c.email})
@@ -823,19 +867,23 @@ export const Overview: React.FC<OverviewProps> = ({
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                   <div className="sm:col-span-2">
-                    <label className="text-zinc-400 block mb-1">Supplier Name (Thai First):</label>
+                    <label className="text-zinc-400 block mb-1">
+                      {tx(lang, 'Supplier Name (Thai First):', 'ชื่อผู้ขาย (เน้นชื่อไทยก่อน):')}
+                    </label>
                     <input
                       type="text"
                       required
                       value={approveCompany}
                       onChange={(e) => setApproveCompany(e.target.value)}
-                      placeholder="Supplier company name"
+                      placeholder={tx(lang, 'Supplier company name', 'ชื่อบริษัทผู้ขาย')}
                       className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-blue-500"
                     />
                   </div>
 
                   <div>
-                    <label className="text-zinc-400 block mb-1">Send To Email:</label>
+                    <label className="text-zinc-400 block mb-1">
+                      {tx(lang, 'Send To Email:', 'ส่งไปยังอีเมล:')}
+                    </label>
                     <input
                       type="email"
                       required
@@ -847,7 +895,9 @@ export const Overview: React.FC<OverviewProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-zinc-400 block mb-1">PO Number:</label>
+                    <label className="text-zinc-400 block mb-1">
+                      {tx(lang, 'PO Number:', 'เลขที่ใบสั่งซื้อ (PO Number):')}
+                    </label>
                     <input
                       type="text"
                       value={approvePo}
@@ -860,7 +910,13 @@ export const Overview: React.FC<OverviewProps> = ({
 
                 {uniqueFiles.length > 0 && (
                   <div className="text-[11px] text-zinc-400 flex flex-wrap items-center gap-1.5">
-                    <span>Email attachments ({uniqueFiles.length} previewable files):</span>
+                    <span>
+                      {tx(
+                        lang,
+                        `Email attachments (${uniqueFiles.length} previewable files):`,
+                        `ไฟล์แนบอีเมล (${uniqueFiles.length} ไฟล์):`
+                      )}
+                    </span>
                     {uniqueFiles.map(([path]) => (
                       <span
                         key={path}
@@ -873,15 +929,22 @@ export const Overview: React.FC<OverviewProps> = ({
                 )}
 
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                  <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={saveAlias}
-                      onChange={(e) => setSaveAlias(e.target.checked)}
-                      className="rounded border-zinc-700 bg-zinc-900 text-blue-600"
-                    />
-                    <span>Remember supplier name for next time</span>
-                  </label>
+                  <div className="space-y-1">
+                    <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={saveAlias}
+                        onChange={(e) => setSaveAlias(e.target.checked)}
+                        className="rounded border-zinc-700 bg-zinc-900 text-blue-600"
+                      />
+                      <span>{tx(lang, 'Remember supplier name for next time', 'จำชื่อผู้ขายนี้ไว้จับคู่อัตโนมัติครั้งถัดไป')}</span>
+                    </label>
+                    {saveAlias && (!activeJob.matched_company_name || activeJob.match_category === 'no_match') && (
+                      <p className="text-[11px] text-emerald-400/90 pl-5">
+                        {tr(lang, 'willSaveNewSupplierSheet')}
+                      </p>
+                    )}
+                  </div>
 
                   <button
                     type="submit"
@@ -891,10 +954,10 @@ export const Overview: React.FC<OverviewProps> = ({
                     <Send className="w-3.5 h-3.5" />
                     <span>
                       {activeJob.status === 'completed'
-                        ? 'Already Sent'
+                        ? tx(lang, 'Already Sent', 'ส่งแล้ว')
                         : isSending
-                        ? 'Sending Email...'
-                        : 'Approve & Send Email'}
+                        ? tx(lang, 'Sending Email...', 'กำลังส่งอีเมล...')
+                        : tr(lang, 'approveAndSend')}
                     </span>
                   </button>
                 </div>
@@ -907,49 +970,49 @@ export const Overview: React.FC<OverviewProps> = ({
   );
 };
 
-export const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
+export const StatusBadge: React.FC<{ status: string; lang?: UiLang }> = ({ status, lang = 'en' }) => {
   switch (status) {
     case 'completed':
       return (
         <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/25">
-          Sent
+          {tx(lang, 'Sent', 'ส่งแล้ว')}
         </span>
       );
     case 'needs_review':
       return (
         <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-amber-500/15 text-amber-300 border border-amber-500/25">
-          Needs Review
+          {tx(lang, 'Needs Review', 'รอตรวจสอบ')}
         </span>
       );
     case 'failed':
       return (
         <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-rose-500/15 text-rose-300 border border-rose-500/25">
-          Failed
+          {tx(lang, 'Failed', 'ผิดพลาด')}
         </span>
       );
     case 'waiting_stability':
       return (
         <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-blue-500/15 text-blue-300 border border-blue-500/25">
-          Checking Files...
+          {tx(lang, 'Checking Files...', 'กำลังเช็คไฟล์...')}
         </span>
       );
     case 'ocr_processing':
       return (
         <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-indigo-500/15 text-indigo-300 border border-indigo-500/25">
-          Reading PDF...
+          {tx(lang, 'Reading PDF...', 'กำลังอ่าน PDF...')}
         </span>
       );
     case 'matching_company':
       return (
         <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-zinc-800 text-zinc-200 border border-zinc-700">
-          Matching Vendor...
+          {tx(lang, 'Matching Vendor...', 'กำลังจับคู่ผู้ขาย...')}
         </span>
       );
     case 'uploading_drive':
     case 'sending_email':
       return (
         <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-cyan-500/15 text-cyan-300 border border-cyan-500/25">
-          Sending...
+          {tx(lang, 'Sending...', 'กำลังส่ง...')}
         </span>
       );
     default:

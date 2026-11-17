@@ -45,6 +45,7 @@ export interface AppSettings {
   local_vision_model?: string;
   local_vision_trigger_mode?: 'fallback' | 'always';
   ocr_quality_preset?: 'fast' | 'balanced' | 'max_accuracy';
+  ui_language?: 'en' | 'th';
 }
 
 export interface GoogleAccountInfo {

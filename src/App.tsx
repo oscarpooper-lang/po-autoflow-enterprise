@@ -15,6 +15,7 @@ import { DeveloperOptions } from './pages/DeveloperOptions';
 import { ModelBenchmark } from './pages/ModelBenchmark';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { api, defaultSettings } from './services/tauri';
+import { resolveUiLang, tr, tx } from './i18n';
 import type {
   AppSettings,
   Job,
@@ -53,6 +54,8 @@ export const App: React.FC = () => {
     type: 'success' | 'error' | 'info';
     message: string;
   } | null>(null);
+
+  const lang = resolveUiLang(settings);
 
   const showToast = useCallback((type: 'success' | 'error' | 'info', message: string) => {
     setAppToast({ type, message });
@@ -148,11 +151,18 @@ export const App: React.FC = () => {
       const syncedCount = await api.syncCompaniesFromSheets();
       const updated = await api.getCompaniesCache();
       setCompanies(updated);
-      showToast('success', `Synced ${syncedCount} supplier(s) from Google Sheets.`);
+      showToast(
+        'success',
+        tx(
+          lang,
+          `Synced ${syncedCount} supplier(s) from Google Sheets.`,
+          `ซิงก์รายชื่อผู้ขาย ${syncedCount} รายจาก Google Sheets สำเร็จ`
+        )
+      );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Sync failed:', err);
-      showToast('error', `Google Sheets sync failed: ${msg}`);
+      showToast('error', tx(lang, `Google Sheets sync failed: ${msg}`, `ซิงก์ Google Sheets ไม่สำเร็จ: ${msg}`));
     } finally {
       setIsSyncingSheets(false);
     }
@@ -169,7 +179,7 @@ export const App: React.FC = () => {
       setSettings((prev) => ({ ...prev, google_account: account }));
     } catch (err: any) {
       console.error('Google login failed:', err);
-      alert(`Google Login: ${err}`);
+      alert(`${tx(lang, 'Google Login:', 'เข้าสู่ระบบ Google ไม่สำเร็จ:')} ${err}`);
     } finally {
       setIsLoggingIn(false);
     }
@@ -194,13 +204,17 @@ export const App: React.FC = () => {
     ) {
       setCurrentTab('overview');
     }
+    const nextLang = resolveUiLang(newSettings);
     const modeLabel =
       newSettings.auto_send_email_enabled === false || newSettings.auto_send_mode === 'manual_review_all'
-        ? 'OFF (Manual Approval Only)'
+        ? tx(nextLang, 'OFF (Manual Approval Only)', 'ปิด (ต้องกดอนุมัติเองทุกฉบับ)')
         : newSettings.auto_send_mode === 'verified_only'
-        ? 'Strict (≥98% Verified)'
-        : 'ON (≥90% Verified & High)';
-    showToast('info', `Settings saved • Auto-Send Email: ${modeLabel}`);
+        ? tx(nextLang, 'Strict (≥98% Verified)', 'เข้มงวด (ยืนยัน ≥98%)')
+        : tx(nextLang, 'ON (≥90% Verified & High)', 'เปิด (ส่งอัตโนมัติ ≥90%)');
+    showToast(
+      'info',
+      tx(nextLang, `Settings saved • Auto-Send Email: ${modeLabel}`, `บันทึกการตั้งค่าแล้ว • การส่งอีเมลอัตโนมัติ: ${modeLabel}`)
+    );
   };
 
   const handleCompleteWizard = async (wizardSettings: AppSettings) => {
@@ -220,11 +234,18 @@ export const App: React.FC = () => {
     try {
       await api.retryJob(jobId);
       await loadInitialData();
-      showToast('info', 'Job re-processed using updated OCR & Thai-first directory matching.');
+      showToast(
+        'info',
+        tx(
+          lang,
+          'Job re-processed using updated OCR & Thai-first directory matching.',
+          'สแกนและจับคู่รายชื่อผู้ขายใหม่เรียบร้อยแล้ว'
+        )
+      );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error('Retry failed', e);
-      showToast('error', `Retry failed: ${msg}`);
+      showToast('error', tx(lang, `Retry failed: ${msg}`, `สแกนซ้ำไม่สำเร็จ: ${msg}`));
       throw e;
     }
   };
@@ -233,27 +254,27 @@ export const App: React.FC = () => {
   const getTabTitle = () => {
     switch (currentTab) {
       case 'overview':
-        return { title: 'PO Workspace', subtitle: 'Drop a PO folder in Incoming, preview attached PDFs, and approve or auto-send' };
+        return { title: tr(lang, 'tabOverviewTitle'), subtitle: tr(lang, 'tabOverviewSub') };
       case 'live-monitor':
-        return { title: 'Live Queue', subtitle: 'Step-by-step processing pipeline and recent events' };
+        return { title: tr(lang, 'tabLiveTitle'), subtitle: tr(lang, 'tabLiveSub') };
       case 'transactions':
-        return { title: 'Sent History', subtitle: 'All completed PO deliveries and audit receipts' };
+        return { title: tr(lang, 'tabTxTitle'), subtitle: tr(lang, 'tabTxSub') };
       case 'ocr-inspector':
-        return { title: 'Document Viewer', subtitle: 'Inspect live PDF pages, Thai/English vendor predictions, and email attachments' };
+        return { title: tr(lang, 'tabInspectorTitle'), subtitle: tr(lang, 'tabInspectorSub') };
       case 'directory':
-        return { title: 'Suppliers', subtitle: 'Synced Google Sheet suppliers and remembered alternate names' };
+        return { title: tr(lang, 'tabDirectoryTitle'), subtitle: tr(lang, 'tabDirectorySub') };
       case 'email-history':
-        return { title: 'Email History', subtitle: 'Email delivery records' };
+        return { title: tr(lang, 'tabEmailHistoryTitle'), subtitle: tr(lang, 'tabEmailHistorySub') };
       case 'analytics':
-        return { title: 'Analytics', subtitle: 'Processing accuracy and completion totals' };
+        return { title: tr(lang, 'tabAnalyticsTitle'), subtitle: tr(lang, 'tabAnalyticsSub') };
       case 'settings':
-        return { title: 'Settings', subtitle: 'Folders, Google Sheet/Drive links, auto-send rules, and attachment format' };
+        return { title: tr(lang, 'tabSettingsTitle'), subtitle: tr(lang, 'tabSettingsSub') };
       case 'developer-options':
-        return { title: 'Terminal & Debug', subtitle: 'Running processes, interactive CLI terminal, and live worker logs' };
+        return { title: tr(lang, 'tabDevTitle'), subtitle: tr(lang, 'tabDevSub') };
       case 'benchmark':
-        return { title: 'Model Benchmark', subtitle: 'Compare every OCR engine and local Vision AI model head-to-head on real PO files' };
+        return { title: tr(lang, 'tabBenchmarkTitle'), subtitle: tr(lang, 'tabBenchmarkSub') };
       case 'setup-wizard':
-        return { title: 'Quick Setup Guide', subtitle: 'Connect your folders and Google Sheet / Apps Script URL' };
+        return { title: tr(lang, 'tabSetupTitle'), subtitle: tr(lang, 'tabSetupSub') };
       default:
         return { title: 'PO AutoFlow', subtitle: '' };
     }
@@ -278,6 +299,7 @@ export const App: React.FC = () => {
         needsReviewCount={jobs.filter((j) => j.status === 'needs_review').length}
         companiesCount={companies.length}
         developerMode={!!settings.developer_mode_enabled}
+        lang={lang}
       />
 
       {/* Main App Container */}
@@ -332,7 +354,10 @@ export const App: React.FC = () => {
 
         {/* Viewport Content with ErrorBoundary */}
         <main className="flex-1 overflow-y-auto">
-          <ErrorBoundary fallbackTitle="View Rendering Error">
+          <ErrorBoundary
+            lang={lang}
+            fallbackTitle={tx(lang, 'View Rendering Error', 'เกิดข้อผิดพลาดในการแสดงผลหน้าจอ')}
+          >
             {activeTab === 'overview' && (
               <Overview
                 stats={stats}
@@ -356,11 +381,12 @@ export const App: React.FC = () => {
                 events={events}
                 onSelectJob={handleSelectJobForInspection}
                 onRetryJob={handleRetryJob}
+                lang={lang}
               />
             )}
 
             {activeTab === 'transactions' && (
-              <Transactions transactions={transactions} />
+              <Transactions transactions={transactions} lang={lang} />
             )}
 
             {activeTab === 'ocr-inspector' && (
@@ -371,6 +397,7 @@ export const App: React.FC = () => {
                 onSelectJob={setSelectedJobId}
                 onRefreshData={loadInitialData}
                 onRetryJob={handleRetryJob}
+                lang={lang}
               />
             )}
 
@@ -381,11 +408,12 @@ export const App: React.FC = () => {
                 onRefreshCompanies={loadInitialData}
                 onSyncSheets={handleSyncSheets}
                 isSyncing={isSyncingSheets}
+                lang={lang}
               />
             )}
 
             {activeTab === 'email-history' && (
-              <EmailHistory transactions={transactions} />
+              <EmailHistory transactions={transactions} lang={lang} />
             )}
 
             {activeTab === 'analytics' && (
@@ -394,6 +422,7 @@ export const App: React.FC = () => {
                 jobs={jobs}
                 companies={companies}
                 transactions={transactions}
+                lang={lang}
               />
             )}
 
@@ -409,7 +438,7 @@ export const App: React.FC = () => {
             )}
 
             {activeTab === 'benchmark' && !!settings.developer_mode_enabled && (
-              <ModelBenchmark settings={settings} jobs={jobs} />
+              <ModelBenchmark settings={settings} jobs={jobs} lang={lang} />
             )}
 
             {activeTab === 'developer-options' && !!settings.developer_mode_enabled && (
@@ -418,6 +447,7 @@ export const App: React.FC = () => {
                 onSaveSettings={handleSaveSettings}
                 events={events}
                 onRefreshData={loadInitialData}
+                lang={lang}
               />
             )}
 
@@ -426,6 +456,7 @@ export const App: React.FC = () => {
                 settings={settings}
                 onCompleteWizard={handleCompleteWizard}
                 onCancel={() => setCurrentTab('overview')}
+                lang={lang}
               />
             )}
           </ErrorBoundary>

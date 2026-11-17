@@ -22,12 +22,14 @@ import type {
   DeveloperConsoleSnapshot,
 } from '../types';
 import { api } from '../services/tauri';
+import { tx, type UiLang } from '../i18n';
 
 interface DeveloperOptionsProps {
   settings: AppSettings;
   onSaveSettings: (newSettings: AppSettings) => Promise<void>;
   events: ApplicationEvent[];
   onRefreshData: () => Promise<void>;
+  lang?: UiLang;
 }
 
 const QUICK_COMMANDS = [
@@ -47,6 +49,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
   onSaveSettings,
   events,
   onRefreshData,
+  lang = 'en',
 }) => {
   const [diagnostics, setDiagnostics] = useState<SystemDiagnostics | null>(null);
   const [snapshot, setSnapshot] = useState<DeveloperConsoleSnapshot | null>(null);
@@ -183,52 +186,74 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
     navigator.clipboard.writeText(report);
     setCopiedReport(true);
     setTimeout(() => setCopiedReport(false), 2500);
-    showToast('Full debug report copied to clipboard! You can paste it directly to support.', 'info');
+    showToast(
+      tx(
+        lang,
+        'Full debug report copied to clipboard! You can paste it directly to support.',
+        'คัดลอกรายงานดีบักทั้งหมดไปยังคลิปบอร์ดแล้ว'
+      ),
+      'info'
+    );
   };
 
   const handleToggleFlag = async (field: keyof AppSettings, value: boolean) => {
     const updated = { ...settings, [field]: value };
     await onSaveSettings(updated);
-    showToast(`Setting '${field}' updated to ${value ? 'ENABLED' : 'DISABLED'}`);
+    showToast(
+      tx(
+        lang,
+        `Setting '${field}' updated to ${value ? 'ENABLED' : 'DISABLED'}`,
+        `อัปเดตค่า '${field}' เป็น ${value ? 'เปิดใช้งาน' : 'ปิดใช้งาน'} แล้ว`
+      )
+    );
     fetchDiagnostics();
   };
 
   const handleOpenDevTools = async () => {
     try {
       await api.openDevTools();
-      showToast('WebView2 DevTools console opened (Press F12 to inspect)', 'info');
+      showToast(
+        tx(lang, 'WebView2 DevTools console opened (Press F12 to inspect)', 'เปิด WebView2 DevTools แล้ว (กด F12 เพื่อตรวจ)'),
+        'info'
+      );
     } catch (err: unknown) {
-      showToast(`Could not open DevTools: ${err}`, 'error');
+      showToast(`${tx(lang, 'Could not open DevTools:', 'ไม่สามารถเปิด DevTools ได้:')} ${err}`, 'error');
     }
   };
 
   const handleOpenExplorer = async (path: string) => {
     try {
       await api.openPathInExplorer(path);
-      showToast(`Opened directory in Explorer: ${path}`, 'info');
+      showToast(`${tx(lang, 'Opened directory in Explorer:', 'เปิดโฟลเดอร์ใน Explorer แล้ว:')} ${path}`, 'info');
     } catch (err: unknown) {
-      showToast(`Failed to open Explorer: ${err}`, 'error');
+      showToast(`${tx(lang, 'Failed to open Explorer:', 'เปิด Explorer ไม่สำเร็จ:')} ${err}`, 'error');
     }
   };
 
   const handleTriggerScan = async () => {
     try {
       const count = await api.triggerFolderScan();
-      showToast(`Folder scan initiated. Queued ${count} PO item(s).`, 'success');
+      showToast(
+        tx(lang, `Folder scan initiated. Queued ${count} PO item(s).`, `เริ่มสแกนโฟลเดอร์แล้ว เพิ่มงานเข้าคิว ${count} รายการ`),
+        'success'
+      );
       await onRefreshData();
       fetchDiagnostics();
     } catch (err: unknown) {
-      showToast(`Trigger scan failed: ${err}`, 'error');
+      showToast(`${tx(lang, 'Trigger scan failed:', 'สั่งสแกนไม่สำเร็จ:')} ${err}`, 'error');
     }
   };
 
   const handleClearCaches = async () => {
     try {
       await api.clearAllCaches();
-      showToast('Temporary processing and lock caches cleared successfully.', 'success');
+      showToast(
+        tx(lang, 'Temporary processing and lock caches cleared successfully.', 'ล้างแคชชั่วคราวและล็อกไฟล์เรียบร้อยแล้ว'),
+        'success'
+      );
       fetchDiagnostics();
     } catch (err: unknown) {
-      showToast(`Failed to clear caches: ${err}`, 'error');
+      showToast(`${tx(lang, 'Failed to clear caches:', 'ล้างแคชไม่สำเร็จ:')} ${err}`, 'error');
     }
   };
 
@@ -239,11 +264,11 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
     try {
       const res = await api.testOcrOnFile(testFilePath.trim());
       setOcrTestResult(res);
-      showToast('OCR test completed successfully.', 'success');
+      showToast(tx(lang, 'OCR test completed successfully.', 'ทดสอบอ่าน OCR เสร็จสมบูรณ์'), 'success');
       fetchSnapshot();
     } catch (err: unknown) {
       setOcrTestResult({ error: String(err) });
-      showToast(`OCR test failed: ${err}`, 'error');
+      showToast(`${tx(lang, 'OCR test failed:', 'ทดสอบ OCR ไม่สำเร็จ:')} ${err}`, 'error');
     } finally {
       setIsRunningOcrTest(false);
     }
@@ -254,7 +279,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
     navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
     setCopiedDiag(true);
     setTimeout(() => setCopiedDiag(false), 2000);
-    showToast('Diagnostics JSON copied to clipboard', 'info');
+    showToast(tx(lang, 'Diagnostics JSON copied to clipboard', 'คัดลอกข้อมูล Diagnostics JSON แล้ว'), 'info');
   };
 
   const filteredEvents = events.filter((ev) => {
@@ -279,10 +304,14 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
         <div>
           <h2 className="text-base font-bold text-white flex items-center gap-2">
             <Terminal className="w-5 h-5 text-amber-400" />
-            Developer Console, Process Monitor & CLI
+            {tx(lang, 'Developer Console, Process Monitor & CLI', 'คอนโซลนักพัฒนา ตัวติดตามโปรเซส และ CLI')}
           </h2>
           <p className="text-xs text-zinc-400">
-            Live backend process monitor, interactive CLI diagnostics (test Drive, GAS, Sheets, reset stuck jobs), and captured worker output
+            {tx(
+              lang,
+              'Live backend process monitor, interactive CLI diagnostics (test Drive, GAS, Sheets, reset stuck jobs), and captured worker output',
+              'ตรวจสอบโปรเซสฝั่งแบ็กเอนด์ ทดสอบ Drive / Apps Script / Sheets แก้งานค้าง และดูบันทึกการทำงานแบบสด'
+            )}
           </p>
         </div>
 
@@ -292,7 +321,11 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             className="px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 text-xs font-semibold border border-emerald-500/30 transition-all flex items-center space-x-1.5"
           >
             <Copy className="w-3.5 h-3.5" />
-            <span>{copiedReport ? 'Copied Full Report!' : 'Copy Full Debug Log'}</span>
+            <span>
+              {copiedReport
+                ? tx(lang, 'Copied Full Report!', 'คัดลอกรายงานแล้ว!')
+                : tx(lang, 'Copy Full Debug Log', 'คัดลอกบันทึกดีบักทั้งหมด')}
+            </span>
           </button>
 
           <button
@@ -301,7 +334,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium border border-zinc-700 transition-all flex items-center space-x-1.5"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isLoadingDiag ? 'animate-spin' : ''}`} />
-            <span>Refresh</span>
+            <span>{tx(lang, 'Refresh', 'รีเฟรช')}</span>
           </button>
 
           <button
@@ -337,10 +370,12 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
         <div className="flex items-center justify-between">
           <h3 className="text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-2">
             <Cpu className="w-4 h-4 text-emerald-400" />
-            Active Processes & Background Workers
+            {tx(lang, 'Active Processes & Background Workers', 'โปรเซสที่กำลังทำงานอยู่')}
           </h3>
           <span className="text-[11px] font-mono text-zinc-500">
-            {snapshot ? `Updated ${new Date(snapshot.timestamp).toLocaleTimeString()}` : 'Polling...'}
+            {snapshot
+              ? `${tx(lang, 'Updated', 'อัปเดตเมื่อ')} ${new Date(snapshot.timestamp).toLocaleTimeString()}`
+              : tx(lang, 'Polling...', 'กำลังดึงข้อมูล...')}
           </span>
         </div>
 
@@ -349,18 +384,20 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             <div className="flex items-center justify-between">
               <span className="font-mono font-bold text-white">po-autoflow.exe</span>
               <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[10px] font-semibold">
-                RUNNING
+                {tx(lang, 'RUNNING', 'กำลังทำงาน')}
               </span>
             </div>
             <p className="text-[11px] font-mono text-zinc-400">
               PID: {snapshot?.app_pid ?? '—'}
             </p>
-            <p className="text-[11px] text-zinc-500">Main Rust Host + Tray Service</p>
+            <p className="text-[11px] text-zinc-500">
+              {tx(lang, 'Main Rust Host + Tray Service', 'โปรแกรมหลัก Rust + ถาดระบบ')}
+            </p>
           </div>
 
           <div className="p-3 rounded-lg bg-zinc-950/80 border border-zinc-800 space-y-1">
             <div className="flex items-center justify-between">
-              <span className="font-mono font-bold text-white">python.exe (OCR)</span>
+              <span className="font-mono font-bold text-white">ocr-worker (OCR)</span>
               <span
                 className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
                   snapshot?.ocr_worker_pid
@@ -368,11 +405,11 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
                     : 'bg-zinc-800 text-zinc-400'
                 }`}
               >
-                {snapshot?.ocr_worker_pid ? 'ALIVE' : 'ON DEMAND'}
+                {snapshot?.ocr_worker_pid ? tx(lang, 'ALIVE', 'พร้อมทำงาน') : tx(lang, 'ON DEMAND', 'พร้อมเรียกใช้งาน')}
               </span>
             </div>
             <p className="text-[11px] font-mono text-zinc-400">
-              PID: {snapshot?.ocr_worker_pid ?? 'Idle'} • No Console Popup
+              PID: {snapshot?.ocr_worker_pid ?? tx(lang, 'Idle', 'ว่าง')} • {tx(lang, 'No Console Popup', 'ไม่เปิดหน้าต่างดำ')}
             </p>
             <p className="text-[11px] text-zinc-500 truncate" title={snapshot?.ocr_worker_script}>
               {snapshot?.ocr_worker_script || 'ocr-worker/worker.py'}
@@ -389,11 +426,11 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
                     : 'bg-amber-500/15 text-amber-400'
                 }`}
               >
-                {snapshot?.watcher_active ? 'WATCHING' : 'PAUSED'}
+                {snapshot?.watcher_active ? tx(lang, 'WATCHING', 'กำลังเฝ้าดู') : tx(lang, 'PAUSED', 'หยุดชั่วคราว')}
               </span>
             </div>
             <p className="text-[11px] font-mono text-zinc-400">
-              Queued: {snapshot?.watcher_queued_count ?? 0} • Locks: {snapshot?.in_flight_count ?? 0}
+              {tx(lang, 'Queued:', 'คิวรอ:')} {snapshot?.watcher_queued_count ?? 0} • {tx(lang, 'Locks:', 'ล็อกงาน:')} {snapshot?.in_flight_count ?? 0}
             </p>
             <p className="text-[11px] text-zinc-500 truncate" title={snapshot?.watcher_dir}>
               {snapshot?.watcher_dir || settings.incoming_dir}
@@ -402,7 +439,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
 
           <div className="p-3 rounded-lg bg-zinc-950/80 border border-zinc-800 space-y-1">
             <div className="flex items-center justify-between">
-              <span className="font-mono font-bold text-white">Pipeline Jobs</span>
+              <span className="font-mono font-bold text-white">{tx(lang, 'Pipeline Jobs', 'คิวงานระบบ')}</span>
               <span className="px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 text-[10px] font-semibold">
                 SQLITE WAL
               </span>
@@ -412,9 +449,11 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
                 ? Object.entries(snapshot.jobs_summary)
                     .map(([k, v]) => `${k}:${v}`)
                     .join(' | ')
-                : 'No jobs in queue'}
+                : tx(lang, 'No jobs in queue', 'ไม่มีงานในคิว')}
             </p>
-            <p className="text-[11px] text-zinc-500">Use &quot;reset-stuck&quot; if any job stalls</p>
+            <p className="text-[11px] text-zinc-500">
+              {tx(lang, 'Use "reset-stuck" if any job stalls', 'พิมพ์ "reset-stuck" หากมีงานค้าง')}
+            </p>
           </div>
         </div>
       </div>
@@ -424,7 +463,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
             <Terminal className="w-4 h-4 text-emerald-400" />
-            Interactive Command-Line Terminal & Worker Output
+            {tx(lang, 'Interactive Command-Line Terminal & Worker Output', 'เทอร์มินัลสั่งงานด่วนและผลลัพธ์จาก Worker')}
           </h3>
 
           <div className="flex flex-wrap gap-1.5">
@@ -496,7 +535,11 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
               value={cliInput}
               onChange={(e) => setCliInput(e.target.value)}
               onKeyDown={handleCliKeyDown}
-              placeholder="Type command (e.g. test-drive, jobs, reset-stuck, status, help)..."
+              placeholder={tx(
+                lang,
+                'Type command (e.g. test-drive, jobs, reset-stuck, status, help)...',
+                'พิมพ์คำสั่ง (เช่น test-drive, jobs, reset-stuck, status, help)...'
+              )}
               className="flex-1 bg-transparent text-xs font-mono text-white focus:outline-none placeholder-zinc-600"
             />
           </div>
@@ -506,7 +549,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5"
           >
             <Send className="w-3.5 h-3.5" />
-            <span>{isRunningCmd ? 'Running...' : 'Run'}</span>
+            <span>{isRunningCmd ? tx(lang, 'Running...', 'กำลังรัน...') : tx(lang, 'Run', 'รันคำสั่ง')}</span>
           </button>
         </form>
       </div>
@@ -517,11 +560,14 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
           <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
           <div className="space-y-1">
             <h4 className="text-xs font-bold text-amber-300 uppercase tracking-wide">
-              Dry-Run / Simulation Mode Active
+              {tx(lang, 'Dry-Run / Simulation Mode Active', 'กำลังเปิดโหมดจำลองการทำงาน (Dry-Run)')}
             </h4>
             <p className="text-xs text-amber-200/80">
-              The pipeline will perform complete OCR, supplier matching, and archive packaging, but will simulate
-              Google Drive uploads and Gmail transmissions. No live emails will be dispatched to suppliers.
+              {tx(
+                lang,
+                'The pipeline will perform complete OCR, supplier matching, and archive packaging, but will simulate Google Drive uploads and Gmail transmissions. No live emails will be dispatched to suppliers.',
+                'ระบบจะสแกน OCR จับคู่ผู้ขาย และสร้างไฟล์ ZIP ตามปกติ แต่จะจำลองการอัปโหลด Drive และการส่ง Gmail โดยไม่มีการส่งอีเมลจริงออกไป'
+              )}
             </p>
           </div>
         </div>
@@ -531,7 +577,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-zinc-300">Developer Mode</span>
+            <span className="text-xs font-semibold text-zinc-300">{tx(lang, 'Developer Mode', 'โหมดนักพัฒนา')}</span>
             <input
               type="checkbox"
               checked={!!settings.developer_mode_enabled}
@@ -540,13 +586,17 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             />
           </div>
           <p className="text-[11px] text-zinc-400 leading-relaxed">
-            Enables advanced diagnostics tools, sidecar inspection, and direct folder controls.
+            {tx(
+              lang,
+              'Enables advanced diagnostics tools, sidecar inspection, and direct folder controls.',
+              'เปิดใช้งานเครื่องมือวินิจฉัยขั้นสูง การตรวจสอบ Worker และคำสั่งควบคุมโฟลเดอร์โดยตรง'
+            )}
           </p>
         </div>
 
         <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-zinc-300">Verbose Debug Logging</span>
+            <span className="text-xs font-semibold text-zinc-300">{tx(lang, 'Verbose Debug Logging', 'บันทึก Log แบบละเอียด')}</span>
             <input
               type="checkbox"
               checked={!!settings.debug_logging_enabled}
@@ -555,13 +605,17 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             />
           </div>
           <p className="text-[11px] text-zinc-400 leading-relaxed">
-            Emits detailed trace telemetry during OCR parsing, Drive upload, and email delivery.
+            {tx(
+              lang,
+              'Emits detailed trace telemetry during OCR parsing, Drive upload, and email delivery.',
+              'บันทึกรายละเอียดการทำงานทุกขั้นตอนทั้งระหว่างสแกน OCR อัปโหลด Drive และส่งอีเมล'
+            )}
           </p>
         </div>
 
         <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-zinc-300">Dry-Run Simulation Mode</span>
+            <span className="text-xs font-semibold text-zinc-300">{tx(lang, 'Dry-Run Simulation Mode', 'โหมดจำลอง (Dry-Run)')}</span>
             <input
               type="checkbox"
               checked={!!settings.dry_run_simulation_mode}
@@ -570,13 +624,17 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             />
           </div>
           <p className="text-[11px] text-zinc-400 leading-relaxed">
-            Test documents end-to-end safely without sending real emails or uploading to Drive.
+            {tx(
+              lang,
+              'Test documents end-to-end safely without sending real emails or uploading to Drive.',
+              'ทดสอบประมวลผลเอกสารครบขั้นตอนโดยไม่ส่งอีเมลหรืออัปโหลดจริง'
+            )}
           </p>
         </div>
 
         <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-zinc-300">Save OCR Debug Images</span>
+            <span className="text-xs font-semibold text-zinc-300">{tx(lang, 'Save OCR Debug Images', 'บันทึกรูปภาพปรับแต่ง OCR')}</span>
             <input
               type="checkbox"
               checked={!!settings.save_debug_ocr_images}
@@ -585,7 +643,8 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             />
           </div>
           <p className="text-[11px] text-zinc-400 leading-relaxed">
-            Saves deskewed page previews into <code className="text-blue-300 font-mono">Temp\debug_ocr</code>.
+            {tx(lang, 'Saves deskewed page previews into', 'บันทึกภาพหน้าที่ปรับแก้อียงแล้วไว้ใน')}{' '}
+            <code className="text-blue-300 font-mono">Temp\debug_ocr</code>.
           </p>
         </div>
       </div>
@@ -595,21 +654,27 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
         <div className="flex items-center justify-between">
           <h3 className="text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-2">
             <Cpu className="w-4 h-4 text-blue-400" />
-            Runtime Environment & Sidecar Diagnostics
+            {tx(lang, 'Runtime Environment & Sidecar Diagnostics', 'สภาพแวดล้อมการทำงานและตัวอ่าน OCR')}
           </h3>
           <button
             onClick={handleCopyDiagnostics}
             className="text-[11px] text-zinc-400 hover:text-white flex items-center gap-1 transition-colors"
           >
             <Copy className="w-3.5 h-3.5" />
-            <span>{copiedDiag ? 'Copied JSON!' : 'Copy Diagnostics JSON'}</span>
+            <span>
+              {copiedDiag
+                ? tx(lang, 'Copied JSON!', 'คัดลอก JSON แล้ว!')
+                : tx(lang, 'Copy Diagnostics JSON', 'คัดลอกข้อมูลระบบ JSON')}
+            </span>
           </button>
         </div>
 
         {diagnostics ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
             <div className="p-3 rounded-lg bg-zinc-950/70 border border-zinc-800 space-y-1">
-              <span className="text-[10px] text-zinc-500 uppercase font-semibold">OS & Architecture</span>
+              <span className="text-[10px] text-zinc-500 uppercase font-semibold">
+                {tx(lang, 'OS & Architecture', 'ระบบปฏิบัติการและสถาปัตยกรรม')}
+              </span>
               <p className="text-white font-mono font-medium">
                 {diagnostics.os_name} ({diagnostics.os_arch})
               </p>
@@ -619,18 +684,25 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             </div>
 
             <div className="p-3 rounded-lg bg-zinc-950/70 border border-zinc-800 space-y-1">
-              <span className="text-[10px] text-zinc-500 uppercase font-semibold">SQLite WAL Database</span>
+              <span className="text-[10px] text-zinc-500 uppercase font-semibold">
+                {tx(lang, 'SQLite WAL Database', 'ฐานข้อมูล SQLite WAL')}
+              </span>
               <div className="flex items-center gap-1.5">
                 <span className="h-2 w-2 rounded-full bg-emerald-500"></span>
-                <span className="text-white font-mono font-medium">Mode: {diagnostics.database_journal_mode}</span>
+                <span className="text-white font-mono font-medium">
+                  {tx(lang, 'Mode:', 'โหมด:')} {diagnostics.database_journal_mode}
+                </span>
               </div>
               <p className="text-[11px] text-zinc-400 font-mono">
-                Size: {(diagnostics.database_size_bytes / 1024).toFixed(1)} KB ({diagnostics.total_jobs_recorded} jobs)
+                {tx(lang, 'Size:', 'ขนาด:')} {(diagnostics.database_size_bytes / 1024).toFixed(1)} KB ({diagnostics.total_jobs_recorded}{' '}
+                {tx(lang, 'jobs', 'งาน')})
               </p>
             </div>
 
             <div className="p-3 rounded-lg bg-zinc-950/70 border border-zinc-800 space-y-1">
-              <span className="text-[10px] text-zinc-500 uppercase font-semibold">Python OCR Sidecar</span>
+              <span className="text-[10px] text-zinc-500 uppercase font-semibold">
+                {tx(lang, 'Bundled OCR Worker', 'ตัวประมวลผล OCR ในตัว')}
+              </span>
               <div className="flex items-center gap-1.5">
                 <span
                   className={`h-2 w-2 rounded-full ${
@@ -641,22 +713,27 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
                 <span className="text-[11px] text-zinc-400 font-mono">({diagnostics.ocr_latency_ms}ms)</span>
               </div>
               <p className="text-[11px] text-zinc-400 font-mono truncate" title={diagnostics.ocr_worker_path}>
-                PP-OCRv5 Thai / PyMuPDF
+                OpenThai 2.0 / PyMuPDF
               </p>
             </div>
 
             <div className="p-3 rounded-lg bg-zinc-950/70 border border-zinc-800 space-y-1">
-              <span className="text-[10px] text-zinc-500 uppercase font-semibold">Queue & Concurrency</span>
+              <span className="text-[10px] text-zinc-500 uppercase font-semibold">
+                {tx(lang, 'Queue & Concurrency', 'คิวงานและการทำงานพร้อมกัน')}
+              </span>
               <p className="text-white font-mono font-medium">
-                Active: {diagnostics.active_jobs_count} | Locks: {diagnostics.in_flight_locks_count}
+                {tx(lang, 'Active:', 'กำลังทำ:')} {diagnostics.active_jobs_count} | {tx(lang, 'Locks:', 'ล็อก:')} {diagnostics.in_flight_locks_count}
               </p>
               <p className="text-[11px] text-zinc-400">
-                Monitoring: {diagnostics.auto_monitoring_active ? 'Active' : 'Paused'}
+                {tx(lang, 'Monitoring:', 'เฝ้าโฟลเดอร์:')}{' '}
+                {diagnostics.auto_monitoring_active ? tx(lang, 'Active', 'เปิด') : tx(lang, 'Paused', 'หยุดชั่วคราว')}
               </p>
             </div>
           </div>
         ) : (
-          <div className="p-6 text-center text-xs text-zinc-500">Loading diagnostics...</div>
+          <div className="p-6 text-center text-xs text-zinc-500">
+            {tx(lang, 'Loading diagnostics...', 'กำลังโหลดข้อมูลวินิจฉัยระบบ...')}
+          </div>
         )}
       </div>
 
@@ -664,7 +741,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
       <div className="p-5 rounded-xl bg-[#121215] border border-zinc-800 space-y-4">
         <h3 className="text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-2">
           <FolderOpen className="w-4 h-4 text-emerald-400" />
-          Windows Explorer Directory Launchers
+          {tx(lang, 'Windows Explorer Directory Launchers', 'ทางลัดเปิดโฟลเดอร์ระบบใน Windows Explorer')}
         </h3>
 
         <div className="flex flex-wrap gap-2">
@@ -673,7 +750,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 flex items-center space-x-1.5 transition-colors"
           >
             <FolderOpen className="w-3.5 h-3.5 text-blue-400" />
-            <span>Incoming Folder</span>
+            <span>{tx(lang, 'Incoming Folder', 'โฟลเดอร์ Incoming')}</span>
           </button>
 
           <button
@@ -681,7 +758,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 flex items-center space-x-1.5 transition-colors"
           >
             <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
-            <span>Processing Folder</span>
+            <span>{tx(lang, 'Processing Folder', 'โฟลเดอร์ Processing')}</span>
           </button>
 
           <button
@@ -689,7 +766,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 flex items-center space-x-1.5 transition-colors"
           >
             <FolderOpen className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Sent Folder</span>
+            <span>{tx(lang, 'Sent Folder', 'โฟลเดอร์ Sent')}</span>
           </button>
 
           <button
@@ -697,7 +774,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 flex items-center space-x-1.5 transition-colors"
           >
             <FolderOpen className="w-3.5 h-3.5 text-red-400" />
-            <span>Failed Folder</span>
+            <span>{tx(lang, 'Failed Folder', 'โฟลเดอร์ Failed')}</span>
           </button>
 
           <button
@@ -705,7 +782,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 flex items-center space-x-1.5 transition-colors"
           >
             <FolderOpen className="w-3.5 h-3.5 text-purple-400" />
-            <span>Review Folder</span>
+            <span>{tx(lang, 'Review Folder', 'โฟลเดอร์ Review')}</span>
           </button>
 
           <button
@@ -713,7 +790,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium border border-zinc-700 flex items-center space-x-1.5 transition-colors"
           >
             <FolderOpen className="w-3.5 h-3.5 text-zinc-400" />
-            <span>Temp Archive Folder</span>
+            <span>{tx(lang, 'Temp Archive Folder', 'โฟลเดอร์ Temp Archive')}</span>
           </button>
 
           <button
@@ -721,7 +798,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             className="px-3 py-1.5 rounded-lg bg-blue-600/30 hover:bg-blue-600/50 text-blue-300 text-xs font-semibold border border-blue-500/40 flex items-center space-x-1.5 transition-colors ml-auto"
           >
             <Play className="w-3.5 h-3.5" />
-            <span>Trigger Incoming Scan Now</span>
+            <span>{tx(lang, 'Trigger Incoming Scan Now', 'สแกนโฟลเดอร์ Incoming ทันที')}</span>
           </button>
 
           <button
@@ -729,7 +806,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             className="px-3 py-1.5 rounded-lg bg-red-600/20 hover:bg-red-600/30 text-red-300 text-xs font-medium border border-red-500/30 flex items-center space-x-1.5 transition-colors"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            <span>Clear Temp Caches</span>
+            <span>{tx(lang, 'Clear Temp Caches', 'ล้างแคชชั่วคราว')}</span>
           </button>
         </div>
       </div>
@@ -738,7 +815,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
       <div className="p-5 rounded-xl bg-[#121215] border border-zinc-800 space-y-4">
         <h3 className="text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-2">
           <FileSearch className="w-4 h-4 text-purple-400" />
-          Neural OCR Direct Test Sandbox
+          {tx(lang, 'OCR Direct Test Sandbox', 'ช่องทดสอบสแกนเอกสาร OCR โดยตรง')}
         </h3>
 
         <div className="flex items-center space-x-2">
@@ -746,7 +823,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             type="text"
             value={testFilePath}
             onChange={(e) => setTestFilePath(e.target.value)}
-            placeholder="C:\Path\To\Invoice.pdf or image.jpg"
+            placeholder="C:\Path\To\Invoice.pdf"
             className="flex-1 px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-white font-mono focus:outline-none focus:border-blue-500"
           />
           <button
@@ -755,7 +832,11 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
             className="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow-md shadow-purple-600/20 transition-all flex items-center space-x-1.5"
           >
             <Play className={`w-3.5 h-3.5 ${isRunningOcrTest ? 'animate-spin' : ''}`} />
-            <span>{isRunningOcrTest ? 'Processing OCR...' : 'Run Direct Test'}</span>
+            <span>
+              {isRunningOcrTest
+                ? tx(lang, 'Processing OCR...', 'กำลังอ่านเอกสาร...')
+                : tx(lang, 'Run Direct Test', 'ทดสอบอ่านเอกสาร')}
+            </span>
           </button>
         </div>
 
@@ -771,13 +852,13 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-2">
             <Activity className="w-4 h-4 text-blue-400" />
-            Database Event Log ({filteredEvents.length} events)
+            {tx(lang, 'Database Event Log', 'บันทึกเหตุการณ์จากฐานข้อมูล')} ({filteredEvents.length} {tx(lang, 'events', 'รายการ')})
           </h3>
 
           <div className="flex items-center space-x-2">
             <input
               type="text"
-              placeholder="Search events..."
+              placeholder={tx(lang, 'Search events...', 'ค้นหาเหตุการณ์...')}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="px-2.5 py-1 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-white focus:outline-none focus:border-blue-500 w-44"
@@ -794,7 +875,7 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
                       : 'text-zinc-400 hover:text-white'
                   }`}
                 >
-                  {lvl}
+                  {lvl === 'all' ? tx(lang, 'all', 'ทั้งหมด') : lvl}
                 </button>
               ))}
             </div>
@@ -803,7 +884,9 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
 
         <div className="rounded-lg bg-zinc-950 border border-zinc-800 overflow-hidden font-mono text-xs max-h-80 overflow-y-auto">
           {filteredEvents.length === 0 ? (
-            <div className="p-8 text-center text-zinc-500">No events found matching the filter criteria.</div>
+            <div className="p-8 text-center text-zinc-500">
+              {tx(lang, 'No events found matching the filter criteria.', 'ไม่พบบันทึกเหตุการณ์ที่ตรงกับเงื่อนไข')}
+            </div>
           ) : (
             <div className="divide-y divide-zinc-800/70">
               {filteredEvents.map((ev) => {

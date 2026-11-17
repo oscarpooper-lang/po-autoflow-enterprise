@@ -502,14 +502,20 @@ function handleGetSuppliers(sheetId, tabName) {
   }
 }
 
+function safeSheetCell(val) {
+  const s = String(val || "").trim();
+  if (!s) return "";
+  return /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+}
+
 function handleUpsertSupplier(sheetId, tabName, payload) {
   if (!sheetId) {
     return jsonError("Missing sheet_id for upsert_supplier", 400);
   }
-  const companyName = String(payload.company_name || "").trim();
-  const email = String(payload.email || "").trim();
-  const altName = String(payload.alternative_name || "").trim();
-  const taxId = String(payload.tax_id || "").trim();
+  const companyName = safeSheetCell(payload.company_name);
+  const email = safeSheetCell(payload.email);
+  const altName = safeSheetCell(payload.alternative_name);
+  const taxId = safeSheetCell(payload.tax_id);
   if (!companyName || !email) {
     return jsonError("Missing company_name or email for upsert_supplier", 400);
   }

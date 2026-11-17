@@ -18,23 +18,25 @@ import {
 import type { Job, ApplicationEvent } from '../types';
 import { StatusBadge } from './Overview';
 import { api } from '../services/tauri';
+import { tx, type UiLang } from '../i18n';
 
 interface LiveMonitorProps {
   jobs: Job[];
   events: ApplicationEvent[];
   onSelectJob: (jobId: string) => void;
   onRetryJob: (jobId: string) => void;
+  lang?: UiLang;
 }
 
-const PIPELINE_STAGES = [
-  { id: 'detected', label: '1. Folder Found', icon: FolderOpen },
-  { id: 'waiting_stability', label: '2. Copy Check', icon: Clock },
-  { id: 'extracting_text', label: '3. Read Docs', icon: Activity },
-  { id: 'ocr_processing', label: '4. OCR Scan', icon: ScanEye },
-  { id: 'matching_company', label: '5. Vendor Match', icon: CheckCircle2 },
-  { id: 'preparing_zip', label: '6. Pack ZIP', icon: FileArchive },
-  { id: 'uploading_drive', label: '7. Drive Backup', icon: CloudUpload },
-  { id: 'sending_email', label: '8. Send Email', icon: MailCheck },
+const getPipelineStages = (lang: UiLang) => [
+  { id: 'detected', label: tx(lang, '1. Folder Found', '1. พบโฟลเดอร์'), icon: FolderOpen },
+  { id: 'waiting_stability', label: tx(lang, '2. Copy Check', '2. เช็คไฟล์นิ่ง'), icon: Clock },
+  { id: 'extracting_text', label: tx(lang, '3. Read Docs', '3. อ่านเอกสาร'), icon: Activity },
+  { id: 'ocr_processing', label: tx(lang, '4. OCR Scan', '4. สแกน OCR'), icon: ScanEye },
+  { id: 'matching_company', label: tx(lang, '5. Vendor Match', '5. จับคู่ผู้ขาย'), icon: CheckCircle2 },
+  { id: 'preparing_zip', label: tx(lang, '6. Pack ZIP', '6. เตรียม ZIP'), icon: FileArchive },
+  { id: 'uploading_drive', label: tx(lang, '7. Drive Backup', '7. สำรอง Drive'), icon: CloudUpload },
+  { id: 'sending_email', label: tx(lang, '8. Send Email', '8. ส่งอีเมล'), icon: MailCheck },
 ];
 
 export const LiveMonitor: React.FC<LiveMonitorProps> = ({
@@ -42,7 +44,9 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
   events = [],
   onSelectJob,
   onRetryJob,
+  lang = 'en',
 }) => {
+  const PIPELINE_STAGES = getPipelineStages(lang);
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
@@ -101,12 +105,12 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500"></span>
               </span>
-              Real-Time Document Pipeline Execution
+              {tx(lang, 'Real-Time Document Pipeline Execution', 'การประมวลผลเอกสารแบบเรียลไทม์')}
             </h3>
             <p className="text-xs text-zinc-400">
               {activeJob
-                ? `Currently processing: ${activeJob.po_number || activeJob.po_folder_name}`
-                : 'Pipeline idle. Waiting for new folders in Incoming.'}
+                ? `${tx(lang, 'Currently processing:', 'กำลังประมวลผล:')} ${activeJob.po_number || activeJob.po_folder_name}`
+                : tx(lang, 'Pipeline idle. Waiting for new folders in Incoming.', 'ระบบว่าง รอโฟลเดอร์ PO ใหม่ใน Incoming')}
             </p>
           </div>
           {activeJob && (
@@ -114,13 +118,17 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
               <button
                 type="button"
                 onClick={() => api.runDeveloperCommand('reset-stuck')}
-                title="If this job has been stuck for >1 minute, click to move it safely to Needs Review"
+                title={tx(
+                  lang,
+                  'If this job has been stuck for >1 minute, click to move it safely to Needs Review',
+                  'หากงานนี้ค้างเกิน 1 นาที กดเพื่อย้ายไปรอตรวจสอบอย่างปลอดภัย'
+                )}
                 className="px-2.5 py-1 rounded bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-xs font-medium"
               >
-                Unstick Job
+                {tx(lang, 'Unstick Job', 'แก้ค้างงานนี้')}
               </button>
               <span className="px-2.5 py-1 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 text-xs font-semibold animate-pulse">
-                In-Flight
+                {tx(lang, 'In-Flight', 'กำลังทำงาน')}
               </span>
             </div>
           )}
@@ -148,7 +156,11 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
                 <Icon className={`w-5 h-5 mb-1.5 ${isCurrent ? 'animate-bounce text-blue-400' : ''}`} />
                 <span className="text-[11px] font-semibold tracking-tight">{stage.label}</span>
                 <span className="text-[10px] mt-0.5 opacity-80 font-mono">
-                  {isCurrent ? 'Active...' : isCompleted ? 'Passed' : 'Pending'}
+                  {isCurrent
+                    ? tx(lang, 'Active...', 'กำลังทำ...')
+                    : isCompleted
+                    ? tx(lang, 'Passed', 'ผ่านแล้ว')
+                    : tx(lang, 'Pending', 'รอคิว')}
                 </span>
               </div>
             );
@@ -157,12 +169,14 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
 
         {activeJob && (
           <div className="mt-4 p-3 rounded-lg bg-zinc-950/80 border border-blue-500/30 flex items-center justify-between text-xs">
-            <span className="text-zinc-300 font-medium">Stage Status: {activeJob.stage_message}</span>
+            <span className="text-zinc-300 font-medium">
+              {tx(lang, 'Stage Status:', 'สถานะขั้นตอน:')} {activeJob.stage_message}
+            </span>
             <button
               onClick={() => onSelectJob(activeJob.id)}
               className="text-blue-400 hover:text-blue-300 font-semibold flex items-center gap-1"
             >
-              <span>Inspect Raw Stream</span>
+              <span>{tx(lang, 'Inspect Raw Stream', 'ตรวจเอกสารนี้')}</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -179,12 +193,12 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
               onChange={(e) => setSelectedStatusFilter(e.target.value)}
               className="bg-zinc-800 border border-zinc-700 text-zinc-200 text-xs rounded-lg px-2.5 py-1.5 font-medium focus:ring-1 focus:ring-blue-500"
             >
-              <option value="all">All Statuses</option>
-              <option value="completed">Sent (Completed)</option>
-              <option value="needs_review">Needs Review</option>
-              <option value="failed">Failed</option>
-              <option value="ocr_processing">In OCR</option>
-              <option value="waiting_stability">Waiting Stability</option>
+              <option value="all">{tx(lang, 'All Statuses', 'ทุกสถานะ')}</option>
+              <option value="completed">{tx(lang, 'Sent (Completed)', 'ส่งสำเร็จแล้ว')}</option>
+              <option value="needs_review">{tx(lang, 'Needs Review', 'รอตรวจสอบ')}</option>
+              <option value="failed">{tx(lang, 'Failed', 'ผิดพลาด')}</option>
+              <option value="ocr_processing">{tx(lang, 'In OCR', 'กำลังสแกน OCR')}</option>
+              <option value="waiting_stability">{tx(lang, 'Waiting Stability', 'รอเช็คไฟล์นิ่ง')}</option>
             </select>
           </div>
 
@@ -192,7 +206,7 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
             <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-2" />
             <input
               type="text"
-              placeholder="Search by PO number or company..."
+              placeholder={tx(lang, 'Search by PO number or company...', 'ค้นหาเลขที่ PO หรือชื่อบริษัท...')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="bg-zinc-800 border border-zinc-700 text-zinc-200 text-xs rounded-lg pl-9 pr-3 py-1.5 w-64 focus:ring-1 focus:ring-blue-500 placeholder-zinc-500"
@@ -204,19 +218,19 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
           <table className="w-full text-left text-xs">
             <thead className="bg-zinc-950/60 text-zinc-400 font-medium border-b border-zinc-800">
               <tr>
-                <th className="py-2.5 px-4">PO Identifier</th>
-                <th className="py-2.5 px-4">Status</th>
-                <th className="py-2.5 px-4">Matched Supplier</th>
-                <th className="py-2.5 px-4">Score</th>
-                <th className="py-2.5 px-4">Stage Message</th>
-                <th className="py-2.5 px-4 text-right">Actions</th>
+                <th className="py-2.5 px-4">{tx(lang, 'PO Identifier', 'เลขที่ PO / โฟลเดอร์')}</th>
+                <th className="py-2.5 px-4">{tx(lang, 'Status', 'สถานะ')}</th>
+                <th className="py-2.5 px-4">{tx(lang, 'Matched Supplier', 'ผู้ขายที่จับคู่ได้')}</th>
+                <th className="py-2.5 px-4">{tx(lang, 'Score', 'คะแนน')}</th>
+                <th className="py-2.5 px-4">{tx(lang, 'Stage Message', 'รายละเอียดสถานะ')}</th>
+                <th className="py-2.5 px-4 text-right">{tx(lang, 'Actions', 'จัดการ')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800/70">
               {filteredJobs.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="py-8 text-center text-zinc-500">
-                    No matching jobs found in queue
+                    {tx(lang, 'No matching jobs found in queue', 'ไม่พบงานในคิวที่ตรงกับการค้นหา')}
                   </td>
                 </tr>
               ) : (
@@ -227,11 +241,11 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
                       <div className="text-[11px] text-zinc-500 font-mono">{job.po_folder_name}</div>
                     </td>
                     <td className="py-3 px-4">
-                      <StatusBadge status={job.status} />
+                      <StatusBadge status={job.status} lang={lang} />
                     </td>
                     <td className="py-3 px-4">
                       <div className="font-medium text-zinc-200 truncate max-w-[220px]">
-                        {job.matched_company_name || job.detected_company_raw || 'Pending'}
+                        {job.matched_company_name || job.detected_company_raw || tx(lang, 'Pending', 'รอดำเนินการ')}
                       </div>
                       {job.matched_email && (
                         <div className="text-[11px] text-zinc-400">{job.matched_email}</div>
@@ -265,14 +279,14 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
                         onClick={() => onSelectJob(job.id)}
                         className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[11px] font-medium border border-zinc-700"
                       >
-                        Inspect
+                        {tx(lang, 'Inspect', 'ตรวจสอบ')}
                       </button>
                       {(job.status === 'failed' || job.status === 'needs_review') && (
                         <button
                           onClick={() => onRetryJob(job.id)}
                           className="px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-medium"
                         >
-                          <RotateCw className="w-3 h-3 inline mr-1" /> Retry
+                          <RotateCw className="w-3 h-3 inline mr-1" /> {tx(lang, 'Retry', 'ทำใหม่')}
                         </button>
                       )}
                     </td>
@@ -289,15 +303,17 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
         <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
           <h3 className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-2">
             <Terminal className="w-4 h-4 text-blue-400" />
-            Live Pipeline Event Stream
+            {tx(lang, 'Live Pipeline Event Stream', 'บันทึกเหตุการณ์การทำงานล่าสุด')}
           </h3>
-          <span className="text-[11px] text-zinc-400 font-mono">{events.length} recent events</span>
+          <span className="text-[11px] text-zinc-400 font-mono">
+            {events.length} {tx(lang, 'recent events', 'เหตุการณ์ล่าสุด')}
+          </span>
         </div>
 
         <div className="max-h-72 overflow-y-auto divide-y divide-zinc-800/70 font-mono text-[11px]">
           {events.length === 0 ? (
             <div className="py-8 text-center text-zinc-500 font-sans text-xs">
-              No pipeline events recorded yet.
+              {tx(lang, 'No pipeline events recorded yet.', 'ยังไม่มีบันทึกเหตุการณ์ในขณะนี้')}
             </div>
           ) : (
             events.slice(0, 30).map((ev) => {
@@ -324,7 +340,7 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
                       onClick={() => onSelectJob(ev.job_id!)}
                       className="text-blue-400 hover:text-blue-300 shrink-0 underline"
                     >
-                      Inspect
+                      {tx(lang, 'Inspect', 'ตรวจสอบ')}
                     </button>
                   )}
                 </div>

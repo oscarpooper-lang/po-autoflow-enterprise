@@ -10,12 +10,14 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import type { DashboardStats, Job, CompanyCacheEntry, PoTransaction } from '../types';
+import { tx, type UiLang } from '../i18n';
 
 interface AnalyticsProps {
   stats: DashboardStats;
   jobs?: Job[];
   companies?: CompanyCacheEntry[];
   transactions?: PoTransaction[];
+  lang?: UiLang;
 }
 
 const hasThaiScript = (value?: string): boolean => Boolean(value && /[\u0E00-\u0E7F]/.test(value));
@@ -25,6 +27,7 @@ export const Analytics: React.FC<AnalyticsProps> = ({
   jobs = [],
   companies = [],
   transactions = [],
+  lang = 'en',
 }) => {
   const totalJobs = jobs.length;
   const completedCount = jobs.filter((j) => j.status === 'completed').length;
@@ -60,17 +63,17 @@ export const Analytics: React.FC<AnalyticsProps> = ({
     total > 0 ? `${Math.round((count / total) * 100)}%` : '0%';
 
   const statusRows = [
-    { label: 'Completed / Delivered', count: completedCount, color: 'bg-emerald-500' },
-    { label: 'Needs Manual Review', count: reviewCount, color: 'bg-amber-500' },
-    { label: 'In Progress / Queued', count: inFlightCount, color: 'bg-blue-500' },
-    { label: 'Failed', count: failedCount, color: 'bg-rose-500' },
+    { label: tx(lang, 'Completed / Delivered', 'ส่งสำเร็จแล้ว'), count: completedCount, color: 'bg-emerald-500' },
+    { label: tx(lang, 'Needs Manual Review', 'รอตรวจสอบและอนุมัติ'), count: reviewCount, color: 'bg-amber-500' },
+    { label: tx(lang, 'In Progress / Queued', 'กำลังประมวลผล / อยู่ในคิว'), count: inFlightCount, color: 'bg-blue-500' },
+    { label: tx(lang, 'Failed', 'ผิดพลาด'), count: failedCount, color: 'bg-rose-500' },
   ];
 
   const categoryRows = [
-    { label: 'Verified Auto-Match (>= 98%)', count: verifiedCount, color: 'bg-emerald-500' },
-    { label: 'High Confidence Match (>= 90%)', count: highCount, color: 'bg-blue-500' },
-    { label: 'Review Threshold', count: categoryReviewCount, color: 'bg-amber-500' },
-    { label: 'No Match Found', count: noMatchCount, color: 'bg-rose-500' },
+    { label: tx(lang, 'Verified Auto-Match (>= 98%)', 'ยืนยันอัตโนมัติ (>= 98%)'), count: verifiedCount, color: 'bg-emerald-500' },
+    { label: tx(lang, 'High Confidence Match (>= 90%)', 'ความมั่นใจสูง (>= 90%)'), count: highCount, color: 'bg-blue-500' },
+    { label: tx(lang, 'Review Threshold', 'รอคนตรวจสอบ'), count: categoryReviewCount, color: 'bg-amber-500' },
+    { label: tx(lang, 'No Match Found', 'ไม่พบรายชื่อที่ตรง'), count: noMatchCount, color: 'bg-rose-500' },
   ];
 
   return (
@@ -79,16 +82,20 @@ export const Analytics: React.FC<AnalyticsProps> = ({
         <div>
           <h2 className="text-base font-bold text-white flex items-center gap-2">
             <BarChart3 className="w-5 h-5 text-blue-400" />
-            OCR & Directory Matching Analytics
+            {tx(lang, 'OCR & Directory Matching Analytics', 'สถิติความแม่นยำ OCR และการจับคู่ผู้ขาย')}
           </h2>
           <p className="text-xs text-zinc-400">
-            Live metrics computed from SQLite jobs, OCR extraction confidence, Google Sheets supplier directory, and delivery audit logs
+            {tx(
+              lang,
+              'Live metrics computed from SQLite jobs, OCR extraction confidence, Google Sheets supplier directory, and delivery audit logs',
+              'ข้อมูลสถิติจากคิวงาน SQLite ความมั่นใจการอ่าน OCR ฐานข้อมูลผู้ขาย Google Sheets และบันทึกการส่งอีเมล'
+            )}
           </p>
         </div>
 
         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
           <ShieldCheck className="w-3.5 h-3.5" />
-          QTC Self-Company Filtered • Thai-First Matching
+          {tx(lang, 'QTC Self-Company Filtered • Thai-First Matching', 'กรองบริษัท QTC เองออก • จับคู่ชื่อไทยก่อน')}
         </span>
       </div>
 
@@ -96,51 +103,67 @@ export const Analytics: React.FC<AnalyticsProps> = ({
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 shadow-sm">
           <div className="flex items-center justify-between text-xs text-zinc-400">
-            <span>Avg Match / OCR Confidence</span>
+            <span>{tx(lang, 'Avg Match / OCR Confidence', 'คะแนนความมั่นใจเฉลี่ย')}</span>
             <CheckCircle2 className="w-4 h-4 text-emerald-400" />
           </div>
           <div className="mt-2 text-2xl font-bold text-white">{avgMatchScore.toFixed(1)}%</div>
           <p className="text-[11px] text-zinc-500 mt-1">
             {matchedJobsWithScore.length > 0
-              ? `Across ${matchedJobsWithScore.length} scored PO jobs`
-              : `DB baseline (${stats.avg_ocr_confidence.toFixed(1)}% avg OCR)`}
+              ? tx(
+                  lang,
+                  `Across ${matchedJobsWithScore.length} scored PO jobs`,
+                  `คำนวณจากใบ PO ที่ตรวจคะแนนแล้ว ${matchedJobsWithScore.length} รายการ`
+                )
+              : tx(
+                  lang,
+                  `DB baseline (${stats.avg_ocr_confidence.toFixed(1)}% avg OCR)`,
+                  `ค่าอ้างอิงเริ่มต้น (${stats.avg_ocr_confidence.toFixed(1)}% OCR เฉลี่ย)`
+                )}
           </p>
         </div>
 
         <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 shadow-sm">
           <div className="flex items-center justify-between text-xs text-zinc-400">
-            <span>Pipeline Success Rate</span>
+            <span>{tx(lang, 'Pipeline Success Rate', 'อัตราความสำเร็จการส่งงาน')}</span>
             <TrendingUp className="w-4 h-4 text-blue-400" />
           </div>
           <div className="mt-2 text-2xl font-bold text-blue-400">
             {stats.success_rate_percent.toFixed(1)}%
           </div>
           <p className="text-[11px] text-zinc-500 mt-1">
-            {stats.successfully_sent} delivered out of {stats.total_processed} terminal jobs
+            {tx(
+              lang,
+              `${stats.successfully_sent} delivered out of ${stats.total_processed} terminal jobs`,
+              `ส่งแล้ว ${stats.successfully_sent} จากทั้งหมด ${stats.total_processed} งานที่จบแล้ว`
+            )}
           </p>
         </div>
 
         <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 shadow-sm">
           <div className="flex items-center justify-between text-xs text-zinc-400">
-            <span>Thai vs English Primary</span>
+            <span>{tx(lang, 'Thai vs English Primary', 'เอกสารภาษาไทย vs อังกฤษ')}</span>
             <Languages className="w-4 h-4 text-indigo-400" />
           </div>
           <div className="mt-2 text-2xl font-bold text-indigo-400">
             {thaiDetectedCount} TH / {englishOnlyCount} EN
           </div>
           <p className="text-[11px] text-zinc-500 mt-1">
-            Thai supplier prioritized before English fallback
+            {tx(lang, 'Thai supplier prioritized before English fallback', 'ให้ความสำคัญชื่อผู้ขายภาษาไทยก่อนชื่ออังกฤษ')}
           </p>
         </div>
 
         <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 shadow-sm">
           <div className="flex items-center justify-between text-xs text-zinc-400">
-            <span>Synced Directory & Deliveries</span>
+            <span>{tx(lang, 'Synced Directory & Deliveries', 'ฐานข้อมูลผู้ขายและการส่ง')}</span>
             <Building2 className="w-4 h-4 text-amber-400" />
           </div>
           <div className="mt-2 text-2xl font-bold text-amber-400">{companies.length}</div>
           <p className="text-[11px] text-zinc-500 mt-1">
-            {activeSuppliersCount} active suppliers • {confirmedTxCount}/{transactions.length} tx sent
+            {tx(
+              lang,
+              `${activeSuppliersCount} active suppliers • ${confirmedTxCount}/${transactions.length} tx sent`,
+              `ผู้ขายที่ใช้งาน ${activeSuppliersCount} ราย • ส่งสำเร็จ ${confirmedTxCount}/${transactions.length} ครั้ง`
+            )}
           </p>
         </div>
       </div>
@@ -149,8 +172,12 @@ export const Analytics: React.FC<AnalyticsProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="p-5 rounded-xl bg-[#121215] border border-zinc-800 space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-white">Job Execution Status Breakdown</h3>
-            <span className="text-xs text-zinc-400 font-mono">{totalJobs} jobs recorded</span>
+            <h3 className="text-sm font-semibold text-white">
+              {tx(lang, 'Job Execution Status Breakdown', 'สัดส่วนสถานะงานทั้งหมด')}
+            </h3>
+            <span className="text-xs text-zinc-400 font-mono">
+              {totalJobs} {tx(lang, 'jobs recorded', 'งานทั้งหมด')}
+            </span>
           </div>
 
           <div className="space-y-3">
@@ -177,9 +204,11 @@ export const Analytics: React.FC<AnalyticsProps> = ({
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-white flex items-center gap-2">
               <MailCheck className="w-4 h-4 text-emerald-400" />
-              Directory Matching Tier Distribution
+              {tx(lang, 'Directory Matching Tier Distribution', 'ระดับความแม่นยำในการจับคู่ผู้ขาย')}
             </h3>
-            <span className="text-xs text-zinc-400 font-mono">{matchedJobsWithScore.length} evaluated</span>
+            <span className="text-xs text-zinc-400 font-mono">
+              {matchedJobsWithScore.length} {tx(lang, 'evaluated', 'รายการที่ประเมิน')}
+            </span>
           </div>
 
           <div className="space-y-3">
@@ -205,7 +234,11 @@ export const Analytics: React.FC<AnalyticsProps> = ({
             <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
               <span>
-                Google Sheets directory cache is currently empty. Sync from Company Directory or Overview so incoming POs can match suppliers automatically.
+                {tx(
+                  lang,
+                  'Google Sheets directory cache is currently empty. Sync from Company Directory or Overview so incoming POs can match suppliers automatically.',
+                  'ยังไม่มีรายชื่อผู้ขายในแคช กรุณากดซิงก์ข้อมูลจาก Google Sheet เพื่อให้ระบบจับคู่ผู้ขายอัตโนมัติได้'
+                )}
               </span>
             </div>
           )}

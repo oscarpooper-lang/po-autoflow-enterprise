@@ -27,6 +27,7 @@ import {
 import type { Job, OcrResultRecord, CompanyCacheEntry, PagePreviewResponse } from '../types';
 import { api } from '../services/tauri';
 import { StatusBadge } from './Overview';
+import { tr, tx, type UiLang } from '../i18n';
 
 interface OcrInspectorProps {
   selectedJobId?: string;
@@ -35,6 +36,7 @@ interface OcrInspectorProps {
   onSelectJob: (id: string) => void;
   onRefreshData?: () => void;
   onRetryJob?: (jobId: string) => Promise<void> | void;
+  lang?: UiLang;
 }
 
 interface ParsedCandidateJson {
@@ -128,6 +130,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   onSelectJob,
   onRefreshData,
   onRetryJob,
+  lang = 'en',
 }) => {
   const [manualJobId, setManualJobId] = useState<string>('');
   const [ocrRecords, setOcrRecords] = useState<OcrResultRecord[]>([]);
@@ -203,7 +206,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
           setPagePreview(resp);
         } else {
           setPagePreview(null);
-          setPreviewError(resp.message || 'Visual preview unavailable for this file.');
+          setPreviewError(resp.message || '__UNAVAILABLE__');
         }
       })
       .catch((err: unknown) => {
@@ -360,7 +363,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
       setTimeout(() => setAliasSavedSuccess(false), 3000);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      setAliasError(`Failed to save alias: ${msg}`);
+      setAliasError(tx(lang, `Failed to save alias: ${msg}`, `บันทึกชื่อเรียกสำรองไม่สำเร็จ: ${msg}`));
     }
   };
 
@@ -375,12 +378,19 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
       setCurrentPageIndex(0);
       setActionBanner({
         type: 'success',
-        message: 'Re-scanned PDFs and updated Thai-first supplier match.',
+        message: tx(
+          lang,
+          'Re-scanned PDFs and updated Thai-first supplier match.',
+          'สแกนไฟล์ PDF และอัปเดตผลจับคู่ผู้ขายใหม่แล้ว'
+        ),
       });
       onRefreshData?.();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      setActionBanner({ type: 'error', message: `Re-scan failed: ${msg}` });
+      setActionBanner({
+        type: 'error',
+        message: tx(lang, `Re-scan failed: ${msg}`, `สแกนซ้ำไม่สำเร็จ: ${msg}`),
+      });
     } finally {
       setIsRetrying(false);
     }
@@ -397,12 +407,19 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
       setCurrentPageIndex(0);
       setActionBanner({
         type: 'success',
-        message: 'Built-In Vision AI Deep Scan completed and updated supplier match.',
+        message: tx(
+          lang,
+          'Built-In Vision AI Deep Scan completed and updated supplier match.',
+          'สแกนด้วย Vision AI ในตัวเสร็จสิ้น และอัปเดตผลผู้ขายแล้ว'
+        ),
       });
       onRefreshData?.();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      setActionBanner({ type: 'error', message: `AI Deep Scan failed: ${msg}` });
+      setActionBanner({
+        type: 'error',
+        message: tx(lang, `AI Deep Scan failed: ${msg}`, `สแกนด้วย AI ไม่สำเร็จ: ${msg}`),
+      });
     } finally {
       setIsDeepScanning(false);
     }
@@ -423,14 +440,23 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
       );
       setActionBanner({
         type: 'success',
-        message: `Approved and delivered PO ${updated.po_number || currentJob.po_folder_name} to ${
-          updated.matched_email || approveEmail
-        }.`,
+        message: tx(
+          lang,
+          `Approved and delivered PO ${updated.po_number || currentJob.po_folder_name} to ${
+            updated.matched_email || approveEmail
+          }.`,
+          `อนุมัติและส่งใบสั่งซื้อ ${updated.po_number || currentJob.po_folder_name} ไปยัง ${
+            updated.matched_email || approveEmail
+          } สำเร็จ`
+        ),
       });
       onRefreshData?.();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setActionBanner({ type: 'error', message: `Delivery failed: ${msg}` });
+      setActionBanner({
+        type: 'error',
+        message: tx(lang, `Delivery failed: ${msg}`, `ส่งอีเมลไม่สำเร็จ: ${msg}`),
+      });
     } finally {
       setIsSendingApproval(false);
     }
@@ -486,19 +512,23 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
       <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 flex flex-wrap items-center justify-between gap-4">
         <div className="space-y-0.5">
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-semibold text-zinc-100">Document Viewer</h3>
+            <h3 className="text-sm font-semibold text-zinc-100">{tr(lang, 'tabInspectorTitle')}</h3>
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/10 text-emerald-300 border border-emerald-500/25">
               <ShieldCheck className="w-3 h-3" />
-              QTC Excluded • Thai First
+              {tx(lang, 'QTC Excluded • Thai First', 'กรอง QTC ออก • ชื่อไทยก่อน')}
             </span>
           </div>
           <p className="text-xs text-zinc-400">
-            Inspect attached PDFs, click detected boxes to fill fields, or open the file in Windows.
+            {tx(
+              lang,
+              'Inspect attached PDFs, click detected boxes to fill fields, or open the file in Windows.',
+              'ตรวจสอบไฟล์ PDF แนบ คลิกกรอบข้อความที่ตรวจพบเพื่อเติมฟอร์ม หรือเปิดดูใน Windows'
+            )}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <label className="text-xs text-zinc-400">PO Job:</label>
+          <label className="text-xs text-zinc-400">{tx(lang, 'PO Job:', 'งาน PO:')}</label>
           <select
             value={effectiveJobId}
             onChange={(e) => {
@@ -508,12 +538,12 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
             className="bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs rounded-lg px-3 py-1.5 font-medium max-w-xs"
           >
             {jobs.length === 0 ? (
-              <option value="">No jobs recorded yet</option>
+              <option value="">{tx(lang, 'No jobs recorded yet', 'ยังไม่มีรายการ PO')}</option>
             ) : (
               jobs.map((j) => (
                 <option key={j.id} value={j.id}>
                   [{j.status}] {j.po_number || j.po_folder_name} —{' '}
-                  {j.matched_company_name || j.detected_company_raw || 'Unmatched'}
+                  {j.matched_company_name || j.detected_company_raw || tx(lang, 'Unmatched', 'ยังไม่จับคู่')}
                 </option>
               ))
             )}
@@ -526,7 +556,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
               className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 text-xs font-medium flex items-center gap-1.5"
             >
               <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
-              <span>Open Folder</span>
+              <span>{tr(lang, 'openIncoming')}</span>
             </button>
           )}
         </div>
@@ -568,7 +598,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                   }`}
                 >
                   <Eye className="w-3.5 h-3.5" />
-                  <span>Page View</span>
+                  <span>{tx(lang, 'Page View', 'มุมมองภาพ')}</span>
                 </button>
                 <button
                   type="button"
@@ -578,7 +608,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                   }`}
                 >
                   <FileText className="w-3.5 h-3.5" />
-                  <span>Text</span>
+                  <span>{tx(lang, 'Text', 'ข้อความ')}</span>
                 </button>
                 <button
                   type="button"
@@ -588,7 +618,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                   }`}
                 >
                   <Layers className="w-3.5 h-3.5" />
-                  <span>Boxes ({boxes.length})</span>
+                  <span>{tx(lang, 'Boxes', 'กรอบข้อความ')} ({boxes.length})</span>
                 </button>
               </div>
 
@@ -602,7 +632,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                       : 'bg-zinc-900 text-zinc-400 border-zinc-800'
                   }`}
                 >
-                  Overlays {showBoundingBoxes ? 'ON' : 'OFF'}
+                  {tx(lang, `Overlays ${showBoundingBoxes ? 'ON' : 'OFF'}`, `กรอบคลิก ${showBoundingBoxes ? 'เปิด' : 'ปิด'}`)}
                 </button>
               )}
             </div>
@@ -613,7 +643,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                   type="button"
                   onClick={() => setZoomLevel((z) => Math.max(50, z - 20))}
                   className="p-1.5 hover:bg-zinc-800 text-zinc-300"
-                  title="Zoom out"
+                  title={tx(lang, 'Zoom out', 'ซูมออก')}
                 >
                   <ZoomOut className="w-3.5 h-3.5" />
                 </button>
@@ -622,7 +652,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                   type="button"
                   onClick={() => setZoomLevel((z) => Math.min(200, z + 20))}
                   className="p-1.5 hover:bg-zinc-800 text-zinc-300"
-                  title="Zoom in"
+                  title={tx(lang, 'Zoom in', 'ซูมเข้า')}
                 >
                   <ZoomIn className="w-3.5 h-3.5" />
                 </button>
@@ -630,7 +660,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                   type="button"
                   onClick={() => setZoomLevel(100)}
                   className="p-1.5 hover:bg-zinc-800 text-zinc-400 border-l border-zinc-800"
-                  title="Reset zoom"
+                  title={tx(lang, 'Reset zoom', 'ขนาดปกติ')}
                 >
                   <RotateCcw className="w-3 h-3" />
                 </button>
@@ -641,10 +671,10 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                   type="button"
                   onClick={() => handleOpenExternal(currentRecord.file_path)}
                   className="px-2.5 py-1 rounded-md bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 text-xs flex items-center gap-1"
-                  title="Open this PDF in your default Windows viewer"
+                  title={tx(lang, 'Open this PDF in your default Windows viewer', 'เปิดไฟล์ PDF นี้ด้วยโปรแกรมบน Windows')}
                 >
                   <ExternalLink className="w-3.5 h-3.5 text-blue-400" />
-                  <span>Open PDF</span>
+                  <span>{tr(lang, 'openPdf')}</span>
                 </button>
               )}
 
@@ -655,7 +685,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                 className="px-2.5 py-1 rounded-md bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 text-xs flex items-center gap-1 disabled:opacity-40"
               >
                 <Copy className="w-3.5 h-3.5" />
-                <span>{copiedText ? 'Copied' : 'Copy'}</span>
+                <span>{copiedText ? tx(lang, 'Copied', 'คัดลอกแล้ว') : tx(lang, 'Copy', 'คัดลอก')}</span>
               </button>
             </div>
           </div>
@@ -663,7 +693,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
           {/* Hovered Bounding Box Hint Bar */}
           {viewMode === 'visual' && hoveredBoxText && (
             <div className="px-4 py-1.5 bg-blue-950/80 border-b border-blue-500/30 text-xs text-blue-200 font-mono truncate shrink-0">
-              Click box to fill form: {hoveredBoxText}
+              {tx(lang, 'Click box to fill form:', 'คลิกกรอบนี้เพื่อกรอกลงฟอร์ม:')} {hoveredBoxText}
             </div>
           )}
 
@@ -673,7 +703,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
               <div className="h-full flex flex-col items-center justify-center text-center text-zinc-500 p-8 space-y-3">
                 <FileText className="w-10 h-10 text-zinc-700" />
                 <p className="text-sm font-medium text-zinc-300">
-                  No document pages stored for this PO yet
+                  {tx(lang, 'No document pages stored for this PO yet', 'ยังไม่มีข้อมูลหน้าเอกสารของใบ PO นี้')}
                 </p>
                 {currentJob && onRetryJob && (
                   <button
@@ -683,7 +713,11 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                     className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center gap-1.5"
                   >
                     <RotateCw className={`w-3.5 h-3.5 ${isRetrying ? 'animate-spin' : ''}`} />
-                    <span>{isRetrying ? 'Scanning PO...' : 'Scan Documents Now'}</span>
+                    <span>
+                      {isRetrying
+                        ? tx(lang, 'Scanning PO...', 'กำลังสแกน PO...')
+                        : tx(lang, 'Scan Documents Now', 'สแกนเอกสารทันที')}
+                    </span>
                   </button>
                 )}
               </div>
@@ -691,7 +725,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
               isLoadingPreview ? (
                 <div className="h-full flex flex-col items-center justify-center text-zinc-400 space-y-2">
                   <Loader2 className="w-7 h-7 animate-spin text-blue-400" />
-                  <span className="text-xs">Rendering page preview...</span>
+                  <span className="text-xs">{tx(lang, 'Rendering page preview...', 'กำลังโหลดภาพหน้าเอกสาร...')}</span>
                 </div>
               ) : pagePreview?.data_url ? (
                 <div
@@ -736,7 +770,9 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                 <div className="p-6 rounded-xl bg-[#121215] border border-zinc-800 text-center space-y-3 max-w-md mx-auto my-8">
                   <AlertTriangle className="w-8 h-8 text-amber-400 mx-auto" />
                   <p className="text-xs text-zinc-300 font-medium">
-                    {previewError || 'Could not render live page preview.'}
+                    {previewError === '__UNAVAILABLE__'
+                      ? tx(lang, 'Visual preview unavailable for this file.', 'ไม่สามารถแสดงภาพตัวอย่างของไฟล์นี้ได้')
+                      : previewError || tx(lang, 'Could not render live page preview.', 'ไม่สามารถแสดงภาพตัวอย่างของหน้านี้ได้')}
                   </p>
                   <div className="flex justify-center gap-2">
                     <button
@@ -744,14 +780,14 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                       onClick={() => setViewMode('text')}
                       className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium"
                     >
-                      View Extracted Text
+                      {tx(lang, 'View Extracted Text', 'ดูข้อความที่อ่านได้')}
                     </button>
                     <button
                       type="button"
                       onClick={() => handleOpenExternal(currentRecord.file_path)}
                       className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium"
                     >
-                      Open PDF Externally
+                      {tx(lang, 'Open PDF Externally', 'เปิด PDF ภายนอก')}
                     </button>
                   </div>
                 </div>
@@ -761,7 +797,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                 style={{ fontSize: `${Math.round((13 * zoomLevel) / 100)}px` }}
                 className="font-mono leading-relaxed text-zinc-200 whitespace-pre-wrap select-text bg-[#121215] p-4 rounded-lg border border-zinc-800"
               >
-                {currentRecord.raw_text || '(No text layer extracted from this page)'}
+                {currentRecord.raw_text || tx(lang, '(No text layer extracted from this page)', '(ไม่พบข้อความที่อ่านได้จากหน้านี้)')}
               </pre>
             ) : (
               <div className="rounded-lg border border-zinc-800 overflow-hidden bg-[#121215]">
@@ -769,17 +805,17 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                   <thead className="bg-zinc-900 text-zinc-400 border-b border-zinc-800">
                     <tr>
                       <th className="py-2 px-3">#</th>
-                      <th className="py-2 px-3">Detected Text</th>
-                      <th className="py-2 px-3">Type</th>
-                      <th className="py-2 px-3">Confidence</th>
-                      <th className="py-2 px-3">Coordinates</th>
+                      <th className="py-2 px-3">{tx(lang, 'Detected Text', 'ข้อความที่ตรวจพบ')}</th>
+                      <th className="py-2 px-3">{tx(lang, 'Type', 'ประเภท')}</th>
+                      <th className="py-2 px-3">{tx(lang, 'Confidence', 'ความมั่นใจ')}</th>
+                      <th className="py-2 px-3">{tx(lang, 'Coordinates', 'พิกัด')}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-800/70">
                     {boxes.length === 0 ? (
                       <tr>
                         <td colSpan={5} className="py-8 text-center text-zinc-500">
-                          No bounding boxes stored for this page.
+                          {tx(lang, 'No bounding boxes stored for this page.', 'ไม่มีข้อมูลตำแหน่งกรอบข้อความในหน้านี้')}
                         </td>
                       </tr>
                     ) : (
@@ -788,7 +824,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                           key={idx}
                           onClick={() => handleBoxClick(b.text)}
                           className="hover:bg-zinc-800/50 cursor-pointer"
-                          title="Click row to copy into form"
+                          title={tx(lang, 'Click row to copy into form', 'คลิกแถวเพื่อเติมลงฟอร์ม')}
                         >
                           <td className="py-2 px-3 font-mono text-zinc-500">{idx + 1}</td>
                           <td className="py-2 px-3 text-zinc-200 font-medium">{b.text || '—'}</td>
@@ -821,11 +857,11 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 disabled:opacity-40"
             >
               <ChevronLeft className="w-3.5 h-3.5" />
-              <span>Previous Page</span>
+              <span>{tx(lang, 'Previous Page', 'หน้าก่อนหน้า')}</span>
             </button>
 
             <span className="font-mono text-zinc-300">
-              Page {ocrRecords.length === 0 ? 0 : currentPageIndex + 1} of {ocrRecords.length}
+              {tx(lang, 'Page', 'หน้า')} {ocrRecords.length === 0 ? 0 : currentPageIndex + 1} {tx(lang, 'of', 'จาก')} {ocrRecords.length}
             </span>
 
             <button
@@ -834,7 +870,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
               onClick={() => setCurrentPageIndex((i) => i + 1)}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 disabled:opacity-40"
             >
-              <span>Next Page</span>
+              <span>{tx(lang, 'Next Page', 'หน้าถัดไป')}</span>
               <ChevronRight className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -864,7 +900,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <span className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                Matched Supplier Summary
+                {tx(lang, 'Matched Supplier Summary', 'สรุปผลการอ่านและจับคู่ผู้ขาย')}
               </span>
               <div className="flex items-center gap-1.5 flex-wrap">
                 {currentRecord && (
@@ -880,19 +916,19 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                         ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
                         : 'bg-zinc-800 text-zinc-300 border-zinc-700'
                     }`}
-                    title={`Raw engine key: ${currentRecord.engine}`}
+                    title={`Engine: ${currentRecord.engine}`}
                   >
                     {[
                       currentRecord.engine.includes('openthaigpt')
-                        ? 'Scanned: OpenThai 2.0'
+                        ? tx(lang, 'Scanned: OpenThai 2.0', 'สแกน: OpenThai 2.0')
                         : currentRecord.engine.includes('paddleocr')
-                        ? 'Scanned: PaddleOCR'
+                        ? tx(lang, 'Scanned: PaddleOCR', 'สแกน: PaddleOCR')
                         : currentRecord.engine.includes('tesseract')
-                        ? 'Scanned: Tesseract 5'
+                        ? tx(lang, 'Scanned: Tesseract 5', 'สแกน: Tesseract 5')
                         : currentRecord.engine.includes('winrt')
-                        ? 'Scanned: Windows OCR'
+                        ? tx(lang, 'Scanned: Windows OCR', 'สแกน: Windows OCR')
                         : currentRecord.engine === 'native_pdf'
-                        ? 'Built-in PDF Reader'
+                        ? tx(lang, 'Built-in PDF Reader', 'ตัวอ่าน PDF ในตัว')
                         : currentRecord.engine,
                       currentRecord.engine.includes('vision_ai') ? '+ Vision AI' : '',
                     ]
@@ -901,7 +937,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                     ({currentRecord.confidence.toFixed(0)}%)
                   </span>
                 )}
-                {currentJob && <StatusBadge status={currentJob.status} />}
+                {currentJob && <StatusBadge status={currentJob.status} lang={lang} />}
               </div>
             </div>
 
@@ -918,10 +954,10 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                 className="p-2.5 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-left hover:bg-emerald-500/10 disabled:opacity-60"
               >
                 <span className="text-[10px] font-semibold uppercase text-emerald-400 flex items-center gap-1">
-                  <Languages className="w-3 h-3" /> Thai Name (Priority 1)
+                  <Languages className="w-3 h-3" /> {tx(lang, 'Thai Name (Priority 1)', 'ชื่อไทย (ลำดับ 1)')}
                 </span>
                 <div className="mt-1 font-medium text-zinc-100 truncate">
-                  {aggregatedEntities.primaryTh || 'None on document'}
+                  {aggregatedEntities.primaryTh || tx(lang, 'None on document', 'ไม่พบในเอกสาร')}
                 </div>
               </button>
 
@@ -937,10 +973,10 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                 className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 text-left hover:bg-zinc-800/80 disabled:opacity-60"
               >
                 <span className="text-[10px] font-semibold uppercase text-zinc-400 flex items-center gap-1">
-                  <Building2 className="w-3 h-3" /> English Fallback (2)
+                  <Building2 className="w-3 h-3" /> {tx(lang, 'English Fallback (2)', 'ชื่ออังกฤษ (ลำดับ 2)')}
                 </span>
                 <div className="mt-1 font-medium text-zinc-200 truncate">
-                  {aggregatedEntities.primaryEn || 'None on document'}
+                  {aggregatedEntities.primaryEn || tx(lang, 'None on document', 'ไม่พบในเอกสาร')}
                 </div>
               </button>
             </div>
@@ -972,13 +1008,15 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
 
             <div className="p-3 rounded-lg bg-zinc-950 border border-zinc-800 space-y-1.5 text-xs">
               <div className="flex justify-between gap-2">
-                <span className="text-zinc-500">Matched Sheet Supplier:</span>
+                <span className="text-zinc-500">
+                  {tx(lang, 'Matched Sheet Supplier:', 'ผู้ขายที่ตรงใน Google Sheet:')}
+                </span>
                 <span className="text-emerald-400 font-medium truncate">
-                  {currentJob?.matched_company_name || 'Not matched'}
+                  {currentJob?.matched_company_name || tx(lang, 'Not matched', 'ยังไม่ตรงกับรายชื่อ')}
                 </span>
               </div>
               <div className="flex justify-between gap-2">
-                <span className="text-zinc-500">Match Score:</span>
+                <span className="text-zinc-500">{tx(lang, 'Match Score:', 'คะแนนความแม่นยำ:')}</span>
                 <span className="text-zinc-200 font-mono">
                   {typeof currentJob?.match_confidence === 'number'
                     ? `${currentJob.match_confidence.toFixed(1)}%`
@@ -1007,7 +1045,9 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                     className="w-full py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-100 border border-zinc-700 font-medium text-xs flex items-center justify-center gap-1.5"
                   >
                     <RotateCw className={`w-3.5 h-3.5 ${isRetrying ? 'animate-spin' : ''}`} />
-                    <span>{isRetrying ? 'Re-Scanning...' : 'Re-Scan PO'}</span>
+                    <span>
+                      {isRetrying ? tx(lang, 'Re-Scanning...', 'กำลังสแกนใหม่...') : tr(lang, 'rescan')}
+                    </span>
                   </button>
                 )}
                 <button
@@ -1015,10 +1055,12 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                   onClick={handleDeepScanCurrentJob}
                   disabled={isDeepScanning || isRetrying}
                   className="w-full py-2 rounded-lg bg-purple-600/20 hover:bg-purple-600/30 disabled:opacity-50 text-purple-200 border border-purple-500/40 font-medium text-xs flex items-center justify-center gap-1.5"
-                  title="Force-run Built-In Vision AI on this PO now"
+                  title={tx(lang, 'Force-run Built-In Vision AI on this PO now', 'บังคับใช้ Vision AI ช่วยอ่านเอกสาร PO ใบนี้')}
                 >
                   <Sparkles className={`w-3.5 h-3.5 ${isDeepScanning ? 'animate-pulse' : ''}`} />
-                  <span>{isDeepScanning ? 'AI Scanning...' : 'AI Deep Scan'}</span>
+                  <span>
+                    {isDeepScanning ? tx(lang, 'AI Scanning...', 'AI กำลังอ่าน...') : tr(lang, 'deepScanAi')}
+                  </span>
                 </button>
               </div>
             )}
@@ -1033,15 +1075,21 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
                   <Send className="w-4 h-4 text-emerald-400" />
-                  Approve &amp; Send Email
+                  {tr(lang, 'approveAndSend')}
                 </span>
-                <span className="text-[11px] text-emerald-400">Previewable PDFs</span>
+                <span className="text-[11px] text-emerald-400">
+                  {tx(lang, 'Previewable PDFs', 'ไฟล์ PDF พร้อมพรีวิว')}
+                </span>
               </div>
 
               {uniqueFiles.length > 0 && (
                 <div className="p-2.5 rounded-lg bg-zinc-950 border border-zinc-800 space-y-1.5">
                   <div className="text-[11px] font-medium text-zinc-400">
-                    Attachments to send ({uniqueFiles.length} file(s) — click Preview):
+                    {tx(
+                      lang,
+                      `Attachments to send (${uniqueFiles.length} file(s) — click Preview):`,
+                      `ไฟล์ที่จะส่ง (${uniqueFiles.length} ไฟล์ — กดเพื่อดูตัวอย่าง):`
+                    )}
                   </div>
                   <div className="space-y-1 max-h-28 overflow-y-auto">
                     {uniqueFiles.map(([filePath, firstIdx]) => (
@@ -1058,7 +1106,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                           }}
                           className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-blue-300 text-[10px] font-medium shrink-0"
                         >
-                          Preview
+                          {tx(lang, 'Preview', 'ดูตัวอย่าง')}
                         </button>
                       </div>
                     ))}
@@ -1069,7 +1117,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
               {companies.length > 0 && (
                 <div className="text-xs">
                   <label className="text-zinc-400 text-[11px] block mb-1">
-                    Pick Supplier from Google Sheet:
+                    {tx(lang, 'Pick Supplier from Google Sheet:', 'เลือกผู้ขายจาก Google Sheet:')}
                   </label>
                   <select
                     value=""
@@ -1078,7 +1126,9 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                     }}
                     className="w-full bg-zinc-900 border border-zinc-800 text-zinc-200 rounded-lg px-2.5 py-2 font-medium"
                   >
-                    <option value="">-- Choose Google Sheet Supplier --</option>
+                    <option value="">
+                      {tx(lang, '-- Choose Google Sheet Supplier --', '-- เลือกผู้ขายจาก Google Sheet --')}
+                    </option>
                     {companies.map((c) => (
                       <option key={c.id} value={c.company_name}>
                         {c.company_name} ({c.email})
@@ -1090,20 +1140,24 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
 
               <div className="grid grid-cols-1 gap-2.5 text-xs">
                 <div>
-                  <label className="text-zinc-400 text-[11px] block mb-1">Supplier Name:</label>
+                  <label className="text-zinc-400 text-[11px] block mb-1">
+                    {tx(lang, 'Supplier Name:', 'ชื่อบริษัทผู้ขาย:')}
+                  </label>
                   <input
                     type="text"
                     required
                     value={approveCompany}
                     onChange={(e) => setApproveCompany(e.target.value)}
-                    placeholder="Supplier company name"
+                    placeholder={tx(lang, 'Supplier company name', 'ชื่อบริษัทผู้ขาย')}
                     className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-2.5 py-2"
                   />
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="text-zinc-400 text-[11px] block mb-1">Send To Email:</label>
+                    <label className="text-zinc-400 text-[11px] block mb-1">
+                      {tx(lang, 'Send To Email:', 'ส่งไปยังอีเมล:')}
+                    </label>
                     <input
                       type="email"
                       required
@@ -1114,7 +1168,9 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                     />
                   </div>
                   <div>
-                    <label className="text-zinc-400 text-[11px] block mb-1">PO Number:</label>
+                    <label className="text-zinc-400 text-[11px] block mb-1">
+                      {tx(lang, 'PO Number:', 'เลขที่ใบสั่งซื้อ:')}
+                    </label>
                     <input
                       type="text"
                       value={approvePo}
@@ -1132,7 +1188,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                     onChange={(e) => setSaveAliasOnApprove(e.target.checked)}
                     className="rounded border-zinc-700 bg-zinc-900 text-blue-600"
                   />
-                  <span>Remember supplier name mapping for future POs</span>
+                  <span>{tx(lang, 'Remember supplier name mapping for future POs', 'จำการจับคู่ชื่อผู้ขายนี้ไว้ใช้ครั้งถัดไป')}</span>
                 </label>
 
                 <button
@@ -1143,10 +1199,10 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                   <Send className="w-3.5 h-3.5" />
                   <span>
                     {currentJob.status === 'completed'
-                      ? 'Already Sent'
+                      ? tx(lang, 'Already Sent', 'ส่งแล้ว')
                       : isSendingApproval
-                      ? 'Sending Email...'
-                      : 'Approve & Send Email'}
+                      ? tx(lang, 'Sending Email...', 'กำลังส่งอีเมล...')
+                      : tr(lang, 'approveAndSend')}
                   </span>
                 </button>
               </div>
@@ -1157,30 +1213,34 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
           <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 space-y-3">
             <span className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
               <BookmarkPlus className="w-4 h-4 text-blue-400" />
-              Save Alternate Supplier Name
+              {tx(lang, 'Save Alternate Supplier Name', 'บันทึกชื่อเรียกสำรองของบริษัทผู้ขาย')}
             </span>
 
             <div className="space-y-2.5 text-xs">
               <div>
-                <label className="text-zinc-400 text-[11px] block mb-1">Name Found in PDF:</label>
+                <label className="text-zinc-400 text-[11px] block mb-1">
+                  {tx(lang, 'Name Found in PDF:', 'ชื่อที่ปรากฏในเอกสาร PDF:')}
+                </label>
                 <input
                   type="text"
                   value={aliasInput}
                   onChange={(e) => setAliasInput(e.target.value)}
-                  placeholder="e.g. ห้างหุ้นส่วนจำกัด พศินสุข"
+                  placeholder={tx(lang, 'e.g. ห้างหุ้นส่วนจำกัด พศินสุข', 'เช่น ห้างหุ้นส่วนจำกัด พศินสุข')}
                   className="w-full bg-zinc-900 border border-zinc-800 text-zinc-200 rounded-lg px-2.5 py-2"
                 />
               </div>
 
               <div>
-                <label className="text-zinc-400 text-[11px] block mb-1">Matches Google Sheet Supplier:</label>
+                <label className="text-zinc-400 text-[11px] block mb-1">
+                  {tx(lang, 'Matches Google Sheet Supplier:', 'ตรงกับชื่อผู้ขายใน Google Sheet:')}
+                </label>
                 <select
                   value={effectiveCanonical}
                   onChange={(e) => setSelectedCanonical(e.target.value)}
                   className="w-full bg-zinc-900 border border-zinc-800 text-zinc-200 rounded-lg px-2.5 py-2"
                 >
                   {companies.length === 0 ? (
-                    <option value="">Sync Google Sheets directory first</option>
+                    <option value="">{tx(lang, 'Sync Google Sheets directory first', 'กรุณาซิงก์รายชื่อ Google Sheet ก่อน')}</option>
                   ) : (
                     companies.map((c) => (
                       <option key={c.id} value={c.company_name}>
@@ -1197,12 +1257,12 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                 disabled={!aliasInput.trim() || !effectiveCanonical}
                 className="w-full py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-100 border border-zinc-700 font-medium text-xs"
               >
-                Save Supplier Mapping
+                {tx(lang, 'Save Supplier Mapping', 'บันทึกการจับคู่ชื่อผู้ขาย')}
               </button>
 
               {aliasSavedSuccess && (
                 <div className="p-2 rounded bg-emerald-500/15 text-emerald-300 text-center text-xs border border-emerald-500/30">
-                  Saved! Next PO with this name will match automatically.
+                  {tx(lang, 'Saved! Next PO with this name will match automatically.', 'บันทึกแล้ว! ใบ PO ถัดไปที่ใช้ชื่อนี้จะจับคู่อัตโนมัติทันที')}
                 </div>
               )}
               {aliasError && (

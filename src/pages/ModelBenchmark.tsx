@@ -17,13 +17,15 @@ import {
 } from 'lucide-react';
 import type { AppSettings, Job } from '../types';
 import { api, type BenchmarkReport, type BenchmarkLayerResult } from '../services/tauri';
+import { tx, type UiLang } from '../i18n';
 
 interface ModelBenchmarkProps {
   settings: AppSettings;
   jobs: Job[];
+  lang?: UiLang;
 }
 
-export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }) => {
+export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs, lang = 'en' }) => {
   const [filePath, setFilePath] = useState(() => {
     const firstJobPath = jobs.find((j) => j.source_path)?.source_path;
     if (firstJobPath) return firstJobPath;
@@ -54,7 +56,7 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }
 
   const handleRunBenchmark = async () => {
     if (!filePath.trim()) {
-      setErrorMsg('Please choose or enter a PDF/image file path first.');
+      setErrorMsg(tx(lang, 'Please choose or enter a PDF/image file path first.', 'กรุณาเลือกหรือระบุที่อยู่ไฟล์ PDF / รูปภาพก่อน'));
       return;
     }
     setRunning(true);
@@ -78,20 +80,20 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }
     if (layer.status === 'ok') {
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-semibold">
-          <CheckCircle2 className="w-3 h-3" /> Completed
+          <CheckCircle2 className="w-3 h-3" /> {tx(lang, 'Completed', 'สำเร็จ')}
         </span>
       );
     }
     if (layer.status === 'skipped') {
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700 text-[10px] font-semibold">
-          <SkipForward className="w-3 h-3" /> Skipped
+          <SkipForward className="w-3 h-3" /> {tx(lang, 'Skipped', 'ข้าม')}
         </span>
       );
     }
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30 text-[10px] font-semibold">
-        <AlertTriangle className="w-3 h-3" /> Error
+        <AlertTriangle className="w-3 h-3" /> {tx(lang, 'Error', 'ผิดพลาด')}
       </span>
     );
   };
@@ -103,29 +105,53 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-sm font-bold text-emerald-200 flex items-center gap-2">
             <Trophy className="w-4 h-4 text-emerald-400" />
-            <span>Official OCR Verdict: Best Single Pipeline for PO AutoFlow</span>
+            <span>
+              {tx(
+                lang,
+                'Official OCR Verdict: Best Single Pipeline for PO AutoFlow',
+                'ข้อสรุปผลการทดสอบ: ชุดตัวอ่านเอกสารที่ดีที่สุดสำหรับ PO AutoFlow'
+              )}
+            </span>
           </h3>
           <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold text-[11px]">
-            1 Recommended Stack • Zero Clutter
+            {tx(lang, '1 Recommended Stack • Zero Clutter', 'ชุดแนะนำเดียวจบ • ไม่สับสน')}
           </span>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px]">
           <div className="p-3 rounded-lg bg-zinc-950/70 border border-emerald-500/25 space-y-1">
-            <div className="font-bold text-emerald-300">1. Winner (Scans): OpenThai 2.0 OCR-Text</div>
+            <div className="font-bold text-emerald-300">
+              {tx(lang, '1. Winner (Scans): OpenThai 2.0 OCR-Text', '1. ชนะเลิศ (เอกสารสแกน): OpenThai 2.0 OCR-Text')}
+            </div>
             <p className="text-zinc-300 leading-relaxed">
-              <strong>0.26s–1.17s/page • 93%–98% Thai+EN.</strong> Cleanly reads Thai diacritics and mixed English headers at 4.2 MB, 5–10x faster and cleaner than Tesseract 5.
+              {tx(
+                lang,
+                '0.26s–1.17s/page • 93%–98% Thai+EN. Cleanly reads Thai diacritics and mixed English headers at 4.2 MB, 5–10x faster and cleaner than Tesseract 5.',
+                '0.26–1.17 วินาที/หน้า • แม่นยำไทย+อังกฤษ 93%–98% อ่านสระวรรณยุกต์ไทยและหัวตารางอังกฤษได้คมชัด ขนาดเพียง 4.2 MB เร็วกว่า Tesseract 5 ถึง 5–10 เท่า'
+              )}
             </p>
           </div>
           <div className="p-3 rounded-lg bg-zinc-950/70 border border-cyan-500/25 space-y-1">
-            <div className="font-bold text-cyan-300">2. Digital PDFs: Built-in Digital PDF Reader</div>
+            <div className="font-bold text-cyan-300">
+              {tx(lang, '2. Digital PDFs: Built-in Digital PDF Reader', '2. PDF ดิจิทัล: ตัวอ่าน PDF ดิจิทัลในตัว')}
+            </div>
             <p className="text-zinc-300 leading-relaxed">
-              <strong>~0.01s/page • Exact text.</strong> Extracts embedded PDF text instantly and hands image-only or garbled-font pages directly to OpenThai 2.0.
+              {tx(
+                lang,
+                '~0.01s/page • Exact text. Extracts embedded PDF text instantly and hands image-only or garbled-font pages directly to OpenThai 2.0.',
+                '~0.01 วินาที/หน้า • ข้อความตรง 100% ดึงข้อความจาก PDF ทันที และส่งต่อหน้าสแกนหรือหน้าที่ฟอนต์เพี้ยนให้ OpenThai 2.0'
+              )}
             </p>
           </div>
           <div className="p-3 rounded-lg bg-zinc-950/70 border border-purple-500/25 space-y-1">
-            <div className="font-bold text-purple-300">3. AI Helper: Qwen2.5-VL-3B (Vulkan GPU)</div>
+            <div className="font-bold text-purple-300">
+              {tx(lang, '3. AI Helper: Qwen2.5-VL-3B (Vulkan GPU)', '3. AI ผู้ช่วยเสริม: Qwen2.5-VL-3B (Vulkan GPU)')}
+            </div>
             <p className="text-zinc-300 leading-relaxed">
-              <strong>~8–12s with GPU acceleration.</strong> Great as a fallback second opinion when OCR confidence &lt; 85%, never as standalone text reader.
+              {tx(
+                lang,
+                '~8–12s with GPU acceleration. Great as a fallback second opinion when OCR confidence < 85%, never as standalone text reader.',
+                '~8–12 วินาทีเมื่อใช้ GPU เหมาะเป็นตัวช่วยตรวจสอบสำรองเมื่อความมั่นใจ OCR ต่ำกว่า 85%'
+              )}
             </p>
           </div>
         </div>
@@ -137,10 +163,20 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }
           <div>
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Gauge className="w-4 h-4 text-blue-400" />
-              <span>Multi-Layer OCR &amp; Vision AI Benchmark Suite (Dev Only)</span>
+              <span>
+                {tx(
+                  lang,
+                  'Multi-Layer OCR & Vision AI Benchmark Suite (Dev Only)',
+                  'ชุดทดสอบเปรียบเทียบ OCR และ Vision AI ทุกชั้น (สำหรับนักพัฒนา)'
+                )}
+              </span>
             </h3>
             <p className="text-zinc-400 text-xs mt-1">
-              Runs every extraction engine independently on a single real PO document so you can compare exact speed (ms), extracted Thai/English company accuracy, PO number, Tax ID, and raw text side by side.
+              {tx(
+                lang,
+                'Runs every extraction engine independently on a single real PO document so you can compare exact speed (ms), extracted Thai/English company accuracy, PO number, Tax ID, and raw text side by side.',
+                'รันตัวอ่านทุกตัวแยกกันบนเอกสาร PO จริง เพื่อเทียบความเร็ว (ms) ความถูกต้องของชื่อผู้ขายไทย/อังกฤษ เลขที่ PO, Tax ID และข้อความดิบแบบตัวต่อตัว'
+              )}
             </p>
           </div>
           <button
@@ -149,7 +185,7 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }
             className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700 flex items-center gap-1.5 text-[11px]"
           >
             <RefreshCw className="w-3 h-3" />
-            <span>Refresh Files</span>
+            <span>{tx(lang, 'Refresh Files', 'รีเฟรชรายการไฟล์')}</span>
           </button>
         </div>
 
@@ -171,14 +207,22 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }
             className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold flex items-center gap-2"
           >
             {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-            <span>{running ? 'Benchmarking All Layers...' : 'Run Full Benchmark'}</span>
+            <span>
+              {running
+                ? tx(lang, 'Benchmarking All Layers...', 'กำลังทดสอบทุกเครื่องมือ...')
+                : tx(lang, 'Run Full Benchmark', 'เริ่มทดสอบเปรียบเทียบทั้งหมด')}
+            </span>
           </button>
         </div>
 
         {candidates.length > 0 && (
           <div className="space-y-1.5">
             <span className="text-[11px] text-zinc-400 block">
-              Quick-Pick Document from Workspace ({candidates.length} found):
+              {tx(
+                lang,
+                `Quick-Pick Document from Workspace (${candidates.length} found):`,
+                `เลือกไฟล์ทดสอบจากในเครื่องด่วน (พบ ${candidates.length} ไฟล์):`
+              )}
             </span>
             <div className="flex flex-wrap gap-1.5">
               {candidates.slice(0, 10).map((cand) => {
@@ -217,33 +261,33 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 space-y-1">
               <span className="text-[11px] text-zinc-400 flex items-center gap-1.5">
-                <Trophy className="w-3.5 h-3.5 text-emerald-400" /> Best Accuracy Score
+                <Trophy className="w-3.5 h-3.5 text-emerald-400" /> {tx(lang, 'Best Accuracy Score', 'แม่นยำสูงสุด')}
               </span>
               <p className="text-sm font-bold text-emerald-300 truncate">
-                {report.best_accuracy_layer || 'None matched fields'}
+                {report.best_accuracy_layer || tx(lang, 'None matched fields', 'ไม่มีเครื่องมือที่อ่านฟิลด์ครบ')}
               </p>
             </div>
             <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 space-y-1">
               <span className="text-[11px] text-zinc-400 flex items-center gap-1.5">
-                <Zap className="w-3.5 h-3.5 text-blue-400" /> Fastest Working Engine
+                <Zap className="w-3.5 h-3.5 text-blue-400" /> {tx(lang, 'Fastest Working Engine', 'ตัวที่เร็วที่สุด')}
               </span>
               <p className="text-sm font-bold text-blue-300 truncate">
-                {report.fastest_layer || 'None completed'}
+                {report.fastest_layer || tx(lang, 'None completed', 'ไม่มีตัวที่สำเร็จ')}
               </p>
             </div>
             <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 space-y-1">
               <span className="text-[11px] text-zinc-400 flex items-center gap-1.5">
-                <Clock className="w-3.5 h-3.5 text-zinc-400" /> Total Suite Runtime
+                <Clock className="w-3.5 h-3.5 text-zinc-400" /> {tx(lang, 'Total Suite Runtime', 'เวลารวมทั้งหมด')}
               </span>
               <p className="text-sm font-bold font-mono text-zinc-100">
-                {(report.total_duration_ms / 1000).toFixed(2)}s ({report.layers.length} layers tested)
+                {(report.total_duration_ms / 1000).toFixed(2)}s ({report.layers.length} {tx(lang, 'layers tested', 'ชั้นที่ทดสอบ')})
               </p>
             </div>
           </div>
 
           <div className="bg-[#121215] border border-zinc-800 rounded-xl overflow-hidden">
             <div className="px-4 py-3 border-b border-zinc-800 font-semibold text-zinc-200 flex items-center justify-between">
-              <span>Engine-by-Engine Comparison</span>
+              <span>{tx(lang, 'Engine-by-Engine Comparison', 'ตารางเปรียบเทียบรายเครื่องมือ')}</span>
               <span className="text-[11px] font-mono text-zinc-500 truncate max-w-md">{report.file_path}</span>
             </div>
 
@@ -266,12 +310,12 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }
                         {renderStatusBadge(layer)}
                         {isBest && (
                           <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-semibold">
-                            Best Accuracy
+                            {tx(lang, 'Best Accuracy', 'แม่นยำสูงสุด')}
                           </span>
                         )}
                         {isFastest && (
                           <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/40 text-[10px] font-semibold">
-                            Fastest
+                            {tx(lang, 'Fastest', 'เร็วที่สุด')}
                           </span>
                         )}
                       </div>
@@ -284,15 +328,15 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }
                               : `${layer.duration_ms.toFixed(0)}ms`
                             : '—'}
                         </span>
-                        <span className="text-zinc-400">Score: {layer.field_score}/10</span>
-                        <span className="text-zinc-400">Conf: {layer.confidence.toFixed(0)}%</span>
+                        <span className="text-zinc-400">{tx(lang, 'Score:', 'คะแนน:')} {layer.field_score}/10</span>
+                        <span className="text-zinc-400">{tx(lang, 'Conf:', 'มั่นใจ:')} {layer.confidence.toFixed(0)}%</span>
                         {layer.raw_preview && (
                           <button
                             type="button"
                             onClick={() => setExpandedId(expanded ? null : layer.id)}
                             className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 flex items-center gap-1"
                           >
-                            <span>Raw</span>
+                            <span>{tx(lang, 'Raw', 'ข้อความดิบ')}</span>
                             {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                           </button>
                         )}
@@ -310,11 +354,11 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }
 
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-[11px]">
                       <div className="p-2 rounded bg-zinc-950/70 border border-zinc-800/80 truncate">
-                        <span className="text-zinc-500">Thai Name: </span>
+                        <span className="text-zinc-500">{tx(lang, 'Thai Name: ', 'ชื่อไทย: ')}</span>
                         <span className="text-zinc-200 font-medium">{layer.supplier_th || '—'}</span>
                       </div>
                       <div className="p-2 rounded bg-zinc-950/70 border border-zinc-800/80 truncate">
-                        <span className="text-zinc-500">English Name: </span>
+                        <span className="text-zinc-500">{tx(lang, 'English Name: ', 'ชื่ออังกฤษ: ')}</span>
                         <span className="text-zinc-200 font-medium">{layer.supplier_en || '—'}</span>
                       </div>
                       <div className="p-2 rounded bg-zinc-950/70 border border-zinc-800/80 truncate font-mono">
@@ -324,7 +368,7 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }
                         </span>
                       </div>
                       <div className="p-2 rounded bg-zinc-950/70 border border-zinc-800/80 md:col-span-4">
-                        <span className="text-zinc-500">Feedback / Note: </span>
+                        <span className="text-zinc-500">{tx(lang, 'Feedback / Note: ', 'หมายเหตุ: ')}</span>
                         <span className={layer.status === 'error' ? 'text-rose-300' : 'text-zinc-300'}>
                           {layer.note || '—'}
                         </span>
@@ -348,31 +392,61 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }
       <div className="bg-[#121215] border border-zinc-800 rounded-xl p-5 space-y-3">
         <h4 className="font-semibold text-white flex items-center gap-2">
           <Cpu className="w-4 h-4 text-purple-400" />
-          <span>Benchmark Notes &amp; Hardware Verdict (GTX 1650 + i5 Laptop)</span>
+          <span>
+            {tx(
+              lang,
+              'Benchmark Notes & Hardware Verdict (GTX 1650 + i5 Laptop)',
+              'บันทึกผลการทดสอบจริงและคำแนะนำตามสเปกเครื่อง'
+            )}
+          </span>
         </h4>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
           <div className="p-3 rounded-lg bg-zinc-950/70 border border-emerald-500/30 space-y-1">
-            <div className="font-semibold text-emerald-300">OpenThai 2.0 OCR-Text (~4.2 MB ONNX) — WINNER</div>
+            <div className="font-semibold text-emerald-300">
+              {tx(lang, 'OpenThai 2.0 OCR-Text (~4.2 MB ONNX) — WINNER', 'OpenThai 2.0 OCR-Text (~4.2 MB ONNX) — แนะนำอันดับ 1')}
+            </div>
             <p className="text-zinc-400">
-              Built by iApp for Thai+English printed documents. Runs cleanly on CPU in <strong>0.26–1.17s/page</strong> with 93%–98% confidence and minimal diacritic errors. (Note: OpenThai 2.0 Markdown is 2.52 GB PyTorch/Nemotron — unnecessary for PO extraction.)
+              {tx(
+                lang,
+                'Built by iApp for Thai+English printed documents. Runs cleanly on CPU in 0.26–1.17s/page with 93%–98% confidence and minimal diacritic errors. (Note: OpenThai 2.0 Markdown is 2.52 GB PyTorch/Nemotron — unnecessary for PO extraction.)',
+                'พัฒนาโดย iApp สำหรับเอกสารไทย+อังกฤษ รันบน CPU ได้ใน 0.26–1.17 วินาที/หน้า ความแม่นยำ 93%–98% และอ่านวรรณยุกต์สระไทยได้ครบ (รุ่น Markdown ใหญ่ถึง 2.52 GB จึงไม่จำเป็น)'
+              )}
             </p>
           </div>
           <div className="p-3 rounded-lg bg-zinc-950/70 border border-zinc-800 space-y-1">
-            <div className="font-semibold text-purple-300">Qwen2.5-VL-3B vs Typhoon-OCR-3B (Local VLM Helper)</div>
+            <div className="font-semibold text-purple-300">
+              {tx(lang, 'Qwen2.5-VL-3B vs Typhoon-OCR-3B (Local VLM Helper)', 'Qwen2.5-VL-3B เทียบ Typhoon-OCR-3B (Vision AI ในเครื่อง)')}
+            </div>
             <p className="text-zinc-400">
-              With Vulkan GPU acceleration on GTX 1650, Qwen2.5-VL-3B runs in ~8–12s as a fallback second opinion. SCB 10X notes that <code className="text-zinc-300">typhoon-ocr-3b</code> loses accuracy in GGUF vs Ollama; small VLMs can still invent missing emails, so always prefer OpenThai 2.0 first.
+              {tx(
+                lang,
+                'With Vulkan GPU acceleration on GTX 1650, Qwen2.5-VL-3B runs in ~8–12s as a fallback second opinion. SCB 10X notes that typhoon-ocr-3b loses accuracy in GGUF vs Ollama; small VLMs can still invent missing emails, so always prefer OpenThai 2.0 first.',
+                'เมื่อเปิดเร่งความเร็ว GPU (Vulkan) บน GTX 1650 ใช้เวลา ~8–12 วินาที เหมาะเป็นตัวช่วยสำรองเวลาภาพเบลอ ทั้งนี้โมเดล VLM ขนาดเล็กอาจเดาอีเมลเอง จึงใช้ OpenThai 2.0 เป็นหลักเสมอ'
+              )}
             </p>
           </div>
           <div className="p-3 rounded-lg bg-zinc-950/70 border border-zinc-800 space-y-1">
-            <div className="font-semibold text-amber-300">Tesseract 5 (tha+eng) — Legacy Backup Only</div>
+            <div className="font-semibold text-amber-300">
+              {tx(lang, 'Tesseract 5 (tha+eng) — Legacy Backup Only', 'Tesseract 5 (tha+eng) — ตัวสำรองแบบดั้งเดิมเท่านั้น')}
+            </div>
             <p className="text-zinc-400">
-              Takes 2.2–12s per page (5–10x slower than OpenThai 2.0), inserts spaces inside Thai words, and struggles on noisy scans like ภพ.20.
+              {tx(
+                lang,
+                'Takes 2.2–12s per page (5–10x slower than OpenThai 2.0), inserts spaces inside Thai words, and struggles on noisy scans like ภพ.20.',
+                'ใช้เวลา 2.2–12 วินาที/หน้า (ช้ากว่า OpenThai 2.0 ถึง 5–10 เท่า) มักเว้นวรรคกลางคำภาษาไทย และอ่านสแกนไม่ชัดเช่น ภพ.20 ได้ยากกว่า'
+              )}
             </p>
           </div>
           <div className="p-3 rounded-lg bg-zinc-950/70 border border-zinc-800 space-y-1">
-            <div className="font-semibold text-zinc-300">Windows WinRT OCR &amp; EasyOCR</div>
+            <div className="font-semibold text-zinc-300">
+              {tx(lang, 'Windows WinRT OCR & EasyOCR', 'Windows WinRT OCR และ EasyOCR')}
+            </div>
             <p className="text-zinc-400">
-              Windows WinRT reads English well, but outputs Latin mojibake on Thai unless Windows&apos; Thai OCR pack is installed. EasyOCR needs ~2.5 GB PyTorch and is much slower than OpenThai 2.0.
+              {tx(
+                lang,
+                "Windows WinRT reads English well, but outputs Latin mojibake on Thai unless Windows' Thai OCR pack is installed. EasyOCR needs ~2.5 GB PyTorch and is much slower than OpenThai 2.0.",
+                'Windows OCR อ่านอังกฤษได้ดี แต่จะเพี้ยนเป็นตัวอักษรละตินหากเครื่องยังไม่ได้ติดตั้งแพ็กภาษาไทยของ Windows ส่วน EasyOCR ต้องใช้ PyTorch ใหญ่ ~2.5 GB และช้ากว่ามาก'
+              )}
             </p>
           </div>
         </div>
