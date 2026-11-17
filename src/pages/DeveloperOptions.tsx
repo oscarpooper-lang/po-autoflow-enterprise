@@ -68,9 +68,10 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
     type: 'success' | 'error' | 'info';
     text: string;
   } | null>(null);
-  const [testFilePath, setTestFilePath] = useState(
-    'C:\\PO-AutoFlow\\Review\\PO-26004156\\PO-26004156.pdf'
-  );
+  const [testFilePath, setTestFilePath] = useState(() => {
+    const rev = (settings.review_dir || `${settings.root_dir}\\Review`).replace(/[\\/]+$/, '');
+    return `${rev}\\PO-26004156\\PO-26004156.pdf`;
+  });
   const [ocrTestResult, setOcrTestResult] = useState<unknown>(null);
   const [isRunningOcrTest, setIsRunningOcrTest] = useState(false);
   const [copiedDiag, setCopiedDiag] = useState(false);

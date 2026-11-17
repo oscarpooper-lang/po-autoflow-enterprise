@@ -34,6 +34,7 @@ import type {
   BuiltInVisionStatus,
 } from '../types';
 import { api, checkGitHubUpdate, installGitHubUpdate, type GitHubUpdateStatus } from '../services/tauri';
+import { remapWorkspacePaths } from '../utils/workspacePaths';
 
 interface SettingsProps {
   settings: AppSettings;
@@ -508,8 +509,50 @@ export const Settings: React.FC<SettingsProps> = ({
             <div className="space-y-4 text-xs">
               <h3 className="text-sm font-bold text-white mb-2">Automated Folder Structure</h3>
               <p className="text-zinc-400 text-xs mb-4">
-                Configure paths on the local Windows filesystem. Non-existent folders are created automatically.
+                Set your Workspace Root (for example <code className="text-zinc-300">D:\PO-AutoFlow</code>) to keep PO folders and AI models off Drive C. Non-existent folders are created automatically when you save.
               </p>
+
+              <div className="p-3.5 rounded-xl bg-zinc-950/80 border border-zinc-800 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="text-zinc-200 font-semibold">
+                    Workspace Root Directory (Base + AI Models):
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setFormData((prev) => remapWorkspacePaths(prev, prev.root_dir, true))
+                    }
+                    className="px-2.5 py-1 rounded-md bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-300 text-[11px] font-medium"
+                  >
+                    Apply Root to All Subfolders
+                  </button>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={formData.root_dir}
+                    onChange={(e) =>
+                      setFormData((prev) => remapWorkspacePaths(prev, e.target.value))
+                    }
+                    className="flex-1 bg-zinc-800 border border-zinc-700 text-zinc-100 rounded-lg px-3 py-2 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => api.openPathInExplorer(formData.root_dir)}
+                    className="px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 flex items-center gap-1"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Open</span>
+                  </button>
+                </div>
+                <p className="text-[11px] text-zinc-500">
+                  Built-in AI models and Tesseract language files store under{' '}
+                  <code className="text-zinc-300 font-mono">
+                    {`${(formData.root_dir || '').replace(/[\\/]+$/, '')}\\Models`}
+                  </code>
+                  .
+                </p>
+              </div>
 
               <div className="grid grid-cols-1 gap-4">
                 <div>
@@ -571,6 +614,31 @@ export const Settings: React.FC<SettingsProps> = ({
                     onChange={(e) => handleChange('failed_dir', e.target.value)}
                     className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 font-mono"
                   />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-zinc-300 font-semibold block mb-1">
+                      Temp / Archive Staging Directory:
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.temp_dir}
+                      onChange={(e) => handleChange('temp_dir', e.target.value)}
+                      className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-zinc-300 font-semibold block mb-1">
+                      Logs Directory:
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.logs_dir}
+                      onChange={(e) => handleChange('logs_dir', e.target.value)}
+                      className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 font-mono"
+                    />
+                  </div>
                 </div>
 
                 <div className="pt-2 grid grid-cols-2 gap-4">

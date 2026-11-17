@@ -79,6 +79,8 @@ pub struct OcrFileResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OcrHints {
+    #[serde(default)]
+    pub root_dir: String,
     pub negative_phrases: Vec<String>,
     pub preferred_y_band: Option<f64>,
     pub local_vision_enabled: bool,

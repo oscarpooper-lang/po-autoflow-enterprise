@@ -115,9 +115,33 @@ pub struct GoogleAccountInfo {
     pub connected_at: String,
 }
 
+pub fn default_workspace_root() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        let c_root = std::path::Path::new("C:\\PO-AutoFlow");
+        if c_root.exists() {
+            return "C:\\PO-AutoFlow".to_string();
+        }
+        // Prefer the drive where the executable is installed (e.g. D:\Program Files -> D:\PO-AutoFlow)
+        if let Ok(exe) = std::env::current_exe() {
+            let exe_str = exe.to_string_lossy();
+            if exe_str.len() >= 2 && exe_str.as_bytes()[1] == b':' {
+                let drive = (exe_str.as_bytes()[0] as char).to_ascii_uppercase();
+                if drive != 'C' {
+                    let candidate = format!("{}:\\PO-AutoFlow", drive);
+                    if std::path::Path::new(&format!("{}:\\", drive)).exists() {
+                        return candidate;
+                    }
+                }
+            }
+        }
+    }
+    "C:\\PO-AutoFlow".to_string()
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
-        let base = "C:\\PO-AutoFlow".to_string();
+        let base = default_workspace_root();
         Self {
             incoming_dir: format!("{}\\Incoming", base),
             processing_dir: format!("{}\\Processing", base),

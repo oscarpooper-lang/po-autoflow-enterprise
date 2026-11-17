@@ -26,8 +26,54 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
-pub fn save_settings(state: State<'_, AppState>, settings: AppSettings) -> Result<(), String> {
+pub async fn save_settings(state: State<'_, AppState>, mut settings: AppSettings) -> Result<(), String> {
+    let trim_dir = |s: String| s.trim().trim_end_matches(['\\', '/']).to_string();
+    settings.root_dir = trim_dir(settings.root_dir);
+    settings.incoming_dir = trim_dir(settings.incoming_dir);
+    settings.processing_dir = trim_dir(settings.processing_dir);
+    settings.sent_dir = trim_dir(settings.sent_dir);
+    settings.failed_dir = trim_dir(settings.failed_dir);
+    settings.review_dir = trim_dir(settings.review_dir);
+    settings.temp_dir = trim_dir(settings.temp_dir);
+    settings.logs_dir = trim_dir(settings.logs_dir);
+
+    for dir in [
+        &settings.root_dir,
+        &settings.incoming_dir,
+        &settings.processing_dir,
+        &settings.sent_dir,
+        &settings.failed_dir,
+        &settings.review_dir,
+        &settings.temp_dir,
+        &settings.logs_dir,
+    ] {
+        if !dir.is_empty() {
+            std::fs::create_dir_all(dir).ok();
+        }
+    }
+
     state.db.save_settings(&settings).map_err(|e| e.to_string())?;
+
+    // Restart live FolderWatcher automatically if Incoming path changed while monitoring is active
+    {
+        let mut lock = state.watcher.lock().await;
+        if let Some(existing) = lock.as_ref() {
+            let current_dir = existing.incoming_dir().to_string_lossy().to_string();
+            if !current_dir.eq_ignore_ascii_case(&settings.incoming_dir) {
+                if let Some(mut old) = lock.take() {
+                    old.stop();
+                }
+                let mut new_watcher = FolderWatcher::new(&settings.incoming_dir, state.job_tx.clone());
+                if let Err(e) = new_watcher.start() {
+                    state.db.add_event(None, "warn", &format!("Failed restarting watcher on '{}': {}", settings.incoming_dir, e)).ok();
+                } else {
+                    state.coordinator.set_watcher_active_jobs(new_watcher.active_jobs());
+                    *lock = Some(new_watcher);
+                }
+            }
+        }
+    }
+
     state.db.add_audit_log("SETTINGS_UPDATED", "CONFIG", "USER", "Application configuration updated").ok();
     Ok(())
 }
@@ -479,7 +525,27 @@ pub async fn test_ocr_on_file(
     file_path: String,
 ) -> Result<serde_json::Value, String> {
     let path = PathBuf::from(file_path);
-    let resp = state.ocr_manager.process_file(&path).await.map_err(|e| e.to_string())?;
+    let settings = state.db.get_settings().map_err(|e| e.to_string())?;
+    let (engine_path, model_path, mmproj_path) =
+        resolve_builtin_vision_paths(&settings.root_dir, &settings.local_vision_model);
+    let hints = crate::ocr::OcrHints {
+        root_dir: settings.root_dir,
+        negative_phrases: Vec::new(),
+        preferred_y_band: None,
+        local_vision_enabled: settings.local_vision_enabled,
+        local_vision_provider: settings.local_vision_provider,
+        local_vision_endpoint: settings.local_vision_endpoint,
+        local_vision_model: settings.local_vision_model,
+        builtin_engine_path: engine_path.to_string_lossy().to_string(),
+        builtin_model_path: model_path.to_string_lossy().to_string(),
+        builtin_mmproj_path: mmproj_path.to_string_lossy().to_string(),
+        force_vision: false,
+    };
+    let resp = state
+        .ocr_manager
+        .process_file_with_hints(&path, Some(&hints))
+        .await
+        .map_err(|e| e.to_string())?;
     serde_json::to_value(resp).map_err(|e| e.to_string())
 }
 

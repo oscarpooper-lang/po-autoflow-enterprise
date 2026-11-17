@@ -399,6 +399,7 @@ impl PipelineCoordinator {
             );
 
         let ocr_hints = crate::ocr::OcrHints {
+            root_dir: settings.root_dir.clone(),
             negative_phrases: neg_phrases,
             preferred_y_band,
             local_vision_enabled: settings.local_vision_enabled,

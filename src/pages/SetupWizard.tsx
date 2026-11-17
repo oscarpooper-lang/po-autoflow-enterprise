@@ -16,6 +16,7 @@ import {
 import appsScriptCode from '../../apps-script/Code.gs?raw';
 import type { AppSettings } from '../types';
 import { api } from '../services/tauri';
+import { remapWorkspacePaths } from '../utils/workspacePaths';
 
 interface SetupWizardProps {
   settings: AppSettings;
@@ -229,7 +230,9 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({
                   <input
                     type="text"
                     value={settings.root_dir}
-                    onChange={(e) => updateSetting('root_dir', e.target.value)}
+                    onChange={(e) =>
+                      setSettings((prev) => remapWorkspacePaths(prev, e.target.value, true))
+                    }
                     className="flex-1 bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-2 font-mono"
                   />
                   <button
@@ -241,6 +244,9 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({
                     <span>Open</span>
                   </button>
                 </div>
+                <p className="text-[11px] text-zinc-500 mt-1">
+                  Automatically updates Incoming, Processing, Review, Sent, Failed &amp; Models under this root.
+                </p>
               </div>
 
               <div>

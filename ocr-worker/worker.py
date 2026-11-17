@@ -525,14 +525,30 @@ def get_paddle_ocr():
     return _paddle_ocr_instance
 
 
-_DEFAULT_TESS_MODELS_DIR = os.path.join(r"C:\PO-AutoFlow\Models\tesseract")
 _TESSDATA_DOWNLOAD_FAILED: bool = False
 
 
-def _find_tesseract_exe() -> Optional[str]:
+def _resolve_tess_models_dir(root_dir: str = "") -> str:
+    cleaned = (root_dir or os.environ.get("PO_AUTOFLOW_ROOT_DIR") or "").strip().rstrip("\\/")
+    if cleaned:
+        return os.path.join(cleaned, "Models", "tesseract")
+    for fallback_root in (r"D:\PO-AutoFlow", r"C:\PO-AutoFlow"):
+        cand = os.path.join(fallback_root, "Models", "tesseract")
+        if os.path.isdir(fallback_root) or os.path.isdir(cand):
+            return cand
     local_app = os.environ.get("LOCALAPPDATA", "")
+    if local_app:
+        return os.path.join(local_app, "PO-AutoFlow", "Models", "tesseract")
+    return os.path.join(r"D:\PO-AutoFlow", "Models", "tesseract")
+
+
+def _find_tesseract_exe(root_dir: str = "") -> Optional[str]:
+    local_app = os.environ.get("LOCALAPPDATA", "")
+    managed_dir = _resolve_tess_models_dir(root_dir)
     candidates = [
-        os.path.join(_DEFAULT_TESS_MODELS_DIR, "tesseract.exe"),
+        os.path.join(managed_dir, "tesseract.exe"),
+        r"D:\PO-AutoFlow\Models\tesseract\tesseract.exe",
+        r"C:\PO-AutoFlow\Models\tesseract\tesseract.exe",
         r"C:\Program Files\Tesseract-OCR\tesseract.exe",
         r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
     ]
@@ -548,10 +564,10 @@ def _find_tesseract_exe() -> Optional[str]:
     return None
 
 
-def _ensure_tessdata_dir(tess_exe: str) -> Optional[str]:
+def _ensure_tessdata_dir(tess_exe: str, root_dir: str = "") -> Optional[str]:
     """Ensures eng + tha traineddata exist in a readable tessdata directory."""
     global _TESSDATA_DOWNLOAD_FAILED
-    managed_tessdata = os.path.join(_DEFAULT_TESS_MODELS_DIR, "tessdata")
+    managed_tessdata = os.path.join(_resolve_tess_models_dir(root_dir), "tessdata")
     sibling_tessdata = os.path.join(os.path.dirname(tess_exe), "tessdata")
 
     for d in (managed_tessdata, sibling_tessdata):
@@ -627,12 +643,12 @@ def _clean_tesseract_line_tokens(token_items: List[tuple]) -> str:
     return repair_thai_encoding(joined).strip()
 
 
-def run_tesseract_ocr(img_np: np.ndarray) -> tuple:
+def run_tesseract_ocr(img_np: np.ndarray, root_dir: str = "") -> tuple:
     """Runs Tesseract 5 CLI (tha+eng) on an image and returns (lines, boxes, avg_conf)."""
-    tess_exe = _find_tesseract_exe()
+    tess_exe = _find_tesseract_exe(root_dir)
     if not tess_exe:
         return [], [], 0.0
-    tessdata_dir = _ensure_tessdata_dir(tess_exe)
+    tessdata_dir = _ensure_tessdata_dir(tess_exe, root_dir)
     if not tessdata_dir:
         return [], [], 0.0
 
@@ -859,7 +875,7 @@ def run_windows_winrt_ocr(img_np: np.ndarray) -> tuple:
                 pass
 
 
-def _run_image_ocr_cascade(img_np: np.ndarray) -> tuple:
+def _run_image_ocr_cascade(img_np: np.ndarray, root_dir: str = "") -> tuple:
     """Runs available on-device OCR engines (PaddleOCR -> Tesseract tha+eng -> Windows WinRT OCR)."""
     enhanced_img: Optional[np.ndarray] = None
 
@@ -888,11 +904,11 @@ def _run_image_ocr_cascade(img_np: np.ndarray) -> tuple:
         except Exception as e:
             sys.stderr.write(f"PaddleOCR runtime fallback: {e}\n")
 
-    tess_lines, tess_boxes, tess_conf = run_tesseract_ocr(img_np)
+    tess_lines, tess_boxes, tess_conf = run_tesseract_ocr(img_np, root_dir)
     if not tess_lines:
         if enhanced_img is None:
             enhanced_img = Preprocessor.deskew_and_enhance(img_np)
-        tess_lines, tess_boxes, tess_conf = run_tesseract_ocr(enhanced_img)
+        tess_lines, tess_boxes, tess_conf = run_tesseract_ocr(enhanced_img, root_dir)
     if tess_lines:
         return tess_lines, tess_boxes, tess_conf, "tesseract_tha_eng"
 
@@ -1468,6 +1484,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "error", "message": f"File not found: {file_path}"}
 
     hints = request.get("hints") or {}
+    root_dir = str(hints.get("root_dir") or "")
     neg_phrases = [str(x) for x in (hints.get("negative_phrases") or []) if x]
     pref_y_raw = hints.get("preferred_y_band")
     pref_y = float(pref_y_raw) if pref_y_raw is not None else None
@@ -1510,7 +1527,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                     img = render_pdf_page_to_image(file_path, page_num, dpi=300)
                     if page_num == 1:
                         first_page_img = img
-                    ocr_lines, ocr_boxes, ocr_conf, ocr_method = _run_image_ocr_cascade(img)
+                    ocr_lines, ocr_boxes, ocr_conf, ocr_method = _run_image_ocr_cascade(img, root_dir)
                     if ocr_lines:
                         native_clean = raw_text.strip()
                         ocr_joined = "\n".join(ocr_lines)
@@ -1539,7 +1556,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 return {"status": "error", "message": f"Could not read image (or unsupported format): {file_path}"}
 
             first_page_img = img
-            ocr_lines, boxes, confidence, ocr_method = _run_image_ocr_cascade(img)
+            ocr_lines, boxes, confidence, ocr_method = _run_image_ocr_cascade(img, root_dir)
             raw_text = "\n".join(ocr_lines)
             parsed = parse_supplier_and_po(raw_text, boxes, neg_phrases, pref_y)
             overall_text_parts.append(raw_text)
