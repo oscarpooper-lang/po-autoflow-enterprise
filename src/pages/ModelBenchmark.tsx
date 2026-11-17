@@ -98,6 +98,39 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6 text-xs">
+      {/* Official Single-Winner Verdict Banner */}
+      <div className="bg-emerald-950/25 border border-emerald-500/35 rounded-xl p-5 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-bold text-emerald-200 flex items-center gap-2">
+            <Trophy className="w-4 h-4 text-emerald-400" />
+            <span>Official OCR Verdict: Best Single Pipeline for PO AutoFlow</span>
+          </h3>
+          <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold text-[11px]">
+            1 Recommended Stack • Zero Clutter
+          </span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px]">
+          <div className="p-3 rounded-lg bg-zinc-950/70 border border-emerald-500/25 space-y-1">
+            <div className="font-bold text-emerald-300">1. Winner (Scans): OpenThai 2.0 OCR-Text</div>
+            <p className="text-zinc-300 leading-relaxed">
+              <strong>0.26s–1.17s/page • 93%–98% Thai+EN.</strong> Cleanly reads Thai diacritics and mixed English headers at 4.2 MB, 5–10x faster and cleaner than Tesseract 5.
+            </p>
+          </div>
+          <div className="p-3 rounded-lg bg-zinc-950/70 border border-cyan-500/25 space-y-1">
+            <div className="font-bold text-cyan-300">2. Digital PDFs: Built-in Digital PDF Reader</div>
+            <p className="text-zinc-300 leading-relaxed">
+              <strong>~0.01s/page • Exact text.</strong> Extracts embedded PDF text instantly and hands image-only or garbled-font pages directly to OpenThai 2.0.
+            </p>
+          </div>
+          <div className="p-3 rounded-lg bg-zinc-950/70 border border-purple-500/25 space-y-1">
+            <div className="font-bold text-purple-300">3. AI Helper: Qwen2.5-VL-3B (Vulkan GPU)</div>
+            <p className="text-zinc-300 leading-relaxed">
+              <strong>~8–12s with GPU acceleration.</strong> Great as a fallback second opinion when OCR confidence &lt; 85%, never as standalone text reader.
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Header & Target Document Selector */}
       <div className="bg-[#121215] border border-zinc-800 rounded-xl p-5 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -290,9 +323,11 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }
                           {[...layer.po_numbers.slice(0, 1), ...layer.tax_ids.slice(0, 1)].join(' • ') || '—'}
                         </span>
                       </div>
-                      <div className="p-2 rounded bg-zinc-950/70 border border-zinc-800/80 truncate">
-                        <span className="text-zinc-500">Note: </span>
-                        <span className="text-zinc-400">{layer.note || '—'}</span>
+                      <div className="p-2 rounded bg-zinc-950/70 border border-zinc-800/80 md:col-span-4">
+                        <span className="text-zinc-500">Feedback / Note: </span>
+                        <span className={layer.status === 'error' ? 'text-rose-300' : 'text-zinc-300'}>
+                          {layer.note || '—'}
+                        </span>
                       </div>
                     </div>
 
@@ -313,31 +348,31 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs }
       <div className="bg-[#121215] border border-zinc-800 rounded-xl p-5 space-y-3">
         <h4 className="font-semibold text-white flex items-center gap-2">
           <Cpu className="w-4 h-4 text-purple-400" />
-          <span>Thai OCR &amp; Vision Model Comparison (Your PC Hardware Fit)</span>
+          <span>Benchmark Notes &amp; Hardware Verdict (GTX 1650 + i5 Laptop)</span>
         </h4>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px]">
-          <div className="p-3 rounded-lg bg-zinc-950/70 border border-zinc-800 space-y-1">
-            <div className="font-semibold text-emerald-300">OpenThai 2.0 OCR-Text (~1M ONNX) &amp; OCR-Markdown (0.63B)</div>
+          <div className="p-3 rounded-lg bg-zinc-950/70 border border-emerald-500/30 space-y-1">
+            <div className="font-semibold text-emerald-300">OpenThai 2.0 OCR-Text (~4.2 MB ONNX) — WINNER</div>
             <p className="text-zinc-400">
-              Built by iApp specifically for Thai+English scans: <strong>OCR-Text</strong> runs purely on CPU (~0.4s/page), much lighter and more accurate on Thai fonts than EasyOCR. (The 27B OpenThai 2.0 flagship VLM is too heavy for 4 GB VRAM laptops.)
+              Built by iApp for Thai+English printed documents. Runs cleanly on CPU in <strong>0.26–1.17s/page</strong> with 93%–98% confidence and minimal diacritic errors. (Note: OpenThai 2.0 Markdown is 2.52 GB PyTorch/Nemotron — unnecessary for PO extraction.)
             </p>
           </div>
           <div className="p-3 rounded-lg bg-zinc-950/70 border border-zinc-800 space-y-1">
-            <div className="font-semibold text-blue-300">Typhoon OCR / Typhoon OCR 1.5 (2B / 3B VLM)</div>
+            <div className="font-semibold text-purple-300">Qwen2.5-VL-3B vs Typhoon-OCR-3B (Local VLM Helper)</div>
             <p className="text-zinc-400">
-              By SCB 10X (Qwen2.5-VL / Qwen3-VL fine-tuned specifically on Thai documents &amp; invoices). Outperforms generic Qwen2.5-VL-3B on tricky Thai invoices/tables; runnable locally via Ollama (<code className="text-zinc-300">scb10x/typhoon-ocr1.5-3b</code>) or GGUF.
+              With Vulkan GPU acceleration on GTX 1650, Qwen2.5-VL-3B runs in ~8–12s as a fallback second opinion. SCB 10X notes that <code className="text-zinc-300">typhoon-ocr-3b</code> loses accuracy in GGUF vs Ollama; small VLMs can still invent missing emails, so always prefer OpenThai 2.0 first.
             </p>
           </div>
           <div className="p-3 rounded-lg bg-zinc-950/70 border border-zinc-800 space-y-1">
-            <div className="font-semibold text-amber-300">Tesseract 5 (tha+eng) — Active Default Scanned OCR</div>
+            <div className="font-semibold text-amber-300">Tesseract 5 (tha+eng) — Legacy Backup Only</div>
             <p className="text-zinc-400">
-              Zero GPU/PyTorch overhead (~5 MB models), 1–5s per page, reliable for standard printed Thai/English vendor headers and 13-digit Tax IDs.
+              Takes 2.2–12s per page (5–10x slower than OpenThai 2.0), inserts spaces inside Thai words, and struggles on noisy scans like ภพ.20.
             </p>
           </div>
           <div className="p-3 rounded-lg bg-zinc-950/70 border border-zinc-800 space-y-1">
-            <div className="font-semibold text-zinc-300">EasyOCR (PyTorch CRAFT + CRNN)</div>
+            <div className="font-semibold text-zinc-300">Windows WinRT OCR &amp; EasyOCR</div>
             <p className="text-zinc-400">
-              Requires ~2.5 GB PyTorch install, slow on CPU (6–15s/page), and often less accurate on dense mixed Thai+English tables than Tesseract 5, PaddleOCR, or OpenThai 2.0 OCR-Text.
+              Windows WinRT reads English well, but outputs Latin mojibake on Thai unless Windows&apos; Thai OCR pack is installed. EasyOCR needs ~2.5 GB PyTorch and is much slower than OpenThai 2.0.
             </p>
           </div>
         </div>

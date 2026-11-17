@@ -320,6 +320,9 @@ pub fn run() {
             download_builtin_vision_model,
             delete_builtin_vision_model,
             get_ocr_engine_status,
+            install_openthaigpt_ocr,
+            install_vulkan_vision_engine,
+            run_ocr_self_test,
             benchmark_ocr_layers,
             list_benchmark_candidates
         ])

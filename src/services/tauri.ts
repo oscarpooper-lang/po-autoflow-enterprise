@@ -70,19 +70,41 @@ export interface OcrEngineStatus {
   python_version: string;
   worker_reachable: boolean;
   pymupdf_available: boolean;
+  openthaigpt_available: boolean;
+  openthaigpt_path: string;
+  openthaigpt_backend: string;
+  openthaigpt_note: string;
   paddleocr_available: boolean;
   paddleocr_note: string;
   tesseract_available: boolean;
   tesseract_path: string;
   tesseract_langs: string[];
   winrt_available: boolean;
+  winrt_thai_installed: boolean;
   active_scanned_engine: string;
+  vision_engine_vulkan: boolean;
   vision_ai_enabled: boolean;
   vision_ai_trigger_mode: string;
   vision_ai_model: string;
   vision_ai_ready: boolean;
   vision_ai_status_label: string;
   vision_ai_message: string;
+}
+
+export interface OcrSelfTestResult {
+  status: string;
+  file_tested: string;
+  duration_ms: number;
+  engine_used: string;
+  confidence: number;
+  supplier_detected: string | null;
+  po_numbers: string[];
+  tax_ids: string[];
+  vision_ai_status: string | null;
+  vision_ai_error: string | null;
+  vision_ai_duration_ms: number | null;
+  vision_ai_device: string | null;
+  text_preview: string;
 }
 
 export async function checkGitHubUpdate(
@@ -143,7 +165,7 @@ export const defaultSettings: AppSettings = {
   poll_interval_ms: 2000,
   stability_delay_ms: 1500,
   stability_checks: 3,
-  ocr_engine_primary: 'paddleocr',
+  ocr_engine_primary: 'openthaigpt',
   ocr_confidence_threshold_verified: 98.0,
   ocr_confidence_threshold_high: 90.0,
   ocr_confidence_threshold_review: 75.0,
@@ -257,7 +279,7 @@ let mockJobs: Job[] = [
     po_folder_name: 'PO-2026-0892',
     source_path: 'C:\\PO-AutoFlow\\Processing\\PO-2026-0892',
     status: 'ocr_processing',
-    stage_message: 'Running PP-OCRv5 Thai & English neural OCR worker (Page 2 of 3).',
+    stage_message: 'Running OpenThai 2.0 Thai & English OCR worker (Page 2 of 3).',
     po_number: 'PO-2026-0892',
     detected_company_raw: 'BANGKOK AUTOMATION SOLUTIONS',
     matched_company_name: 'บริษัท บางกอก ออโตเมชั่น โซลูชั่นส์ จำกัด',
@@ -305,7 +327,7 @@ let mockEvents: ApplicationEvent[] = [
   {
     id: 1,
     level: 'info',
-    message: 'System initialized. PaddleOCR PP-OCRv5 ready with Thai & English models.',
+    message: 'System initialized. OpenThai 2.0 OCR-Text ready with Thai & English models.',
     timestamp: new Date(Date.now() - 3600000 * 3).toISOString(),
   },
   {
@@ -391,7 +413,7 @@ export const api = {
           'บริษัท สยาม ซัพพลาย แอนด์ เทรดดิ้ง จำกัด\nเลขประจำตัวผู้เสียภาษีอากร 0105556012345\nใบสั่งซื้อเลขที่: PO-26002323\nวันที่: 12 พ.ย. 2026\nผู้ขาย: บริษัท สยาม ซัพพลาย แอนด์ เทรดดิ้ง จำกัด\nส่งถึง: ฝ่ายจัดซื้อ บริษัท ลูกค้า จำกัด',
         normalized_text: 'บริษัท สยาม ซัพพลาย แอนด์ เทรดดิ้ง จำกัด',
         confidence: 99.4,
-        engine: 'paddleocr_ppocrv5',
+        engine: 'openthaigpt_ocr',
         bounding_boxes_json: JSON.stringify([
           { box: [[50, 40], [420, 40], [420, 70], [50, 70]], text: 'บริษัท สยาม ซัพพลาย แอนด์ เทรดดิ้ง จำกัด', confidence: 0.99 },
           { box: [[50, 80], [300, 80], [300, 105], [50, 105]], text: 'เลขประจำตัวผู้เสียภาษีอากร 0105556012345', confidence: 0.98 },
@@ -811,10 +833,21 @@ export const api = {
         },
         {
           id: 'qwen2.5-vl-3b',
-          name: 'Qwen2.5-VL-3B-Instruct (Best Thai + English)',
+          name: 'Qwen2.5-VL-3B-Instruct (Best Visual Helper)',
           size_label: '2.65 GB',
           total_size_bytes: 2774630000,
-          description: 'Strongest native Thai & English document OCR.',
+          description: 'Runs in ~8-12s with Vulkan GPU for English/Thai tables when fast OpenThai OCR needs a second opinion.',
+          installed: false,
+          active: false,
+          model_path: '',
+          mmproj_path: '',
+        },
+        {
+          id: 'typhoon-ocr-3b',
+          name: 'Typhoon-OCR-3B (SCB 10X Thai VLM)',
+          size_label: '2.77 GB',
+          total_size_bytes: 2909456000,
+          description: 'Thai-specialized Qwen2.5-VL fine-tune by SCB 10X (Note: SCB 10X recommends Ollama for peak fidelity vs GGUF).',
           installed: false,
           active: false,
           model_path: '',
@@ -860,20 +893,49 @@ export const api = {
       python_version: '3.14.5',
       worker_reachable: true,
       pymupdf_available: true,
+      openthaigpt_available: true,
+      openthaigpt_path: 'D:\\PO-AutoFlow\\Models\\openthaigpt-ocr-text',
+      openthaigpt_backend: 'onnxruntime',
+      openthaigpt_note: 'Ready (onnxruntime) — Winner for fast Thai & English scans',
       paddleocr_available: false,
-      paddleocr_note: 'Not installed on Python 3.14',
+      paddleocr_note: 'Not installed (OpenThai 2.0 replaces it at 4.2 MB)',
       tesseract_available: true,
       tesseract_path: 'D:\\PO-AutoFlow\\Models\\tesseract\\tesseract.exe',
       tesseract_langs: ['eng', 'tha'],
       winrt_available: true,
-      active_scanned_engine: 'tesseract_tha_eng',
+      winrt_thai_installed: false,
+      active_scanned_engine: 'openthaigpt_ocr',
+      vision_engine_vulkan: true,
       vision_ai_enabled: false,
       vision_ai_trigger_mode: 'fallback',
-      vision_ai_model: 'smolvlm2-2.2b',
-      vision_ai_ready: false,
+      vision_ai_model: 'qwen2.5-vl-3b',
+      vision_ai_ready: true,
       vision_ai_status_label: 'Disabled',
       vision_ai_message: 'Browser preview mode.',
     };
+  },
+
+  installOpenThaiOcr: async (): Promise<OcrEngineStatus> => {
+    if (isTauriEnvironment()) {
+      return await invoke<OcrEngineStatus>('install_openthaigpt_ocr');
+    }
+    throw new Error('Installing OCR models requires desktop Tauri runtime.');
+  },
+
+  installVulkanVisionEngine: async (): Promise<BuiltInVisionStatus> => {
+    if (isTauriEnvironment()) {
+      return await invoke<BuiltInVisionStatus>('install_vulkan_vision_engine');
+    }
+    throw new Error('Upgrading Vision engine requires desktop Tauri runtime.');
+  },
+
+  runOcrSelfTest: async (filePath?: string): Promise<OcrSelfTestResult> => {
+    if (isTauriEnvironment()) {
+      return await invoke<OcrSelfTestResult>('run_ocr_self_test', {
+        filePath: filePath || null,
+      });
+    }
+    throw new Error('Live self-test requires desktop Tauri runtime.');
   },
 
   listBenchmarkCandidates: async (): Promise<string[]> => {

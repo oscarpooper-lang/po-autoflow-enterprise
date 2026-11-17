@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PO AutoFlow Enterprise - Managed Python OCR & Document Processing Sidecar
-PP-OCRv5 Thai & English Recognition | PyMuPDF Native Extraction + AX2012 Tahoma Repair | OpenCV Preprocessing
+OpenThai 2.0 OCR-Text | Built-in Digital PDF Reader | Tesseract 5 | Vulkan Vision AI
 """
 
 import sys
@@ -58,6 +58,7 @@ except ImportError:
 
 _paddle_ocr_instance: Optional[Any] = None
 _paddle_ocr_attempted: bool = False
+_openthaigpt_cache: Dict[str, Any] = {}
 _smolvlm_cache: Dict[str, Any] = {}
 
 
@@ -107,6 +108,53 @@ def _prepare_vision_crop(
     return vision_img
 
 
+def _build_builtin_vlm_cmd(
+    engine_path: str,
+    model_path: str,
+    mmproj_path: str,
+    image_path: str,
+    prompt: str,
+    max_tokens: int,
+    img_max_tokens: int,
+    use_gpu: bool,
+) -> List[str]:
+    return [
+        engine_path,
+        "-m",
+        model_path,
+        "--mmproj",
+        mmproj_path,
+        "--image",
+        image_path,
+        "-p",
+        prompt,
+        "-n",
+        str(max_tokens),
+        "-c",
+        "2048",
+        "--image-max-tokens",
+        str(img_max_tokens),
+        "-t",
+        "6",
+        "-ngl",
+        "99" if use_gpu else "0",
+        "--temp",
+        "0.0",
+        "--repeat-penalty",
+        "1.1",
+        "--no-warmup",
+    ]
+
+
+def _vision_error_result(status: str, message: str, elapsed_ms: float = 0.0, device: str = "") -> Dict[str, Any]:
+    return {
+        "_vision_status": status,
+        "_vision_error": message,
+        "_vision_duration_ms": round(elapsed_ms, 1),
+        "_vision_device": device,
+    }
+
+
 def query_local_vision_model(
     img_np: np.ndarray,
     provider: str,
@@ -118,74 +166,111 @@ def query_local_vision_model(
     quality_preset: str = "balanced",
 ) -> Dict[str, Any]:
     """Queries 100% offline on-device Vision AI (Built-in llama-mtmd-cli, Ollama, or Python transformers)."""
+    t0 = time.perf_counter()
     prompt = (
-        "Analyze this Purchase Order or Tax Invoice image. "
+        "You are a precise Thai and English document OCR reader. "
         "Note: QTC ENERGY PUBLIC COMPANY LIMITED is the BUYER, so ignore QTC completely. "
-        "Extract ONLY the EXTERNAL SUPPLIER / VENDOR details as JSON with these exact keys: "
-        '{"supplier_th": "", "supplier_en": "", "po_number": "", "tax_id": "", "email": ""}. '
-        "Return ONLY valid JSON."
+        "Read ONLY text visibly printed on this image. Never guess or invent an email, company name, or number; "
+        "if a field is not visibly printed, leave it as empty string \"\". "
+        "Return ONLY valid JSON with these exact keys: "
+        '{"supplier_th": "", "supplier_en": "", "po_number": "", "tax_id": "", "email": ""}.'
     )
 
     try:
         prov_low = (provider or "builtin").strip().lower()
         if prov_low == "builtin":
-            if not (
-                engine_path
-                and model_path
-                and mmproj_path
-                and os.path.exists(engine_path)
-                and os.path.exists(model_path)
-                and os.path.exists(mmproj_path)
-            ):
-                return {}
+            if not (engine_path and os.path.exists(engine_path)):
+                return _vision_error_result(
+                    "unavailable",
+                    "Vision engine binary (llama-mtmd-cli.exe) is missing. Download/Install in Settings.",
+                )
+            if not (model_path and mmproj_path and os.path.exists(model_path) and os.path.exists(mmproj_path)):
+                return _vision_error_result(
+                    "unavailable",
+                    f"Vision model '{model}' files are missing. Click 'Download Inside App' in Settings.",
+                )
 
             is_max = (quality_preset or "balanced").strip().lower() == "max_accuracy"
             vision_img = _prepare_vision_crop(
                 img_np,
-                max_width=1280 if is_max else 960,
-                crop_ratio=0.78 if is_max else 0.55,
+                max_width=1120 if is_max else 960,
+                crop_ratio=0.80 if is_max else 0.72,
             )
             ok, buf = cv2.imencode(".png", vision_img)
             if not ok:
-                return {}
+                return _vision_error_result("error", "Failed to encode page image for Vision AI.")
 
             tmp_png = ""
+            engine_dir = os.path.dirname(engine_path)
+            has_vulkan = os.path.exists(os.path.join(engine_dir, "ggml-vulkan.dll"))
+            max_gen_tok = 220 if is_max else 180
+            img_tok_cap = 768 if is_max else 512
+            timeout_sec = 120 if is_max else 90
             try:
                 with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
                     tf.write(buf.tobytes())
                     tmp_png = tf.name
 
-                cmd = [
-                    engine_path,
-                    "-m",
-                    model_path,
-                    "--mmproj",
-                    mmproj_path,
-                    "--image",
-                    tmp_png,
-                    "-p",
-                    prompt,
-                    "-n",
-                    "320" if is_max else "200",
-                    "--temp",
-                    "0.1",
-                    "--repeat-penalty",
-                    "1.3",
-                    "--no-warmup",
-                ]
                 kwargs: Dict[str, Any] = {
                     "capture_output": True,
                     "text": True,
                     "encoding": "utf-8",
                     "errors": "ignore",
-                    "timeout": 120 if is_max else 60,
-                    "cwd": os.path.dirname(engine_path),
+                    "stdin": subprocess.DEVNULL,
+                    "timeout": timeout_sec,
+                    "cwd": engine_dir,
                 }
                 if os.name == "nt":
                     kwargs["creationflags"] = 0x08000000
 
+                used_gpu = has_vulkan
+                cmd = _build_builtin_vlm_cmd(
+                    engine_path, model_path, mmproj_path, tmp_png,
+                    prompt, max_gen_tok, img_tok_cap, use_gpu=has_vulkan,
+                )
                 proc = subprocess.run(cmd, **kwargs)
-                return _extract_json_object(proc.stdout)
+
+                # Automatic CPU fallback if Vulkan device init fails on unsupported GPU drivers
+                if proc.returncode != 0 and has_vulkan:
+                    used_gpu = False
+                    cpu_cmd = _build_builtin_vlm_cmd(
+                        engine_path, model_path, mmproj_path, tmp_png,
+                        prompt, max_gen_tok, 384, use_gpu=False,
+                    )
+                    proc = subprocess.run(cpu_cmd, **kwargs)
+
+                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                device_lbl = "Vulkan GPU" if used_gpu else "CPU"
+                if proc.returncode != 0:
+                    err_lines = ((proc.stderr or "") or (proc.stdout or "")).strip().splitlines()
+                    err_msg = " | ".join(err_lines[-3:]) if err_lines else f"exit code {proc.returncode}"
+                    sys.stderr.write(f"Built-in Vision AI error ({device_lbl}): {err_msg}\n")
+                    return _vision_error_result(
+                        "error",
+                        f"Vision AI failed ({device_lbl}, exit {proc.returncode}): {err_msg[:240]}",
+                        elapsed_ms,
+                        device_lbl,
+                    )
+
+                parsed_json = _extract_json_object(proc.stdout or "")
+                if not parsed_json:
+                    raw_out = (proc.stdout or "").strip()[:180]
+                    return _vision_error_result(
+                        "error",
+                        f"Vision AI ({device_lbl}) did not output valid JSON: {raw_out or '(empty stdout)'}",
+                        elapsed_ms,
+                        device_lbl,
+                    )
+                parsed_json["_vision_status"] = "ok"
+                parsed_json["_vision_error"] = ""
+                parsed_json["_vision_duration_ms"] = round(elapsed_ms, 1)
+                parsed_json["_vision_device"] = device_lbl
+                return parsed_json
+            except subprocess.TimeoutExpired:
+                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                msg = f"Vision AI timed out after {timeout_sec}s on {model}. Upgrade to Vulkan GPU engine for ~10s speed."
+                sys.stderr.write(msg + "\n")
+                return _vision_error_result("timeout", msg, elapsed_ms, "Vulkan GPU" if has_vulkan else "CPU")
             finally:
                 if tmp_png and os.path.exists(tmp_png):
                     try:
@@ -199,7 +284,7 @@ def query_local_vision_model(
                 or importlib.util.find_spec("torch") is None
                 or importlib.util.find_spec("PIL") is None
             ):
-                return {}
+                return _vision_error_result("unavailable", "Python transformers/torch/Pillow not installed.")
             import torch
             from PIL import Image
             from transformers import AutoProcessor, AutoModelForImageTextToText
@@ -241,16 +326,21 @@ def query_local_vision_model(
             ).to(vlm.device)
             generated = vlm.generate(**inputs, max_new_tokens=220)
             decoded = processor.batch_decode(generated, skip_special_tokens=True)[0]
-            return _extract_json_object(decoded)
+            parsed_json = _extract_json_object(decoded)
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            if not parsed_json:
+                return _vision_error_result("error", "Transformers Vision AI returned invalid JSON.", elapsed_ms, "PyTorch")
+            parsed_json.update({"_vision_status": "ok", "_vision_error": "", "_vision_duration_ms": round(elapsed_ms, 1), "_vision_device": "PyTorch"})
+            return parsed_json
 
         # Default: local Ollama HTTP server locked strictly to 127.0.0.1 / localhost
         if not is_strictly_localhost(endpoint):
             sys.stderr.write(f"Blocked non-localhost vision endpoint: {endpoint}\n")
-            return {}
+            return _vision_error_result("error", f"Blocked non-localhost endpoint: {endpoint}")
 
         ok, buf = cv2.imencode(".png", img_np)
         if not ok:
-            return {}
+            return _vision_error_result("error", "Failed to encode image for Ollama.")
         b64_img = base64.b64encode(buf.tobytes()).decode("ascii")
         url = endpoint.rstrip("/") + "/api/generate"
         body = json.dumps({
@@ -259,7 +349,7 @@ def query_local_vision_model(
             "images": [b64_img],
             "stream": False,
             "format": "json",
-            "options": {"temperature": 0.1},
+            "options": {"temperature": 0.0},
         }).encode("utf-8")
 
         req = urllib.request.Request(
@@ -268,12 +358,18 @@ def query_local_vision_model(
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=25) as resp:
+        with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="ignore"))
-            return _extract_json_object(data.get("response", ""))
+            parsed_json = _extract_json_object(data.get("response", ""))
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            if not parsed_json:
+                return _vision_error_result("error", "Ollama returned non-JSON response.", elapsed_ms, "Ollama")
+            parsed_json.update({"_vision_status": "ok", "_vision_error": "", "_vision_duration_ms": round(elapsed_ms, 1), "_vision_device": "Ollama"})
+            return parsed_json
     except Exception as e:
-        sys.stderr.write(f"Local vision fallback skipped: {e}\n")
-        return {}
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        sys.stderr.write(f"Local vision fallback error: {e}\n")
+        return _vision_error_result("error", f"Vision AI error: {e}", elapsed_ms, "")
 
 
 def test_local_vision_request(request: Dict[str, Any]) -> Dict[str, Any]:
@@ -884,17 +980,154 @@ def run_windows_winrt_ocr(img_np: np.ndarray) -> tuple:
                 pass
 
 
+def _is_winrt_thai_available() -> bool:
+    if os.name != "nt":
+        return False
+    ocr_root = r"C:\Windows\OCR"
+    if not os.path.isdir(ocr_root):
+        return False
+    try:
+        return any(name.lower().startswith("th") for name in os.listdir(ocr_root))
+    except Exception:
+        return False
+
+
+def _resolve_openthaigpt_dir(root_dir: str = "") -> Optional[str]:
+    candidates = []
+    if root_dir:
+        candidates.append(os.path.join(root_dir.strip(), "Models", "openthaigpt-ocr-text"))
+    env_root = os.environ.get("PO_AUTOFLOW_ROOT", "").strip()
+    if env_root:
+        candidates.append(os.path.join(env_root, "Models", "openthaigpt-ocr-text"))
+    candidates.extend([
+        r"D:\PO-AutoFlow\Models\openthaigpt-ocr-text",
+        r"C:\PO-AutoFlow\Models\openthaigpt-ocr-text",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "openthaigpt-ocr-text"),
+    ])
+    for d in candidates:
+        if (
+            d
+            and os.path.isfile(os.path.join(d, "det.onnx"))
+            and os.path.isfile(os.path.join(d, "rec.onnx"))
+            and os.path.isfile(os.path.join(d, "runtime", "line_engine.py"))
+        ):
+            return d
+    return None
+
+
+def _openthaigpt_runtime_backend() -> Optional[str]:
+    if importlib.util.find_spec("pyclipper") is None:
+        return None
+    if importlib.util.find_spec("openvino") is not None:
+        return "openvino"
+    if importlib.util.find_spec("onnxruntime") is not None:
+        return "onnxruntime"
+    return None
+
+
+def get_openthaigpt_ocr(root_dir: str = "", relaxed: bool = False):
+    model_dir = _resolve_openthaigpt_dir(root_dir)
+    backend = _openthaigpt_runtime_backend()
+    if not model_dir or not backend:
+        return None
+    key = (model_dir, bool(relaxed), backend)
+    if key in _openthaigpt_cache:
+        return _openthaigpt_cache[key]
+    try:
+        if model_dir not in sys.path:
+            sys.path.insert(0, model_dir)
+        from runtime.line_engine import LineOCR  # type: ignore
+
+        kwargs: Dict[str, Any] = {"threads": 4, "runtime": {"backend": backend}}
+        if relaxed:
+            kwargs["rec"] = {"drop_below": 0.50, "junk_below": 0.65, "junk_invalid": 0.20}
+        inst = LineOCR(model_dir, **kwargs)
+        _openthaigpt_cache[key] = inst
+        return inst
+    except Exception as e:
+        sys.stderr.write(f"OpenThai 2.0 init failed: {e}\n")
+        _openthaigpt_cache[key] = None
+        return None
+
+
+def run_openthaigpt_ocr(img_np: np.ndarray, root_dir: str = "", relaxed: bool = False) -> tuple:
+    eng = get_openthaigpt_ocr(root_dir, relaxed=relaxed)
+    if eng is None:
+        return [], [], 0.0
+    res = eng.read(img_np)
+    lines: List[str] = []
+    boxes: List[Dict[str, Any]] = []
+    confs: List[float] = []
+    for item in res.get("lines") or []:
+        txt = repair_thai_encoding(str(item.get("text") or "").strip())
+        if not txt:
+            continue
+        conf = float(item.get("confidence") or 0.0)
+        lines.append(txt)
+        confs.append(conf)
+        boxes.append({
+            "box": item.get("box") or [],
+            "text": txt,
+            "confidence": conf,
+            "type": "ocr",
+        })
+    avg_conf = (sum(confs) / len(confs)) if confs else 0.0
+    return lines, boxes, avg_conf
+
+
 def _run_image_ocr_cascade(
-    img_np: np.ndarray, root_dir: str = "", quality_preset: str = "balanced"
+    img_np: np.ndarray,
+    root_dir: str = "",
+    quality_preset: str = "balanced",
+    preferred_engine: str = "auto",
 ) -> tuple:
-    """Runs available on-device OCR engines (PaddleOCR -> Tesseract tha+eng -> Windows WinRT OCR)."""
+    """Runs offline OCR engines (OpenThai 2.0 OCR-Text -> Tesseract 5 tha+eng -> Windows WinRT)."""
     enhanced_img: Optional[np.ndarray] = None
     is_max = (quality_preset or "balanced").strip().lower() == "max_accuracy"
+    pref = (preferred_engine or "auto").strip().lower()
+
+    def _try_openthaigpt():
+        lines, boxes, conf = run_openthaigpt_ocr(img_np, root_dir, relaxed=False)
+        if not lines or (is_max and (len(lines) < 4 or conf < 0.85)):
+            r_lines, r_boxes, r_conf = run_openthaigpt_ocr(img_np, root_dir, relaxed=True)
+            if r_lines and (not lines or len(r_lines) > len(lines)):
+                lines, boxes, conf = r_lines, r_boxes, r_conf
+        if not lines or (is_max and len(lines) < 3):
+            nonlocal enhanced_img
+            if enhanced_img is None:
+                enhanced_img = Preprocessor.deskew_and_enhance(img_np)
+            e_lines, e_boxes, e_conf = run_openthaigpt_ocr(enhanced_img, root_dir, relaxed=True)
+            if e_lines and len(e_lines) > len(lines):
+                lines, boxes, conf = e_lines, e_boxes, e_conf
+        return lines, boxes, conf
+
+    def _try_tesseract():
+        tess_lines, tess_boxes, tess_conf = run_tesseract_ocr(img_np, root_dir)
+        if not tess_lines or (is_max and (len(tess_lines) < 4 or tess_conf < 0.72)):
+            nonlocal enhanced_img
+            if enhanced_img is None:
+                enhanced_img = Preprocessor.deskew_and_enhance(img_np)
+            enh_lines, enh_boxes, enh_conf = run_tesseract_ocr(enhanced_img, root_dir)
+            if enh_lines and (not tess_lines or len(enh_lines) > len(tess_lines) or enh_conf > tess_conf + 0.03):
+                tess_lines, tess_boxes, tess_conf = enh_lines, enh_boxes, enh_conf
+        return tess_lines, tess_boxes, tess_conf
+
+    # Honor explicit Tesseract preference if user overrode engine in Advanced settings
+    if pref in ("tesseract", "tesseract_tha_eng", "tesseract5"):
+        t_lines, t_boxes, t_conf = _try_tesseract()
+        if t_lines:
+            return t_lines, t_boxes, t_conf, "tesseract_tha_eng"
+
+    # Default #1 winner for Thai & English scans: OpenThai 2.0 OCR-Text
+    ot_lines, ot_boxes, ot_conf = _try_openthaigpt()
+    if ot_lines:
+        return ot_lines, ot_boxes, ot_conf, "openthaigpt_ocr"
 
     ocr_engine = get_paddle_ocr()
     if ocr_engine is not None:
         try:
-            enhanced_img = Preprocessor.deskew_and_enhance(img_np)
+            if enhanced_img is None:
+                enhanced_img = Preprocessor.deskew_and_enhance(img_np)
             ocr_res = ocr_engine.ocr(enhanced_img, cls=True)
             ocr_lines: List[str] = []
             boxes: List[Dict[str, Any]] = []
@@ -916,15 +1149,9 @@ def _run_image_ocr_cascade(
         except Exception as e:
             sys.stderr.write(f"PaddleOCR runtime fallback: {e}\n")
 
-    tess_lines, tess_boxes, tess_conf = run_tesseract_ocr(img_np, root_dir)
-    if not tess_lines or (is_max and (len(tess_lines) < 4 or tess_conf < 0.72)):
-        if enhanced_img is None:
-            enhanced_img = Preprocessor.deskew_and_enhance(img_np)
-        enh_lines, enh_boxes, enh_conf = run_tesseract_ocr(enhanced_img, root_dir)
-        if enh_lines and (not tess_lines or len(enh_lines) > len(tess_lines) or enh_conf > tess_conf + 0.03):
-            tess_lines, tess_boxes, tess_conf = enh_lines, enh_boxes, enh_conf
-    if tess_lines:
-        return tess_lines, tess_boxes, tess_conf, "tesseract_tha_eng"
+    t_lines, t_boxes, t_conf = _try_tesseract()
+    if t_lines:
+        return t_lines, t_boxes, t_conf, "tesseract_tha_eng"
 
     winrt_lines, winrt_boxes, winrt_conf = run_windows_winrt_ocr(img_np)
     if winrt_lines:
@@ -1447,6 +1674,11 @@ def parse_supplier_and_po(
     }
 
 
+_ADDRESS_NOISE_RE = re.compile(
+    r"(?i)\b(moo\.?\s*\d+|soi\s+\d+|road|rd\.|rayong|bangkok|chonburi|thailand|t\.|a\.|j\.|tel\.|fax)\b|ตำบล|อำเภอ|จังหวัด|แขวง|เขต|หมู่ที่|ซอย|ถนน|โทร\.?"
+)
+
+
 def _merge_local_vision_into_parsed(parsed: Dict[str, Any], vision: Dict[str, Any], neg_list: List[str]) -> None:
     if not vision or not isinstance(vision, dict):
         return
@@ -1454,7 +1686,11 @@ def _merge_local_vision_into_parsed(parsed: Dict[str, Any], vision: Dict[str, An
     cands = parsed.setdefault("supplier_candidates", [])
     for key, lang in (("supplier_th", "th"), ("supplier_en", "en")):
         raw_name = str(vision.get(key) or "").strip()
-        if raw_name and not is_ignored_self_company(raw_name) and not _is_negative_phrase(raw_name, neg_list):
+        if not raw_name or raw_name.lower() in ("none", "null", "n/a", "unknown", "-"):
+            continue
+        if _ADDRESS_NOISE_RE.search(raw_name) and not any(k in raw_name.lower() for k in ("จำกัด", "co.", "ltd", "partnership", "inc", "corp")):
+            continue
+        if not is_ignored_self_company(raw_name) and not _is_negative_phrase(raw_name, neg_list):
             detected_lang = "th" if re.search(r"[\u0E00-\u0E7F]", raw_name) else lang
             cands.append({
                 "name": repair_thai_encoding(raw_name),
@@ -1472,7 +1708,7 @@ def _merge_local_vision_into_parsed(parsed: Dict[str, Any], vision: Dict[str, An
         parsed["primary_supplier_en"] = next((c["name"] for c in cands if c["language"] == "en"), parsed.get("primary_supplier_en"))
 
     po_raw = str(vision.get("po_number") or "").strip()
-    if po_raw:
+    if po_raw and not _ADDRESS_NOISE_RE.search(po_raw) and po_raw.lower() not in ("none", "null", "-"):
         po_list = parsed.setdefault("po_numbers", [])
         for v in _normalize_po_token(po_raw):
             if v not in po_list:
@@ -1491,6 +1727,15 @@ def _merge_local_vision_into_parsed(parsed: Dict[str, Any], vision: Dict[str, An
             em_list.append(v_email)
 
 
+def _page_has_garbled_font(text: str) -> bool:
+    if not text:
+        return False
+    if text.count("·") >= 8 or "\ufffd" in text:
+        return True
+    pua_count = sum(1 for c in text if 0xF000 <= ord(c) <= 0xF8FF)
+    return pua_count >= 4
+
+
 def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
     """Processes a single file (PDF, Image, or DOCX) end-to-end."""
     file_path = request.get("file_path", "")
@@ -1499,6 +1744,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
 
     hints = request.get("hints") or {}
     root_dir = str(hints.get("root_dir") or "")
+    ocr_engine_primary = str(hints.get("ocr_engine_primary") or "auto").strip().lower()
     quality_preset = str(hints.get("ocr_quality_preset") or "balanced").strip().lower()
     if quality_preset not in ("fast", "balanced", "max_accuracy"):
         quality_preset = "balanced"
@@ -1520,6 +1766,10 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
     overall_text_parts = []
     all_boxes: List[Dict[str, Any]] = []
     first_page_img: Optional[np.ndarray] = None
+    vision_ai_status: Optional[str] = None
+    vision_ai_error: Optional[str] = None
+    vision_ai_duration_ms: Optional[float] = None
+    vision_ai_device: Optional[str] = None
 
     try:
         if ext == ".pdf":
@@ -1533,11 +1783,15 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 confidence = 1.0
 
                 initial_parsed = parse_supplier_and_po(raw_text, boxes, neg_phrases, pref_y)
-                needs_ocr = (not page_info["has_native_text"]) or (
-                    page_info.get("image_count", 0) > 0
-                    and (
-                        len(raw_text.strip()) < 250
-                        or not initial_parsed.get("supplier_candidates")
+                needs_ocr = (
+                    (not page_info["has_native_text"])
+                    or _page_has_garbled_font(raw_text)
+                    or (
+                        page_info.get("image_count", 0) > 0
+                        and (
+                            len(raw_text.strip()) < 250
+                            or not initial_parsed.get("supplier_candidates")
+                        )
                     )
                 )
 
@@ -1546,7 +1800,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                     if page_num == 1:
                         first_page_img = img
                     ocr_lines, ocr_boxes, ocr_conf, ocr_method = _run_image_ocr_cascade(
-                        img, root_dir, quality_preset
+                        img, root_dir, quality_preset, ocr_engine_primary
                     )
                     if ocr_lines:
                         native_clean = raw_text.strip()
@@ -1577,7 +1831,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
 
             first_page_img = img
             ocr_lines, boxes, confidence, ocr_method = _run_image_ocr_cascade(
-                img, root_dir, quality_preset
+                img, root_dir, quality_preset, ocr_engine_primary
             )
             raw_text = "\n".join(ocr_lines)
             parsed = parse_supplier_and_po(raw_text, boxes, neg_phrases, pref_y)
@@ -1621,7 +1875,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
         all_text = "\n".join(overall_text_parts)
         agg_parsed = parse_supplier_and_po(all_text, all_boxes, neg_phrases, pref_y)
 
-        # Optional 100% Offline Local Vision AI fallback / deep scan (SmolVLM2 / Qwen2.5-VL)
+        # Optional 100% Offline Local Vision AI fallback / deep scan (Qwen2.5-VL / SmolVLM2 / Typhoon)
         needs_vision_fallback = (
             (local_vision_enabled or force_vision)
             and ext != ".docx"
@@ -1634,7 +1888,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
         if needs_vision_fallback:
             if first_page_img is None and ext == ".pdf":
                 try:
-                    first_page_img = render_pdf_page_to_image(file_path, 1, dpi=150)
+                    first_page_img = render_pdf_page_to_image(file_path, 1, dpi=180)
                 except Exception:
                     first_page_img = None
             if first_page_img is not None:
@@ -1648,7 +1902,12 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                     builtin_mmproj_path,
                     quality_preset="max_accuracy" if (force_vision or quality_preset == "max_accuracy") else quality_preset,
                 )
-                if vision_out:
+                vision_ai_status = str(vision_out.get("_vision_status") or "error")
+                vision_ai_error = str(vision_out.get("_vision_error") or "") or None
+                vision_ai_duration_ms = vision_out.get("_vision_duration_ms")
+                vision_ai_device = str(vision_out.get("_vision_device") or "") or None
+
+                if vision_ai_status == "ok":
                     _merge_local_vision_into_parsed(agg_parsed, vision_out, neg_phrases)
                     if page_results:
                         _merge_local_vision_into_parsed(page_results[0]["parsed"], vision_out, neg_phrases)
@@ -1658,6 +1917,11 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                                 page_results[0]["extraction_method"] = (
                                     f"{existing_method}+vision_ai" if existing_method else "vision_ai"
                                 )
+                if page_results:
+                    page_results[0]["vision_ai_status"] = vision_ai_status
+                    page_results[0]["vision_ai_error"] = vision_ai_error
+                    page_results[0]["vision_ai_duration_ms"] = vision_ai_duration_ms
+                    page_results[0]["vision_ai_device"] = vision_ai_device
 
         return {
             "status": "ok",
@@ -1665,6 +1929,10 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
             "pages_count": len(page_results),
             "pages": page_results,
             "aggregated": agg_parsed,
+            "vision_ai_status": vision_ai_status,
+            "vision_ai_error": vision_ai_error,
+            "vision_ai_duration_ms": vision_ai_duration_ms,
+            "vision_ai_device": vision_ai_device,
         }
 
     except Exception as e:
@@ -1756,8 +2024,22 @@ def get_engine_capabilities(root_dir: str = "") -> Dict[str, Any]:
                     break
 
     tess_ok = bool(tess_exe and tessdata_dir)
+    openthaigpt_dir = _resolve_openthaigpt_dir(root_dir)
+    openthaigpt_backend = _openthaigpt_runtime_backend()
+    openthaigpt_ok = bool(openthaigpt_dir and openthaigpt_backend)
+    py_ver = platform.python_version()
+    if openthaigpt_ok:
+        openthaigpt_note = f"Ready ({openthaigpt_backend}) — Winner for fast Thai & English scans"
+    elif openthaigpt_dir and not openthaigpt_backend:
+        openthaigpt_note = "Model weights present, needs onnxruntime + pyclipper Python packages."
+    else:
+        openthaigpt_note = "Not installed yet (4.2 MB lightweight Thai+English neural OCR)."
+
     winrt_ok = os.name == "nt"
-    if HAS_PADDLEOCR:
+    winrt_thai = _is_winrt_thai_available()
+    if openthaigpt_ok:
+        active_scanned = "openthaigpt_ocr"
+    elif HAS_PADDLEOCR:
         active_scanned = "paddleocr_ppocrv5"
     elif tess_ok:
         active_scanned = "tesseract_tha_eng" if ("tha" in tess_langs and "eng" in tess_langs) else "tesseract"
@@ -1766,22 +2048,26 @@ def get_engine_capabilities(root_dir: str = "") -> Dict[str, Any]:
     else:
         active_scanned = "none"
 
-    py_ver = platform.python_version()
     paddle_note = (
         "Installed and active."
         if HAS_PADDLEOCR
-        else f"Not installed on Python {py_ver} (requires Python 3.11/3.12 with paddlepaddle)."
+        else f"Not installed on Python {py_ver} (optional; OpenThai 2.0 replaces it cleanly)."
     )
 
     return {
         "python_version": py_ver,
         "pymupdf_available": True,
+        "openthaigpt_available": openthaigpt_ok,
+        "openthaigpt_path": openthaigpt_dir or "",
+        "openthaigpt_backend": openthaigpt_backend or "",
+        "openthaigpt_note": openthaigpt_note,
         "paddleocr_available": bool(HAS_PADDLEOCR),
         "paddleocr_note": paddle_note,
         "tesseract_available": tess_ok,
         "tesseract_path": tess_exe or "",
         "tesseract_langs": tess_langs,
         "winrt_available": winrt_ok,
+        "winrt_thai_installed": winrt_thai,
         "active_scanned_engine": active_scanned,
     }
 
@@ -1884,29 +2170,31 @@ def benchmark_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
             txt = p0.get("raw_text", "")
             boxes = p0.get("boxes", [])
             parsed = parse_supplier_and_po(txt, boxes)
-            note = (
-                f"{p0.get('image_count', 0)} embedded image(s) detected; stamp-only text triggers scanned OCR in live pipeline."
-                if p0.get("image_count", 0) > 0 and len(txt.strip()) < 250
-                else "Direct vector/font extraction."
-            )
+            garbled = _page_has_garbled_font(txt)
+            if garbled:
+                note = "Embedded font has garbled/missing Thai Unicode glyphs; live pipeline automatically runs OpenThai 2.0 alongside it."
+            elif p0.get("image_count", 0) > 0 and len(txt.strip()) < 250:
+                note = f"{p0.get('image_count', 0)} embedded image(s) detected; scarce text triggers OpenThai 2.0 OCR in live pipeline."
+            else:
+                note = "Direct embedded PDF text extraction (no image rendering needed; includes legacy Thai glyph cleanup)."
             return {
                 "status": "ok",
                 "raw_text": txt,
-                "confidence": 1.0 if len(txt.strip()) > 30 else 0.0,
+                "confidence": 1.0 if (len(txt.strip()) > 30 and not garbled) else (0.45 if garbled else 0.0),
                 "parsed": parsed,
                 "note": note,
             }
 
-        results.append(_run_bench_step("native_pdf", "PyMuPDF Native PDF + AX2012 Repair", "PDF Text", bench_native))
+        results.append(_run_bench_step("native_pdf", "Built-in Digital PDF Reader", "Digital PDF", bench_native))
     elif ext in (".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"):
         img_300 = read_image_unicode(file_path)
         img_400 = img_300
         results.append({
             "id": "native_pdf",
-            "name": "PyMuPDF Native PDF + AX2012 Repair",
-            "category": "PDF Text",
+            "name": "Built-in Digital PDF Reader",
+            "category": "Digital PDF",
             "status": "skipped",
-            "note": f"Not applicable to image file ({ext})",
+            "note": f"Not applicable to image file ({ext}) — images use OpenThai 2.0 OCR.",
             "duration_ms": 0.0,
             "confidence": 0.0,
             "supplier_th": None,
@@ -1924,13 +2212,51 @@ def benchmark_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
     if img_300 is None:
         return {"status": "error", "message": f"Failed to decode page image from: {file_path}"}
 
+    # 1b. OpenThai 2.0 OCR-Text (Standard Balanced)
+    def bench_openthaigpt_strict():
+        ot_dir = _resolve_openthaigpt_dir(root_dir)
+        backend = _openthaigpt_runtime_backend()
+        if not ot_dir:
+            return {"status": "skipped", "note": "OpenThai 2.0 model not downloaded yet (click 'Install OpenThai 2.0' in Settings)."}
+        if not backend:
+            return {"status": "skipped", "note": "Missing Python runtime (install onnxruntime + pyclipper)."}
+        lines, boxes, conf = run_openthaigpt_ocr(img_300, root_dir, relaxed=False)
+        raw = "\n".join(lines)
+        return {
+            "status": "ok" if lines else "error",
+            "raw_text": raw,
+            "confidence": conf,
+            "parsed": parse_supplier_and_po(raw, boxes),
+            "note": f"{len(lines)} lines via OpenThai 2.0 ({backend}) • Recommended #1 for Thai+English scans",
+        }
+
+    results.append(_run_bench_step("openthaigpt_strict", "OpenThai 2.0 OCR-Text (Winner — Balanced)", "Scanned OCR", bench_openthaigpt_strict))
+
+    # 1c. OpenThai 2.0 OCR-Text (Faint-Scan Boost)
+    def bench_openthaigpt_relaxed():
+        ot_dir = _resolve_openthaigpt_dir(root_dir)
+        backend = _openthaigpt_runtime_backend()
+        if not ot_dir or not backend:
+            return {"status": "skipped", "note": "Requires OpenThai 2.0 model + onnxruntime/openvino."}
+        lines, boxes, conf = run_openthaigpt_ocr(img_300, root_dir, relaxed=True)
+        raw = "\n".join(lines)
+        return {
+            "status": "ok" if lines else "error",
+            "raw_text": raw,
+            "confidence": conf,
+            "parsed": parse_supplier_and_po(raw, boxes),
+            "note": f"{len(lines)} lines with relaxed confidence threshold for faint/blurry scans",
+        }
+
+    results.append(_run_bench_step("openthaigpt_relaxed", "OpenThai 2.0 OCR-Text (Faint-Scan Boost)", "Scanned OCR", bench_openthaigpt_relaxed))
+
     # 2. PaddleOCR PP-OCRv5
     def bench_paddle():
         if not HAS_PADDLEOCR:
             import platform
             return {
                 "status": "skipped",
-                "note": f"Not available on Python {platform.python_version()} (no paddlepaddle wheel).",
+                "note": f"Not installed on Python {platform.python_version()} (OpenThai 2.0 replaces it at 4.2 MB).",
             }
         eng = get_paddle_ocr()
         if eng is None:
@@ -1953,7 +2279,7 @@ def benchmark_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
             "note": f"{len(lines)} text lines read",
         }
 
-    results.append(_run_bench_step("paddleocr", "PaddleOCR PP-OCRv5 (Neural OCR)", "Image OCR", bench_paddle))
+    results.append(_run_bench_step("paddleocr", "PaddleOCR PP-OCRv5 (Legacy)", "Scanned OCR", bench_paddle))
 
     # 3. Tesseract 5 Raw 300 DPI
     def bench_tess_raw():
@@ -1967,10 +2293,10 @@ def benchmark_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
             "raw_text": raw,
             "confidence": conf,
             "parsed": parse_supplier_and_po(raw, boxes),
-            "note": f"{len(lines)} lines at 300 DPI raw ({tess_exe})",
+            "note": f"{len(lines)} lines at 300 DPI raw ({os.path.basename(tess_exe)})",
         }
 
-    results.append(_run_bench_step("tesseract_300", "Tesseract 5 (tha+eng • 300 DPI Raw)", "Image OCR", bench_tess_raw))
+    results.append(_run_bench_step("tesseract_300", "Tesseract 5 (tha+eng • 300 DPI Raw)", "Scanned OCR", bench_tess_raw))
 
     # 4. Tesseract 5 Enhanced 400 DPI
     def bench_tess_enh():
@@ -1988,12 +2314,12 @@ def benchmark_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
             "note": f"{len(lines)} lines at 400 DPI + CLAHE/Deskew",
         }
 
-    results.append(_run_bench_step("tesseract_400_enh", "Tesseract 5 (tha+eng • 400 DPI Enhanced)", "Image OCR", bench_tess_enh))
+    results.append(_run_bench_step("tesseract_400_enh", "Tesseract 5 (tha+eng • 400 DPI Enhanced)", "Scanned OCR", bench_tess_enh))
 
     # 5. EasyOCR (if installed in Python env)
     def bench_easyocr():
         if importlib.util.find_spec("easyocr") is None:
-            return {"status": "skipped", "note": "Not installed in Python environment (requires easyocr + PyTorch ~2.5 GB)."}
+            return {"status": "skipped", "note": "Not installed (requires ~2.5 GB PyTorch; slower and heavier than OpenThai 2.0)."}
         import easyocr
         reader = easyocr.Reader(["th", "en"], gpu=False, verbose=False)
         res = reader.readtext(img_300)
@@ -2012,29 +2338,34 @@ def benchmark_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
             "note": f"{len(lines)} EasyOCR spans",
         }
 
-    results.append(_run_bench_step("easyocr", "EasyOCR (th+en PyTorch)", "Image OCR", bench_easyocr))
+    results.append(_run_bench_step("easyocr", "EasyOCR (th+en PyTorch)", "Scanned OCR", bench_easyocr))
 
     # 6. Windows Built-In WinRT OCR
     def bench_winrt():
         if os.name != "nt":
             return {"status": "skipped", "note": "Windows-only API."}
+        has_thai = _is_winrt_thai_available()
         lines, boxes, conf = run_windows_winrt_ocr(img_300)
         raw = "\n".join(lines)
+        lang_note = (
+            f"{len(lines)} lines via Windows.Media.Ocr (Thai + English pack active)"
+            if has_thai
+            else f"{len(lines)} lines via Windows.Media.Ocr — WARNING: Windows Thai OCR pack not installed on this PC (Thai reads as garbled Latin)"
+        )
         return {
             "status": "ok" if lines else "error",
             "raw_text": raw,
-            "confidence": conf,
+            "confidence": conf if has_thai else min(conf, 0.45),
             "parsed": parse_supplier_and_po(raw, boxes),
-            "note": f"{len(lines)} lines via Windows.Media.Ocr",
+            "note": lang_note,
         }
 
-    results.append(_run_bench_step("windows_winrt", "Windows Built-In WinRT OCR", "Image OCR", bench_winrt))
+    results.append(_run_bench_step("windows_winrt", "Windows Built-In WinRT OCR", "Scanned OCR", bench_winrt))
 
     # 7. Built-In GGUF Vision AI Models (discovers all presets)
     for vm in vision_models:
         vm_id = str(vm.get("id") or "")
         vm_name = str(vm.get("name") or vm_id)
-        installed = bool(vm.get("installed", False))
 
         def bench_builtin_vlm(m_info=vm):
             if not m_info.get("installed"):
@@ -2049,8 +2380,11 @@ def benchmark_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 str(m_info.get("mmproj_path") or ""),
                 quality_preset="max_accuracy",
             )
-            if not v_out:
-                return {"status": "error", "note": "Built-in Vision engine returned empty/invalid JSON."}
+            if v_out.get("_vision_status") != "ok":
+                return {
+                    "status": "error",
+                    "note": str(v_out.get("_vision_error") or "Built-in Vision engine failed."),
+                }
             pseudo_parsed = {
                 "po_numbers": [],
                 "tax_ids": [],
@@ -2062,15 +2396,14 @@ def benchmark_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 "primary_supplier_en": None,
             }
             _merge_local_vision_into_parsed(pseudo_parsed, v_out, [])
-            em = str(v_out.get("email") or "").strip().lower()
-            if em and "@" in em and "qtc-energy" not in em:
-                pseudo_parsed["emails"] = [em]
+            clean_json = {k: v for k, v in v_out.items() if not k.startswith("_vision_")}
+            dev = str(v_out.get("_vision_device") or "Local")
             return {
                 "status": "ok",
-                "raw_text": json.dumps(v_out, ensure_ascii=False, indent=2),
-                "confidence": 0.91 if (pseudo_parsed.get("primary_supplier_th") or pseudo_parsed.get("primary_supplier_en")) else 0.5,
+                "raw_text": json.dumps(clean_json, ensure_ascii=False, indent=2),
+                "confidence": 0.91 if (pseudo_parsed.get("primary_supplier_th") or pseudo_parsed.get("primary_supplier_en")) else 0.55,
                 "parsed": pseudo_parsed,
-                "note": f"On-device GGUF VLM ({m_info.get('size_label', '')})",
+                "note": f"On-device GGUF VLM ({m_info.get('size_label', '')}) running on {dev}",
             }
 
         results.append(
@@ -2097,8 +2430,8 @@ def benchmark_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
         for om in ollama_models:
             def bench_ollama(model_name=om):
                 v_out = query_local_vision_model(img_300, "ollama", local_vision_endpoint, model_name)
-                if not v_out:
-                    return {"status": "error", "note": "Ollama model returned empty/non-JSON response."}
+                if v_out.get("_vision_status") != "ok":
+                    return {"status": "error", "note": str(v_out.get("_vision_error") or "Ollama model returned empty/non-JSON response.")}
                 pseudo_parsed = {
                     "po_numbers": [],
                     "tax_ids": [],
@@ -2110,9 +2443,10 @@ def benchmark_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                     "primary_supplier_en": None,
                 }
                 _merge_local_vision_into_parsed(pseudo_parsed, v_out, [])
+                clean_json = {k: v for k, v in v_out.items() if not k.startswith("_vision_")}
                 return {
                     "status": "ok",
-                    "raw_text": json.dumps(v_out, ensure_ascii=False, indent=2),
+                    "raw_text": json.dumps(clean_json, ensure_ascii=False, indent=2),
                     "confidence": 0.90,
                     "parsed": pseudo_parsed,
                     "note": "External Ollama localhost model",

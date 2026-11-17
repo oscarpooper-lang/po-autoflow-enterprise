@@ -366,7 +366,7 @@ impl PipelineCoordinator {
         }
 
         job.status = "ocr_processing".to_string();
-        job.stage_message = "Running PP-OCRv5 Thai & English neural OCR worker.".to_string();
+        job.stage_message = "Reading documents with Digital PDF Reader & OpenThai 2.0 OCR...".to_string();
         self.db.update_job(&job).ok();
 
         let memories = if settings.self_learning_enabled {
@@ -412,6 +412,7 @@ impl PipelineCoordinator {
             force_vision: force_vision
                 || (settings.local_vision_enabled && settings.local_vision_trigger_mode == "always"),
             ocr_quality_preset: settings.ocr_quality_preset.clone(),
+            ocr_engine_primary: settings.ocr_engine_primary.clone(),
         };
 
         let mut all_supplier_candidates = Vec::new();
@@ -422,6 +423,30 @@ impl PipelineCoordinator {
         for doc in &documents {
             match self.ocr_manager.process_file_with_hints(&doc.absolute_path, Some(&ocr_hints)).await {
                 Ok(resp) => {
+                    match resp.vision_ai_status.as_deref() {
+                        Some("ok") => {
+                            let msg = format!(
+                                "Vision AI ({}, {:.1}s) finished scanning {}.",
+                                resp.vision_ai_device.as_deref().unwrap_or("Local"),
+                                resp.vision_ai_duration_ms.unwrap_or(0.0) / 1000.0,
+                                doc.relative_path
+                            );
+                            self.ocr_manager.push_log(format!("[vision_ai OK] {}", msg));
+                            self.db.add_event(Some(&job_id), "info", &msg).ok();
+                        }
+                        Some("error") | Some("timeout") | Some("unavailable") => {
+                            let msg = format!(
+                                "Vision AI feedback on {}: {}",
+                                doc.relative_path,
+                                resp.vision_ai_error
+                                    .as_deref()
+                                    .unwrap_or("Vision AI did not return data")
+                            );
+                            self.ocr_manager.push_log(format!("[vision_ai WARN] {}", msg));
+                            self.db.add_event(Some(&job_id), "warn", &msg).ok();
+                        }
+                        _ => {}
+                    }
                     if let Some(pages) = resp.pages {
                         for page in pages {
                             let ocr_rec = OcrResultRecord {

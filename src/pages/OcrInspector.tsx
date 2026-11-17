@@ -872,10 +872,10 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                     className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${
                       currentRecord.engine.includes('vision_ai')
                         ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                        : currentRecord.engine.includes('openthaigpt')
+                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
                         : currentRecord.engine.includes('tesseract')
                         ? 'bg-blue-500/15 text-blue-300 border-blue-500/30'
-                        : currentRecord.engine.includes('paddle')
-                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
                         : currentRecord.engine.includes('native')
                         ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
                         : 'bg-zinc-800 text-zinc-300 border-zinc-700'
@@ -883,14 +883,16 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                     title={`Raw engine key: ${currentRecord.engine}`}
                   >
                     {[
-                      currentRecord.engine.includes('paddleocr')
-                        ? 'PaddleOCR PP-OCRv5'
+                      currentRecord.engine.includes('openthaigpt')
+                        ? 'Scanned: OpenThai 2.0'
+                        : currentRecord.engine.includes('paddleocr')
+                        ? 'Scanned: PaddleOCR'
                         : currentRecord.engine.includes('tesseract')
-                        ? 'Scanned: Tesseract 5 (TH+EN)'
+                        ? 'Scanned: Tesseract 5'
                         : currentRecord.engine.includes('winrt')
                         ? 'Scanned: Windows OCR'
                         : currentRecord.engine === 'native_pdf'
-                        ? 'Digital PDF (PyMuPDF)'
+                        ? 'Built-in PDF Reader'
                         : currentRecord.engine,
                       currentRecord.engine.includes('vision_ai') ? '+ Vision AI' : '',
                     ]

@@ -65,6 +65,14 @@ pub struct OcrPageResult {
     pub extraction_method: String,
     pub boxes: Vec<serde_json::Value>,
     pub parsed: ParsedEntities,
+    #[serde(default)]
+    pub vision_ai_status: Option<String>,
+    #[serde(default)]
+    pub vision_ai_error: Option<String>,
+    #[serde(default)]
+    pub vision_ai_duration_ms: Option<f64>,
+    #[serde(default)]
+    pub vision_ai_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +83,14 @@ pub struct OcrFileResponse {
     pub pages: Option<Vec<OcrPageResult>>,
     pub aggregated: Option<ParsedEntities>,
     pub message: Option<String>,
+    #[serde(default)]
+    pub vision_ai_status: Option<String>,
+    #[serde(default)]
+    pub vision_ai_error: Option<String>,
+    #[serde(default)]
+    pub vision_ai_duration_ms: Option<f64>,
+    #[serde(default)]
+    pub vision_ai_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -97,6 +113,8 @@ pub struct OcrHints {
     pub force_vision: bool,
     #[serde(default)]
     pub ocr_quality_preset: String,
+    #[serde(default)]
+    pub ocr_engine_primary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,7 +301,7 @@ impl OcrManager {
 
         let mut resp_line = String::new();
         let read_result = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(180),
             worker.reader.read_line(&mut resp_line),
         )
         .await;

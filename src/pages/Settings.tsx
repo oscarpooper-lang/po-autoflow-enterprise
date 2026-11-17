@@ -25,6 +25,8 @@ import {
   Trash2,
   Check,
   HardDrive,
+  Play,
+  AlertTriangle,
 } from 'lucide-react';
 import type {
   AppSettings,
@@ -39,6 +41,7 @@ import {
   installGitHubUpdate,
   type GitHubUpdateStatus,
   type OcrEngineStatus,
+  type OcrSelfTestResult,
 } from '../services/tauri';
 import { remapWorkspacePaths } from '../utils/workspacePaths';
 
@@ -77,7 +80,57 @@ export const Settings: React.FC<SettingsProps> = ({
   const [builtInVision, setBuiltInVision] = useState<BuiltInVisionStatus | null>(null);
   const [downloadingModelId, setDownloadingModelId] = useState<string | null>(null);
   const [ocrEngineStatus, setOcrEngineStatus] = useState<OcrEngineStatus | null>(null);
+  const [installingOpenThai, setInstallingOpenThai] = useState(false);
+  const [upgradingVulkan, setUpgradingVulkan] = useState(false);
+  const [selfTestLoading, setSelfTestLoading] = useState(false);
+  const [selfTestResult, setSelfTestResult] = useState<OcrSelfTestResult | null>(null);
+  const [selfTestError, setSelfTestError] = useState<string | null>(null);
+  const [showAdvancedEngine, setShowAdvancedEngine] = useState(false);
   const [packagePref, setPackagePref] = useState<'auto' | 'msi' | 'nsis'>('auto');
+
+  const handleInstallOpenThai = async () => {
+    setInstallingOpenThai(true);
+    setSelfTestError(null);
+    try {
+      const updated = await api.installOpenThaiOcr();
+      setOcrEngineStatus(updated);
+      if (formData.ocr_engine_primary === 'paddleocr') {
+        handleChange('ocr_engine_primary', 'openthaigpt');
+      }
+    } catch (err: unknown) {
+      setSelfTestError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setInstallingOpenThai(false);
+    }
+  };
+
+  const handleUpgradeVulkanEngine = async () => {
+    setUpgradingVulkan(true);
+    setSelfTestError(null);
+    try {
+      const vis = await api.installVulkanVisionEngine();
+      setBuiltInVision(vis);
+      const status = await api.getOcrEngineStatus().catch(() => null);
+      if (status) setOcrEngineStatus(status);
+    } catch (err: unknown) {
+      setSelfTestError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUpgradingVulkan(false);
+    }
+  };
+
+  const handleRunSelfTest = async () => {
+    setSelfTestLoading(true);
+    setSelfTestError(null);
+    try {
+      const res = await api.runOcrSelfTest();
+      setSelfTestResult(res);
+    } catch (err: unknown) {
+      setSelfTestError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSelfTestLoading(false);
+    }
+  };
 
   const handleTestLocalVision = async () => {
     setTestingVision(true);
@@ -687,26 +740,37 @@ export const Settings: React.FC<SettingsProps> = ({
             <div className="space-y-4 text-xs">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <h3 className="text-sm font-bold text-white">Document Reader &amp; Matching Rules</h3>
+                  <h3 className="text-sm font-bold text-white">Document Reader &amp; Vision AI</h3>
                   <p className="text-zinc-400 text-xs mt-0.5">
-                    Shows every live reader &amp; AI layer running on your PC right now (no hidden fallbacks).
+                    Crystal-clear view of what reads your PDFs and scans right now — test both in 1 click below.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => api.getOcrEngineStatus().then(setOcrEngineStatus).catch(() => {})}
-                  className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 flex items-center gap-1 text-[11px]"
-                >
-                  <RefreshCw className="w-3 h-3" />
-                  <span>Refresh Engine Check</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => api.getOcrEngineStatus().then(setOcrEngineStatus).catch(() => {})}
+                    className="px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 flex items-center gap-1 text-[11px]"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Refresh Status</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRunSelfTest}
+                    disabled={selfTestLoading}
+                    className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold flex items-center gap-1.5 text-[11px]"
+                  >
+                    <Play className={`w-3 h-3 ${selfTestLoading ? 'animate-pulse' : ''}`} />
+                    <span>{selfTestLoading ? 'Testing OCR & AI...' : 'Run Live Self-Test'}</span>
+                  </button>
+                </div>
               </div>
 
               {/* Plain-English Live Engine Status Panel */}
-              <div className="p-4 rounded-xl bg-zinc-950/80 border border-zinc-800 space-y-2.5">
+              <div className="p-4 rounded-xl bg-zinc-950/80 border border-zinc-800 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="font-semibold text-zinc-100">
-                    What Is Actually Running on This PC
+                    What Reads Your POs Right Now
                   </span>
                   <span className="text-[11px] font-mono text-zinc-400">
                     Python {ocrEngineStatus?.python_version || 'checking...'} • Worker{' '}
@@ -715,58 +779,66 @@ export const Settings: React.FC<SettingsProps> = ({
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
-                  <div className="p-2.5 rounded-lg bg-zinc-900/90 border border-zinc-800 space-y-1">
+                  <div className="p-3 rounded-lg bg-zinc-900/90 border border-zinc-800 space-y-1.5">
                     <div className="flex items-center justify-between gap-1">
                       <span className="font-semibold text-zinc-200">1. Digital PDFs</span>
-                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-semibold">
+                      <span className="px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 text-[10px] font-semibold">
                         ACTIVE
                       </span>
                     </div>
-                    <p className="text-[11px] text-zinc-300 font-medium">PyMuPDF + AX 2012 Repair</p>
-                    <p className="text-[10px] text-zinc-500 leading-relaxed">
-                      Reads computer-made PDFs directly at 100% accuracy in ~0.03s.
+                    <p className="text-[11px] text-zinc-200 font-medium">Built-in Digital PDF Reader</p>
+                    <p className="text-[10px] text-zinc-400 leading-relaxed">
+                      Reads embedded text directly in ~0.02s and auto-cleans broken Thai font spacing. Hands image/garbled pages cleanly to OpenThai 2.0.
                     </p>
                   </div>
 
-                  <div className="p-2.5 rounded-lg bg-zinc-900/90 border border-zinc-800 space-y-1">
+                  <div className="p-3 rounded-lg bg-zinc-900/90 border border-zinc-800 space-y-1.5">
                     <div className="flex items-center justify-between gap-1">
-                      <span className="font-semibold text-zinc-200">2. Scanned Paper OCR</span>
+                      <span className="font-semibold text-zinc-200">2. Scanned Pages &amp; Photos</span>
                       <span
                         className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
-                          ocrEngineStatus?.active_scanned_engine &&
-                          ocrEngineStatus.active_scanned_engine !== 'none'
-                            ? 'bg-blue-500/15 text-blue-300 border-blue-500/30'
+                          ocrEngineStatus?.openthaigpt_available
+                            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                            : ocrEngineStatus?.tesseract_available
+                            ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
                             : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
                         }`}
                       >
-                        {ocrEngineStatus?.active_scanned_engine === 'paddleocr_ppocrv5'
-                          ? 'PaddleOCR'
-                          : ocrEngineStatus?.active_scanned_engine?.startsWith('tesseract')
-                          ? 'Tesseract 5'
-                          : ocrEngineStatus?.active_scanned_engine === 'windows_winrt_ocr'
-                          ? 'Windows OCR'
-                          : 'Unavailable'}
+                        {ocrEngineStatus?.openthaigpt_available
+                          ? 'WINNER READY'
+                          : ocrEngineStatus?.tesseract_available
+                          ? 'TESSERACT'
+                          : 'MISSING'}
                       </span>
                     </div>
-                    <p className="text-[11px] text-zinc-300 font-medium">
-                      {ocrEngineStatus?.paddleocr_available
-                        ? 'PaddleOCR PP-OCRv5 (Neural TH+EN)'
+                    <p className="text-[11px] text-zinc-200 font-medium">
+                      {ocrEngineStatus?.openthaigpt_available
+                        ? `OpenThai 2.0 OCR-Text (${ocrEngineStatus.openthaigpt_backend || 'onnx'})`
                         : ocrEngineStatus?.tesseract_available
                         ? `Tesseract 5 (${ocrEngineStatus.tesseract_langs.join(' + ') || 'eng'})`
-                        : ocrEngineStatus?.winrt_available
-                        ? 'Windows Built-In WinRT OCR (Fallback)'
                         : 'No scanned OCR installed'}
                     </p>
-                    <p className="text-[10px] text-zinc-500 leading-relaxed">
-                      {ocrEngineStatus?.paddleocr_available
-                        ? 'Neural detector active for paper scans.'
-                        : `${ocrEngineStatus?.paddleocr_note || 'PaddleOCR inactive'} Using Tesseract 5 for scanned PDFs/images.`}
+                    <p className="text-[10px] text-zinc-400 leading-relaxed">
+                      {ocrEngineStatus?.openthaigpt_available
+                        ? '0.3–1.0s/page • 93%–98% Thai+EN accuracy (our #1 benchmark winner).'
+                        : ocrEngineStatus?.openthaigpt_note || 'Install OpenThai 2.0 (4.2 MB) for 5–10x faster, cleaner Thai OCR.'}
                     </p>
+                    {ocrEngineStatus && !ocrEngineStatus.openthaigpt_available && (
+                      <button
+                        type="button"
+                        onClick={handleInstallOpenThai}
+                        disabled={installingOpenThai}
+                        className="mt-1 px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white font-semibold text-[10px] flex items-center gap-1"
+                      >
+                        <Download className="w-3 h-3" />
+                        <span>{installingOpenThai ? 'Installing (4.2 MB)...' : 'Install OpenThai 2.0 (4.2 MB)'}</span>
+                      </button>
+                    )}
                   </div>
 
-                  <div className="p-2.5 rounded-lg bg-zinc-900/90 border border-zinc-800 space-y-1">
+                  <div className="p-3 rounded-lg bg-zinc-900/90 border border-zinc-800 space-y-1.5">
                     <div className="flex items-center justify-between gap-1">
-                      <span className="font-semibold text-zinc-200">3. Built-In Vision AI</span>
+                      <span className="font-semibold text-zinc-200">3. Vision AI Second Opinion</span>
                       <span
                         className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
                           ocrEngineStatus?.vision_ai_ready && ocrEngineStatus?.vision_ai_enabled
@@ -779,14 +851,84 @@ export const Settings: React.FC<SettingsProps> = ({
                         {ocrEngineStatus?.vision_ai_status_label || (formData.local_vision_enabled ? 'Enabled' : 'Disabled')}
                       </span>
                     </div>
-                    <p className="text-[11px] text-zinc-300 font-medium">
+                    <p className="text-[11px] text-zinc-200 font-medium">
                       {ocrEngineStatus?.vision_ai_model || formData.local_vision_model || 'None'}
                     </p>
                     <p className="text-[10px] text-zinc-400 leading-relaxed">
-                      {ocrEngineStatus?.vision_ai_message || 'Optional local VLM assistant for messy scans.'}
+                      {ocrEngineStatus?.vision_ai_message || 'Optional visual AI helper for blurry/table scans.'}
                     </p>
+                    {builtInVision?.engine_installed && ocrEngineStatus && !ocrEngineStatus.vision_engine_vulkan && (
+                      <button
+                        type="button"
+                        onClick={handleUpgradeVulkanEngine}
+                        disabled={upgradingVulkan}
+                        className="mt-1 px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-zinc-950 font-semibold text-[10px] flex items-center gap-1"
+                      >
+                        <Download className="w-3 h-3" />
+                        <span>{upgradingVulkan ? 'Upgrading GPU Engine...' : 'Upgrade to Vulkan GPU (~38 MB)'}</span>
+                      </button>
+                    )}
                   </div>
                 </div>
+
+                {/* Live Self-Test Immediate Feedback Box */}
+                {selfTestError && (
+                  <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="font-semibold">Self-Test Error</div>
+                      <div className="text-[11px] mt-0.5">{selfTestError}</div>
+                    </div>
+                  </div>
+                )}
+
+                {selfTestResult && (
+                  <div className="p-3 rounded-lg bg-zinc-900 border border-blue-500/30 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-semibold text-blue-200 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Live Self-Test Result ({selfTestResult.file_tested})</span>
+                      </span>
+                      <span className="font-mono text-[11px] text-zinc-300">
+                        {selfTestResult.duration_ms}ms • Engine: <strong>{selfTestResult.engine_used}</strong> • {selfTestResult.confidence.toFixed(0)}%
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px]">
+                      <div className="p-2 rounded bg-zinc-950 border border-zinc-800">
+                        <span className="text-zinc-500">Supplier: </span>
+                        <span className="text-zinc-100 font-medium">{selfTestResult.supplier_detected || '—'}</span>
+                      </div>
+                      <div className="p-2 rounded bg-zinc-950 border border-zinc-800 font-mono">
+                        <span className="text-zinc-500 font-sans">PO / Tax ID: </span>
+                        <span className="text-zinc-100">
+                          {[...selfTestResult.po_numbers.slice(0, 1), ...selfTestResult.tax_ids.slice(0, 1)].join(' • ') || '—'}
+                        </span>
+                      </div>
+                      <div className="p-2 rounded bg-zinc-950 border border-zinc-800">
+                        <span className="text-zinc-500">Vision AI: </span>
+                        {selfTestResult.vision_ai_status === 'ok' ? (
+                          <span className="text-emerald-300 font-semibold">
+                            OK ({selfTestResult.vision_ai_device || 'Local'},{' '}
+                            {((selfTestResult.vision_ai_duration_ms || 0) / 1000).toFixed(1)}s)
+                          </span>
+                        ) : selfTestResult.vision_ai_status ? (
+                          <span className="text-rose-300 font-medium">
+                            {selfTestResult.vision_ai_error || selfTestResult.vision_ai_status}
+                          </span>
+                        ) : (
+                          <span className="text-zinc-400">
+                            {formData.local_vision_enabled ? 'Skipped (OCR confidence >= 85%)' : 'Turned Off'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {selfTestResult.text_preview && (
+                      <pre className="p-2 rounded bg-zinc-950 border border-zinc-800 text-[10px] font-mono text-zinc-300 whitespace-pre-wrap max-h-28 overflow-y-auto">
+                        {selfTestResult.text_preview}
+                      </pre>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="space-y-4">
@@ -796,7 +938,7 @@ export const Settings: React.FC<SettingsProps> = ({
                     <div>
                       <h4 className="font-semibold text-zinc-100">Performance vs. Accuracy Mode</h4>
                       <p className="text-[11px] text-zinc-400">
-                        Pick a preset to tune scan DPI, Tesseract enhancements, and local Vision AI depth.
+                        OpenThai 2.0 + Digital PDF Reader handle every preset automatically; choose whether Vision AI also assists.
                       </p>
                     </div>
                   </div>
@@ -806,20 +948,20 @@ export const Settings: React.FC<SettingsProps> = ({
                         {
                           id: 'fast',
                           title: 'Fast / Eco',
-                          badge: 'Fastest (~1–2s)',
-                          summary: '200 DPI scan OCR • Vision AI off unless forced manually. Ideal for crisp digital PDFs.',
+                          badge: 'Fastest (<0.5s)',
+                          summary: 'Digital PDF + OpenThai 2.0 OCR only (200 DPI). Vision AI turned off for maximum speed.',
                         },
                         {
                           id: 'balanced',
                           title: 'Balanced',
                           badge: 'Recommended',
-                          summary: '300 DPI scan OCR + Smart Fallback Vision AI only when confidence < 85%.',
+                          summary: 'Digital PDF + OpenThai 2.0 (300 DPI) + Smart Vision AI helper only when confidence < 85%.',
                         },
                         {
                           id: 'max_accuracy',
                           title: 'Maximum Accuracy',
-                          badge: 'Deepest • Slowest',
-                          summary: '400 DPI multi-pass OCR + Always-On high-detail Vision AI (prefers Qwen2.5-VL-3B).',
+                          badge: 'Deepest (~10s GPU)',
+                          summary: '400 DPI multi-pass OpenThai 2.0 + Always run Vision AI (Qwen2.5-VL-3B on Vulkan GPU).',
                         },
                       ] as const
                     ).map((preset) => {
@@ -870,9 +1012,11 @@ export const Settings: React.FC<SettingsProps> = ({
                                 local_vision_enabled: installedModels.length > 0 ? true : prev.local_vision_enabled,
                                 local_vision_provider: 'builtin',
                                 local_vision_trigger_mode: 'fallback',
-                                local_vision_model: hasSmol22
+                                local_vision_model: hasQwen
+                                  ? 'qwen2.5-vl-3b'
+                                  : hasSmol22
                                   ? 'smolvlm2-2.2b'
-                                  : bestInstalled || 'smolvlm2-2.2b',
+                                  : bestInstalled || 'qwen2.5-vl-3b',
                                 ocr_confidence_threshold_verified: 98.0,
                                 ocr_confidence_threshold_high: 90.0,
                                 ocr_confidence_threshold_review: 75.0,
@@ -906,7 +1050,7 @@ export const Settings: React.FC<SettingsProps> = ({
                     !(builtInVision?.models || []).some((m) => m.id === 'qwen2.5-vl-3b' && m.installed) && (
                       <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-200 text-[11px] flex flex-wrap items-center justify-between gap-2">
                         <span>
-                          Tip: For true Maximum Accuracy on Thai scans, download <strong>Qwen2.5-VL-3B (2.65 GB)</strong> below.
+                          Tip: For Maximum Accuracy Vision AI fallback, download <strong>Qwen2.5-VL-3B (2.65 GB)</strong> below.
                         </span>
                         <button
                           type="button"
@@ -920,16 +1064,34 @@ export const Settings: React.FC<SettingsProps> = ({
                     )}
                 </div>
 
-                <div>
-                  <label className="text-zinc-300 font-semibold block mb-1">OCR Pipeline Mode:</label>
-                  <select
-                    value={formData.ocr_engine_primary}
-                    onChange={(e) => handleChange('ocr_engine_primary', e.target.value)}
-                    className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 font-medium"
+                {/* Collapsible Advanced Engine Override */}
+                <div className="rounded-lg bg-zinc-950/60 border border-zinc-800 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvancedEngine((v) => !v)}
+                    className="w-full px-4 py-2.5 text-left flex items-center justify-between text-zinc-400 hover:text-zinc-200"
                   >
-                    <option value="paddleocr">Auto Local Pipeline (PyMuPDF → PaddleOCR / Tesseract 5 → Windows OCR)</option>
-                    <option value="google_vision">Google Cloud Vision API (Requires Google Credentials)</option>
-                  </select>
+                    <span className="font-medium text-[11px]">
+                      Advanced: Manual Scanned Engine Override ({formData.ocr_engine_primary === 'tesseract' ? 'Tesseract 5 Forced' : 'Auto — OpenThai 2.0 Winner'})
+                    </span>
+                    <span className="text-[10px] font-mono">{showAdvancedEngine ? 'Hide' : 'Show'}</span>
+                  </button>
+                  {showAdvancedEngine && (
+                    <div className="px-4 pb-3 pt-1 border-t border-zinc-800 space-y-2">
+                      <select
+                        value={formData.ocr_engine_primary === 'paddleocr' ? 'openthaigpt' : formData.ocr_engine_primary}
+                        onChange={(e) => handleChange('ocr_engine_primary', e.target.value)}
+                        className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 font-medium"
+                      >
+                        <option value="openthaigpt">Auto Best Pipeline (Digital PDF → OpenThai 2.0 → Tesseract 5 Fallback)</option>
+                        <option value="tesseract">Force Tesseract 5 (tha+eng) Before OpenThai 2.0</option>
+                        <option value="google_vision">Google Cloud Vision API (Requires Cloud Credentials)</option>
+                      </select>
+                      <p className="text-[10px] text-zinc-500">
+                        Leave on Auto Best Pipeline unless testing legacy Tesseract ordering.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 <div className="p-4 rounded-lg bg-zinc-950/70 border border-zinc-800 space-y-3">
@@ -1276,7 +1438,11 @@ export const Settings: React.FC<SettingsProps> = ({
                       <HardDrive className="w-3.5 h-3.5 text-zinc-500" />
                       <span>
                         Native Engine:{' '}
-                        {builtInVision?.engine_installed ? 'Installed in app folder' : 'Auto-installs on first model download'}
+                        {builtInVision?.engine_installed
+                          ? ocrEngineStatus?.vision_engine_vulkan
+                            ? 'Vulkan GPU Ready (~8–12s/page)'
+                            : 'Installed (CPU-only • upgrade to Vulkan GPU above)'
+                          : 'Auto-installs (Vulkan GPU) on first model download'}
                       </span>
                     </span>
                   </div>

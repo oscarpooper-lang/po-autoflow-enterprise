@@ -160,7 +160,7 @@ impl Default for AppSettings {
             poll_interval_ms: 2000,
             stability_delay_ms: 1500,
             stability_checks: 3,
-            ocr_engine_primary: "paddleocr".to_string(),
+            ocr_engine_primary: "openthaigpt".to_string(),
             ocr_confidence_threshold_verified: 98.0,
             ocr_confidence_threshold_high: 90.0,
             ocr_confidence_threshold_review: 75.0,
