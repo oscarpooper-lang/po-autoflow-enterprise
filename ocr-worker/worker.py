@@ -11,6 +11,7 @@ import json
 import base64
 import traceback
 import re
+import shutil
 import subprocess
 import tempfile
 import importlib.util
@@ -30,9 +31,14 @@ except ImportError:
 
 # OCR engine
 try:
-    from paddleocr import PaddleOCR
-    HAS_PADDLEOCR = True
+    if importlib.util.find_spec("paddle") is not None:
+        from paddleocr import PaddleOCR
+        HAS_PADDLEOCR = True
+    else:
+        PaddleOCR = None
+        HAS_PADDLEOCR = False
 except Exception:
+    PaddleOCR = None
     HAS_PADDLEOCR = False
 
 # Google Cloud Vision optional fallback
@@ -84,6 +90,20 @@ def _extract_json_object(raw: str) -> Dict[str, Any]:
     return {}
 
 
+def _prepare_vision_crop(img_np: np.ndarray, max_width: int = 960) -> np.ndarray:
+    """Focuses VLM input on the header band of portrait pages and caps width for fast inference."""
+    h, w = img_np.shape[:2]
+    vision_img = img_np
+    if h > int(w * 1.05):
+        crop_h = max(1, int(h * 0.55))
+        vision_img = img_np[:crop_h, :]
+    vh, vw = vision_img.shape[:2]
+    if vw > max_width:
+        scale = float(max_width) / float(vw)
+        vision_img = cv2.resize(vision_img, (max_width, max(1, int(vh * scale))), interpolation=cv2.INTER_AREA)
+    return vision_img
+
+
 def query_local_vision_model(
     img_np: np.ndarray,
     provider: str,
@@ -115,7 +135,8 @@ def query_local_vision_model(
             ):
                 return {}
 
-            ok, buf = cv2.imencode(".png", img_np)
+            vision_img = _prepare_vision_crop(img_np, max_width=960)
+            ok, buf = cv2.imencode(".png", vision_img)
             if not ok:
                 return {}
 
@@ -139,6 +160,8 @@ def query_local_vision_model(
                     "200",
                     "--temp",
                     "0.1",
+                    "--repeat-penalty",
+                    "1.3",
                     "--no-warmup",
                 ]
                 kwargs: Dict[str, Any] = {
@@ -404,6 +427,10 @@ BROKEN_SARA_AM_WORDS = [
     (r"ค\s+าสั่ง", "คำสั่ง"),
     (r"น\s+าเข้า", "นำเข้า"),
     (r"น\s+าส่ง", "นำส่ง"),
+    (r"จำกัต", "จำกัด"),
+    (r"จ\s*ำ\s*กั[ดต]", "จำกัด"),
+    (r"บริ\s+ษัท", "บริษัท"),
+    (r"ห้างหุ้นส่วน\s+จำกัด", "ห้างหุ้นส่วนจำกัด"),
 ]
 
 
@@ -496,6 +523,384 @@ def get_paddle_ocr():
             except BaseException:
                 _paddle_ocr_instance = None
     return _paddle_ocr_instance
+
+
+_DEFAULT_TESS_MODELS_DIR = os.path.join(r"C:\PO-AutoFlow\Models\tesseract")
+_TESSDATA_DOWNLOAD_FAILED: bool = False
+
+
+def _find_tesseract_exe() -> Optional[str]:
+    local_app = os.environ.get("LOCALAPPDATA", "")
+    candidates = [
+        os.path.join(_DEFAULT_TESS_MODELS_DIR, "tesseract.exe"),
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    ]
+    if local_app:
+        candidates.append(os.path.join(local_app, "Programs", "Tesseract-OCR", "tesseract.exe"))
+    which_tess = shutil.which("tesseract")
+    if which_tess:
+        candidates.append(which_tess)
+
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return None
+
+
+def _ensure_tessdata_dir(tess_exe: str) -> Optional[str]:
+    """Ensures eng + tha traineddata exist in a readable tessdata directory."""
+    global _TESSDATA_DOWNLOAD_FAILED
+    managed_tessdata = os.path.join(_DEFAULT_TESS_MODELS_DIR, "tessdata")
+    sibling_tessdata = os.path.join(os.path.dirname(tess_exe), "tessdata")
+
+    for d in (managed_tessdata, sibling_tessdata):
+        if (
+            os.path.isfile(os.path.join(d, "tha.traineddata"))
+            and os.path.isfile(os.path.join(d, "eng.traineddata"))
+        ):
+            return d
+
+    os.makedirs(managed_tessdata, exist_ok=True)
+    for lang in ("eng", "tha"):
+        dest = os.path.join(managed_tessdata, f"{lang}.traineddata")
+        if os.path.isfile(dest) and os.path.getsize(dest) > 50_000:
+            continue
+        sib_file = os.path.join(sibling_tessdata, f"{lang}.traineddata")
+        if os.path.isfile(sib_file) and os.path.getsize(sib_file) > 50_000:
+            try:
+                shutil.copy2(sib_file, dest)
+                continue
+            except Exception:
+                pass
+        if not _TESSDATA_DOWNLOAD_FAILED:
+            url = f"https://github.com/tesseract-ocr/tessdata_fast/raw/main/{lang}.traineddata"
+            try:
+                urllib.request.urlretrieve(url, dest)
+            except Exception as e:
+                sys.stderr.write(f"Failed downloading {lang}.traineddata: {e}\n")
+                _TESSDATA_DOWNLOAD_FAILED = True
+                if os.path.exists(dest):
+                    try:
+                        os.remove(dest)
+                    except Exception:
+                        pass
+
+    if os.path.isfile(os.path.join(managed_tessdata, "tha.traineddata")) and os.path.isfile(
+        os.path.join(managed_tessdata, "eng.traineddata")
+    ):
+        return managed_tessdata
+    if os.path.isfile(os.path.join(sibling_tessdata, "eng.traineddata")):
+        return sibling_tessdata
+    if os.path.isfile(os.path.join(managed_tessdata, "eng.traineddata")):
+        return managed_tessdata
+    return None
+
+
+def _clean_tesseract_line_tokens(token_items: List[tuple]) -> str:
+    """Joins Tesseract TSV word boxes using horizontal pixel gaps to eliminate intra-Thai-word spaces."""
+    if not token_items:
+        return ""
+    items = sorted(token_items, key=lambda t: t[0])
+    parts: List[str] = [items[0][3]]
+    prev_right = items[0][1]
+    prev_h = max(items[0][2], 12.0)
+    prev_text = items[0][3]
+
+    thai_tail = re.compile(r"[\u0E00-\u0E7F]$")
+    thai_head = re.compile(r"^[\u0E00-\u0E7F]")
+
+    for left, right, h, word in items[1:]:
+        gap = left - prev_right
+        line_h = max(prev_h, h, 12.0)
+        both_thai = bool(thai_tail.search(prev_text) and thai_head.match(word))
+        # Tesseract splits Thai syllables into word tokens with small pixel gaps; join intra-word clusters.
+        if both_thai and gap <= max(3.5, line_h * 0.24):
+            parts.append(word)
+        else:
+            parts.append(" " + word)
+        prev_right = max(prev_right, right)
+        prev_h = h
+        prev_text = word
+
+    joined = re.sub(r"\s+", " ", "".join(parts)).strip()
+    return repair_thai_encoding(joined).strip()
+
+
+def run_tesseract_ocr(img_np: np.ndarray) -> tuple:
+    """Runs Tesseract 5 CLI (tha+eng) on an image and returns (lines, boxes, avg_conf)."""
+    tess_exe = _find_tesseract_exe()
+    if not tess_exe:
+        return [], [], 0.0
+    tessdata_dir = _ensure_tessdata_dir(tess_exe)
+    if not tessdata_dir:
+        return [], [], 0.0
+
+    has_tha = os.path.isfile(os.path.join(tessdata_dir, "tha.traineddata"))
+    lang_arg = "tha+eng" if has_tha else "eng"
+
+    ok, buf = cv2.imencode(".png", img_np)
+    if not ok:
+        return [], [], 0.0
+
+    tmp_png = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+            tf.write(buf.tobytes())
+            tmp_png = tf.name
+
+        cmd = [
+            tess_exe,
+            tmp_png,
+            "stdout",
+            "--tessdata-dir",
+            tessdata_dir,
+            "-l",
+            lang_arg,
+            "--oem",
+            "1",
+            "--psm",
+            "6",
+            "tsv",
+        ]
+        kwargs: Dict[str, Any] = {
+            "capture_output": True,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "ignore",
+            "timeout": 45,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = 0x08000000
+
+        proc = subprocess.run(cmd, **kwargs)
+        if proc.returncode != 0 or not proc.stdout:
+            return [], [], 0.0
+
+        grouped: Dict[tuple, Dict[str, Any]] = {}
+        order: List[tuple] = []
+        for raw_row in proc.stdout.splitlines()[1:]:
+            parts = raw_row.split("\t")
+            if len(parts) < 12:
+                continue
+            try:
+                level = int(parts[0])
+                if level != 5:
+                    continue
+                word = parts[11].strip()
+                if not word:
+                    continue
+                conf_val = float(parts[10])
+                if conf_val < 0:
+                    conf_val = 0.0
+                left = float(parts[6])
+                top = float(parts[7])
+                right = left + float(parts[8])
+                bottom = top + float(parts[9])
+                key = (int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4]))
+            except ValueError:
+                continue
+
+            if key not in grouped:
+                grouped[key] = {
+                    "tokens": [],
+                    "x0": left,
+                    "y0": top,
+                    "x1": right,
+                    "y1": bottom,
+                    "conf_sum": 0.0,
+                    "count": 0,
+                }
+                order.append(key)
+            entry = grouped[key]
+            entry["tokens"].append((left, right, max(1.0, bottom - top), word))
+            entry["x0"] = min(entry["x0"], left)
+            entry["y0"] = min(entry["y0"], top)
+            entry["x1"] = max(entry["x1"], right)
+            entry["y1"] = max(entry["y1"], bottom)
+            entry["conf_sum"] += conf_val / 100.0
+            entry["count"] += 1
+
+        ocr_lines: List[str] = []
+        boxes: List[Dict[str, Any]] = []
+        total_conf = 0.0
+        for key in order:
+            entry = grouped[key]
+            line_text = _clean_tesseract_line_tokens(entry["tokens"])
+            if not line_text:
+                continue
+            avg_line_conf = entry["conf_sum"] / max(1, entry["count"])
+            total_conf += avg_line_conf
+            ocr_lines.append(line_text)
+            x0, y0, x1, y1 = entry["x0"], entry["y0"], entry["x1"], entry["y1"]
+            boxes.append({
+                "box": [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+                "text": line_text,
+                "confidence": round(avg_line_conf, 4),
+                "type": "ocr",
+            })
+
+        avg_conf = (total_conf / len(ocr_lines)) if ocr_lines else 0.0
+        return ocr_lines, boxes, avg_conf
+    except Exception as e:
+        sys.stderr.write(f"run_tesseract_ocr error: {e}\n")
+        return [], [], 0.0
+    finally:
+        if tmp_png and os.path.exists(tmp_png):
+            try:
+                os.remove(tmp_png)
+            except Exception:
+                pass
+
+
+def run_windows_winrt_ocr(img_np: np.ndarray) -> tuple:
+    """Zero-install Windows 10/11 WinRT OcrEngine fallback returning (lines, boxes, avg_conf)."""
+    if os.name != "nt":
+        return [], [], 0.0
+
+    # WinRT OcrEngine rejects images exceeding ~2600px on either dimension
+    h, w = img_np.shape[:2]
+    scale = 1.0
+    work_img = img_np
+    max_dim = max(h, w)
+    if max_dim > 2400:
+        scale = 2400.0 / float(max_dim)
+        work_img = cv2.resize(
+            img_np,
+            (max(1, int(w * scale)), max(1, int(h * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    ok, buf = cv2.imencode(".png", work_img)
+    if not ok:
+        return [], [], 0.0
+
+    tmp_png = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+            tf.write(buf.tobytes())
+            tmp_png = tf.name
+
+        escaped_path = tmp_png.replace("'", "''")
+        ps_script = (
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+            "Add-Type -AssemblyName System.Runtime.WindowsRuntime; "
+            "$null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]; "
+            "$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime]; "
+            "$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]; "
+            "$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { "
+            "$_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and "
+            "$_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]; "
+            "function Await($op, $t) { $nt = $asTask.MakeGenericMethod($t).Invoke($null, @($op)); $nt.Wait(-1) | Out-Null; $nt.Result }; "
+            f"$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync('{escaped_path}')) ([Windows.Storage.StorageFile]); "
+            "$stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream]); "
+            "$dec = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder]); "
+            "$bmp = Await ($dec.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap]); "
+            "$eng = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages(); "
+            "if (-not $eng) { $eng = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new('en-US')) }; "
+            "if (-not $eng) { '[]'; exit 0 }; "
+            "$res = Await ($eng.RecognizeAsync($bmp)) ([Windows.Media.Ocr.OcrResult]); "
+            "$out = foreach ($ln in $res.Lines) { "
+            "  $ws = $ln.Words; if ($ws.Count -eq 0) { continue }; "
+            "  $x0 = ($ws | ForEach-Object { $_.BoundingRect.X } | Measure-Object -Minimum).Minimum; "
+            "  $y0 = ($ws | ForEach-Object { $_.BoundingRect.Y } | Measure-Object -Minimum).Minimum; "
+            "  $x1 = ($ws | ForEach-Object { $_.BoundingRect.X + $_.BoundingRect.Width } | Measure-Object -Maximum).Maximum; "
+            "  $y1 = ($ws | ForEach-Object { $_.BoundingRect.Y + $_.BoundingRect.Height } | Measure-Object -Maximum).Maximum; "
+            "  [PSCustomObject]@{ text = $ln.Text; x0 = $x0; y0 = $y0; x1 = $x1; y1 = $y1 } "
+            "}; "
+            "@($out) | ConvertTo-Json -Compress"
+        )
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=30,
+            creationflags=0x08000000,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return [], [], 0.0
+
+        parsed_json = json.loads(proc.stdout.strip())
+        if isinstance(parsed_json, dict):
+            parsed_json = [parsed_json]
+        if not isinstance(parsed_json, list):
+            return [], [], 0.0
+
+        inv_scale = 1.0 / scale if scale > 0 else 1.0
+        ocr_lines: List[str] = []
+        boxes: List[Dict[str, Any]] = []
+        for item in parsed_json:
+            line_text = repair_thai_encoding(str(item.get("text") or "").strip())
+            if not line_text:
+                continue
+            x0 = float(item.get("x0") or 0.0) * inv_scale
+            y0 = float(item.get("y0") or 0.0) * inv_scale
+            x1 = float(item.get("x1") or 0.0) * inv_scale
+            y1 = float(item.get("y1") or 0.0) * inv_scale
+            ocr_lines.append(line_text)
+            boxes.append({
+                "box": [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+                "text": line_text,
+                "confidence": 0.85,
+                "type": "ocr",
+            })
+
+        return ocr_lines, boxes, (0.85 if ocr_lines else 0.0)
+    except Exception as e:
+        sys.stderr.write(f"run_windows_winrt_ocr error: {e}\n")
+        return [], [], 0.0
+    finally:
+        if tmp_png and os.path.exists(tmp_png):
+            try:
+                os.remove(tmp_png)
+            except Exception:
+                pass
+
+
+def _run_image_ocr_cascade(img_np: np.ndarray) -> tuple:
+    """Runs available on-device OCR engines (PaddleOCR -> Tesseract tha+eng -> Windows WinRT OCR)."""
+    enhanced_img: Optional[np.ndarray] = None
+
+    ocr_engine = get_paddle_ocr()
+    if ocr_engine is not None:
+        try:
+            enhanced_img = Preprocessor.deskew_and_enhance(img_np)
+            ocr_res = ocr_engine.ocr(enhanced_img, cls=True)
+            ocr_lines: List[str] = []
+            boxes: List[Dict[str, Any]] = []
+            total_conf = 0.0
+            if ocr_res and len(ocr_res) > 0 and ocr_res[0]:
+                for line_data in ocr_res[0]:
+                    bbox, (text, conf) = line_data
+                    repaired_line = repair_thai_encoding(text)
+                    ocr_lines.append(repaired_line)
+                    total_conf += conf
+                    boxes.append({
+                        "box": bbox,
+                        "text": repaired_line,
+                        "confidence": float(conf),
+                        "type": "ocr",
+                    })
+            if ocr_lines:
+                return ocr_lines, boxes, (total_conf / len(ocr_lines)), "paddleocr_ppocrv5"
+        except Exception as e:
+            sys.stderr.write(f"PaddleOCR runtime fallback: {e}\n")
+
+    tess_lines, tess_boxes, tess_conf = run_tesseract_ocr(img_np)
+    if not tess_lines:
+        if enhanced_img is None:
+            enhanced_img = Preprocessor.deskew_and_enhance(img_np)
+        tess_lines, tess_boxes, tess_conf = run_tesseract_ocr(enhanced_img)
+    if tess_lines:
+        return tess_lines, tess_boxes, tess_conf, "tesseract_tha_eng"
+
+    winrt_lines, winrt_boxes, winrt_conf = run_windows_winrt_ocr(img_np)
+    if winrt_lines:
+        return winrt_lines, winrt_boxes, winrt_conf, "windows_winrt_ocr"
+
+    return [], [], 0.0, "none"
 
 
 def read_image_unicode(file_path: str) -> Optional[np.ndarray]:
@@ -630,6 +1035,7 @@ def extract_native_pdf_text(pdf_path: str) -> List[Dict[str, Any]]:
             "page_number": page_idx + 1,
             "raw_text": repaired_text,
             "has_native_text": len(repaired_text.strip()) > 30,
+            "image_count": len(page.get_images()),
             "boxes": boxes,
             "width": page.rect.width,
             "height": page.rect.height,
@@ -666,6 +1072,10 @@ def _find_right_adjacent_box(label_box: Dict[str, Any], all_boxes: List[Dict[str
     ax0, ay0, ax1, ay1 = rect_a
     ay_mid = (ay0 + ay1) / 2.0
 
+    line_h = max(ay1 - ay0, 12.0)
+    tol_y = max(9.0, line_h * 0.65)
+    tol_x = max(220.0, line_h * 18.0)
+
     best_val = None
     best_dx = 1e9
     for other in all_boxes:
@@ -677,7 +1087,7 @@ def _find_right_adjacent_box(label_box: Dict[str, Any], all_boxes: List[Dict[str
         bx0, by0, bx1, by1 = rect_b
         by_mid = (by0 + by1) / 2.0
         dx = bx0 - ax1
-        if abs(ay_mid - by_mid) <= 9.0 and -2.0 <= dx <= 220.0:
+        if abs(ay_mid - by_mid) <= tol_y and -2.0 <= dx <= tol_x:
             candidate_text = other.get("text", "").strip()
             if candidate_text and dx < best_dx:
                 best_dx = dx
@@ -763,6 +1173,30 @@ def _is_negative_phrase(candidate: str, negative_phrases: List[str]) -> bool:
     return False
 
 
+def _clean_ocr_email(raw_email: str) -> str:
+    """Repairs common OCR domain/spacing typos inside extracted email addresses."""
+    cleaned = re.sub(r"\s+", "", (raw_email or "").strip().lower())
+    if "@" not in cleaned:
+        return ""
+    local, domain = cleaned.split("@", 1)
+    domain_fixes = {
+        "gmai1.com": "gmail.com",
+        "gmaii.com": "gmail.com",
+        "gmal.com": "gmail.com",
+        "hotmai1.com": "hotmail.com",
+        "hotmaii.com": "hotmail.com",
+        "yah00.com": "yahoo.com",
+        "yahooo.com": "yahoo.com",
+        "outl00k.com": "outlook.com",
+    }
+    domain = domain_fixes.get(domain, domain)
+    domain = re.sub(r"\.c0m$", ".com", domain)
+    domain = re.sub(r"\.c0\.th$", ".co.th", domain)
+    if not local or not re.match(r"^[a-z0-9.\-]+\.[a-z]{2,}$", domain):
+        return ""
+    return f"{local}@{domain}"
+
+
 def parse_supplier_and_po(
     text: str,
     boxes: List[Dict[str, Any]],
@@ -810,11 +1244,26 @@ def parse_supplier_and_po(
         if clean_tax not in SELF_TAX_IDS and clean_tax not in tax_ids:
             tax_ids.append(clean_tax)
 
-    # 3. Emails (excluding QTC domains)
+    # 3. Emails (excluding QTC domains; also handles labeled local parts with OCR spaces)
     emails: List[str] = []
-    for match in re.finditer(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", text):
-        em = match.group(0).strip().lower()
-        if "qtc-energy" not in em and em not in emails:
+    for match in re.finditer(
+        r"e-?mail\s*[:：]\s*([A-Za-z0-9._%+\-]+(?:\s+[A-Za-z0-9._%+\-]+){0,2}@[A-Za-z0-9.\-]+\.[A-Za-z0-9]{2,})",
+        text,
+        re.IGNORECASE,
+    ):
+        em = _clean_ocr_email(match.group(1))
+        if em and "qtc-energy" not in em and em not in emails:
+            emails.append(em)
+    for match in re.finditer(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z0-9]{2,}", text):
+        em = _clean_ocr_email(match.group(0))
+        if (
+            em
+            and "qtc-energy" not in em
+            and not any(
+                existing == em or (existing.endswith(em) and existing.split("@")[1] == em.split("@")[1])
+                for existing in emails
+            )
+        ):
             emails.append(em)
 
     # 4. Extract supplier candidates (Spatial pairing + Thai + English)
@@ -902,6 +1351,7 @@ def parse_supplier_and_po(
         # Extract English candidates
         for m in eng_comp_regex.finditer(line):
             candidate = re.sub(r"\s+", " ", m.group(1)).strip(" .,-:/()")
+            candidate = re.sub(r"^\d\s+(?=[A-Za-z]{2,})", "", candidate)
             if len(candidate) <= 4 or is_ignored_self_company(candidate):
                 continue
 
@@ -1047,37 +1497,27 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 method = "native_pdf"
                 confidence = 1.0
 
-                if not page_info["has_native_text"] or len(raw_text.strip()) < 30:
-                    ocr_engine = get_paddle_ocr()
-                    if ocr_engine is not None:
-                        img = render_pdf_page_to_image(file_path, page_num, dpi=200)
-                        if page_num == 1:
-                            first_page_img = img
-                        enhanced_img = Preprocessor.deskew_and_enhance(img)
-                        method = "paddleocr_ppocrv5"
-                        ocr_res = ocr_engine.ocr(enhanced_img, cls=True)
-                        ocr_lines = []
-                        boxes = []
-                        total_conf = 0.0
-                        count = 0
+                initial_parsed = parse_supplier_and_po(raw_text, boxes, neg_phrases, pref_y)
+                needs_ocr = (not page_info["has_native_text"]) or (
+                    page_info.get("image_count", 0) > 0
+                    and (
+                        len(raw_text.strip()) < 250
+                        or not initial_parsed.get("supplier_candidates")
+                    )
+                )
 
-                        if ocr_res and len(ocr_res) > 0 and ocr_res[0]:
-                            for line_data in ocr_res[0]:
-                                bbox, (text, conf) = line_data
-                                repaired_line = repair_thai_encoding(text)
-                                ocr_lines.append(repaired_line)
-                                total_conf += conf
-                                count += 1
-                                boxes.append({
-                                    "box": bbox,
-                                    "text": repaired_line,
-                                    "confidence": float(conf),
-                                    "type": "ocr",
-                                })
-
-                        if ocr_lines:
-                            raw_text = "\n".join(ocr_lines)
-                            confidence = (total_conf / count) if count > 0 else 0.0
+                if needs_ocr:
+                    img = render_pdf_page_to_image(file_path, page_num, dpi=300)
+                    if page_num == 1:
+                        first_page_img = img
+                    ocr_lines, ocr_boxes, ocr_conf, ocr_method = _run_image_ocr_cascade(img)
+                    if ocr_lines:
+                        native_clean = raw_text.strip()
+                        ocr_joined = "\n".join(ocr_lines)
+                        raw_text = f"{ocr_joined}\n{native_clean}" if native_clean else ocr_joined
+                        boxes = ocr_boxes
+                        confidence = ocr_conf
+                        method = f"native+{ocr_method}" if native_clean else ocr_method
 
                 parsed = parse_supplier_and_po(raw_text, boxes, neg_phrases, pref_y)
                 overall_text_parts.append(raw_text)
@@ -1099,31 +1539,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 return {"status": "error", "message": f"Could not read image (or unsupported format): {file_path}"}
 
             first_page_img = img
-            enhanced = Preprocessor.deskew_and_enhance(img)
-            ocr_engine = get_paddle_ocr()
-            boxes = []
-            ocr_lines = []
-            confidence = 0.0
-
-            if ocr_engine is not None:
-                ocr_res = ocr_engine.ocr(enhanced, cls=True)
-                total_conf = 0.0
-                count = 0
-                if ocr_res and len(ocr_res) > 0 and ocr_res[0]:
-                    for line_data in ocr_res[0]:
-                        bbox, (text, conf) = line_data
-                        repaired_line = repair_thai_encoding(text)
-                        ocr_lines.append(repaired_line)
-                        total_conf += conf
-                        count += 1
-                        boxes.append({
-                            "box": bbox,
-                            "text": repaired_line,
-                            "confidence": float(conf),
-                            "type": "ocr",
-                        })
-                confidence = (total_conf / count) if count > 0 else 0.0
-
+            ocr_lines, boxes, confidence, ocr_method = _run_image_ocr_cascade(img)
             raw_text = "\n".join(ocr_lines)
             parsed = parse_supplier_and_po(raw_text, boxes, neg_phrases, pref_y)
             overall_text_parts.append(raw_text)
@@ -1133,7 +1549,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 "page_number": 1,
                 "raw_text": raw_text,
                 "confidence": float(confidence),
-                "extraction_method": "paddleocr_ppocrv5",
+                "extraction_method": ocr_method,
                 "boxes": boxes,
                 "parsed": parsed,
             })
