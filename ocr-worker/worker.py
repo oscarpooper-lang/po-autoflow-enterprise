@@ -1629,6 +1629,12 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                     _merge_local_vision_into_parsed(agg_parsed, vision_out, neg_phrases)
                     if page_results:
                         _merge_local_vision_into_parsed(page_results[0]["parsed"], vision_out, neg_phrases)
+                        if any(vision_out.get(k) for k in ("supplier_th", "supplier_en", "po_number", "tax_id")):
+                            existing_method = str(page_results[0].get("extraction_method") or "")
+                            if "vision_ai" not in existing_method:
+                                page_results[0]["extraction_method"] = (
+                                    f"{existing_method}+vision_ai" if existing_method else "vision_ai"
+                                )
 
         return {
             "status": "ok",
@@ -1704,16 +1710,71 @@ def render_preview_request(request: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "error", "message": f"Preview render failed: {str(e)}"}
 
 
+def get_engine_capabilities(root_dir: str = "") -> Dict[str, Any]:
+    """Reports exact installed OCR engines, paths, languages, and active fallback chain."""
+    import platform
+
+    tess_exe = _find_tesseract_exe(root_dir)
+    tessdata_dir = None
+    tess_langs: List[str] = []
+    if tess_exe:
+        managed_tessdata = os.path.join(_resolve_tess_models_dir(root_dir), "tessdata")
+        sibling_tessdata = os.path.join(os.path.dirname(tess_exe), "tessdata")
+        for d in (managed_tessdata, sibling_tessdata):
+            if os.path.isdir(d):
+                found = sorted(
+                    os.path.splitext(f)[0]
+                    for f in os.listdir(d)
+                    if f.endswith(".traineddata") and os.path.getsize(os.path.join(d, f)) > 50_000
+                )
+                if found:
+                    tessdata_dir = d
+                    tess_langs = found
+                    break
+
+    tess_ok = bool(tess_exe and tessdata_dir)
+    winrt_ok = os.name == "nt"
+    if HAS_PADDLEOCR:
+        active_scanned = "paddleocr_ppocrv5"
+    elif tess_ok:
+        active_scanned = "tesseract_tha_eng" if ("tha" in tess_langs and "eng" in tess_langs) else "tesseract"
+    elif winrt_ok:
+        active_scanned = "windows_winrt_ocr"
+    else:
+        active_scanned = "none"
+
+    py_ver = platform.python_version()
+    paddle_note = (
+        "Installed and active."
+        if HAS_PADDLEOCR
+        else f"Not installed on Python {py_ver} (requires Python 3.11/3.12 with paddlepaddle)."
+    )
+
+    return {
+        "python_version": py_ver,
+        "pymupdf_available": True,
+        "paddleocr_available": bool(HAS_PADDLEOCR),
+        "paddleocr_note": paddle_note,
+        "tesseract_available": tess_ok,
+        "tesseract_path": tess_exe or "",
+        "tesseract_langs": tess_langs,
+        "winrt_available": winrt_ok,
+        "active_scanned_engine": active_scanned,
+    }
+
+
 def main():
     """Main JSON-lines IPC protocol loop on stdin / stdout."""
     sys.stdin.reconfigure(encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8")
 
+    caps = get_engine_capabilities()
     sys.stdout.write(json.dumps({
         "event": "ready",
         "paddleocr": HAS_PADDLEOCR,
         "google_vision": HAS_GOOGLE_VISION,
         "rapidfuzz": HAS_RAPIDFUZZ,
+        "capabilities": caps,
     }) + "\n")
     sys.stdout.flush()
 
@@ -1727,7 +1788,13 @@ def main():
             cmd = req.get("command", "")
 
             if cmd == "ping":
-                resp = {"status": "ok", "message": "pong", "paddleocr": HAS_PADDLEOCR}
+                ping_caps = get_engine_capabilities(str(req.get("root_dir") or ""))
+                resp = {
+                    "status": "ok",
+                    "message": "pong",
+                    "paddleocr": HAS_PADDLEOCR,
+                    "capabilities": ping_caps,
+                }
             elif cmd == "process_file":
                 resp = process_file_request(req)
             elif cmd == "render_preview":

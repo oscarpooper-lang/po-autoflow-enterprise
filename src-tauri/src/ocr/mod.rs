@@ -388,6 +388,11 @@ impl OcrManager {
     }
 
     pub async fn ping(&self) -> Result<bool, OcrError> {
+        let val = self.ping_details("").await?;
+        Ok(val.get("status").and_then(|v| v.as_str()) == Some("ok"))
+    }
+
+    pub async fn ping_details(&self, root_dir: &str) -> Result<serde_json::Value, OcrError> {
         self.ensure_process_running().await?;
         let mut lock = self.process.lock().await;
         let worker = match lock.as_mut() {
@@ -395,7 +400,7 @@ impl OcrManager {
             None => return Err(OcrError::ProcessTerminated),
         };
 
-        let req = serde_json::json!({"command": "ping"});
+        let req = serde_json::json!({"command": "ping", "root_dir": root_dir});
         let mut req_str = serde_json::to_string(&req)?;
         req_str.push('\n');
 
@@ -416,7 +421,7 @@ impl OcrManager {
                     return Err(OcrError::ProcessTerminated);
                 }
                 let val: serde_json::Value = serde_json::from_str(&resp_line)?;
-                Ok(val.get("status").and_then(|v| v.as_str()) == Some("ok"))
+                Ok(val)
             }
             Err(e) => {
                 *lock = None;

@@ -102,6 +102,9 @@ jobs:
           $setupExePath = $assets | Where-Object { $_ -like "*_x64-setup.exe" } | Select-Object -First 1
           $setupSize = if ($setupExePath -and (Test-Path $setupExePath)) { (Get-Item $setupExePath).Length } else { $null }
           $publishedName = "PO.AutoFlow.Enterprise_${cleanVer}_x64-setup.exe"
+          $msiFilePath = $assets | Where-Object { $_ -like "*_x64_en-US.msi" } | Select-Object -First 1
+          $msiSize = if ($msiFilePath -and (Test-Path $msiFilePath)) { (Get-Item $msiFilePath).Length } else { $null }
+          $publishedMsiName = "PO.AutoFlow.Enterprise_${cleanVer}_x64_en-US.msi"
           $manifest = [ordered]@{
             tag_name = $tag
             release_name = "PO AutoFlow Enterprise $tag"
@@ -110,6 +113,9 @@ jobs:
             installer_name = $publishedName
             installer_url = "https://github.com/${{ github.repository }}/releases/download/$tag/$publishedName"
             installer_size_bytes = $setupSize
+            msi_name = $publishedMsiName
+            msi_url = "https://github.com/${{ github.repository }}/releases/download/$tag/$publishedMsiName"
+            msi_size_bytes = $msiSize
           }
           $latestJsonPath = "src-tauri\target\release\bundle\latest.json"
           [System.IO.File]::WriteAllText((Join-Path $PWD $latestJsonPath), ($manifest | ConvertTo-Json -Depth 4), [System.Text.UTF8Encoding]::new($false))

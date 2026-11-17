@@ -1847,6 +1847,139 @@ pub async fn test_local_vision_ai(
     state.ocr_manager.test_local_vision(&prov, &ep, &mdl).await
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OcrEngineStatus {
+    pub python_version: String,
+    pub worker_reachable: bool,
+    pub pymupdf_available: bool,
+    pub paddleocr_available: bool,
+    pub paddleocr_note: String,
+    pub tesseract_available: bool,
+    pub tesseract_path: String,
+    pub tesseract_langs: Vec<String>,
+    pub winrt_available: bool,
+    pub active_scanned_engine: String,
+    pub vision_ai_enabled: bool,
+    pub vision_ai_trigger_mode: String,
+    pub vision_ai_model: String,
+    pub vision_ai_ready: bool,
+    pub vision_ai_status_label: String,
+    pub vision_ai_message: String,
+}
+
+#[tauri::command]
+pub async fn get_ocr_engine_status(state: State<'_, AppState>) -> Result<OcrEngineStatus, String> {
+    let settings = state.db.get_settings().map_err(|e| e.to_string())?;
+    let vision = if settings.local_vision_provider.eq_ignore_ascii_case("builtin") {
+        verify_builtin_vision_ready(&settings.root_dir, &settings.local_vision_model)
+    } else {
+        state
+            .ocr_manager
+            .test_local_vision(
+                &settings.local_vision_provider,
+                &settings.local_vision_endpoint,
+                &settings.local_vision_model,
+            )
+            .await
+            .unwrap_or(LocalVisionStatus {
+                reachable: false,
+                endpoint: settings.local_vision_endpoint.clone(),
+                configured_model: settings.local_vision_model.clone(),
+                available_models: Vec::new(),
+                message: "Local Vision server unreachable".to_string(),
+            })
+    };
+
+    let (vision_status_label, vision_message) = if !settings.local_vision_enabled {
+        (
+            "Disabled".to_string(),
+            "Standard OCR + PDF reader runs automatically. Enable Built-In Vision AI below if needed for blurry/handwritten scans.".to_string(),
+        )
+    } else if !vision.reachable {
+        (
+            "Enabled (Model Missing!)".to_string(),
+            format!(
+                "Vision AI is turned ON for '{}', but the model files are missing inside {}\\Models — Vision AI is currently skipped until downloaded.",
+                settings.local_vision_model,
+                settings.root_dir.trim_end_matches(['\\', '/'])
+            ),
+        )
+    } else if settings.local_vision_trigger_mode == "always" {
+        (
+            "Active (Always Runs)".to_string(),
+            format!("Runs '{}' on every scanned/imported PO page.", settings.local_vision_model),
+        )
+    } else {
+        (
+            "Ready (Smart Fallback)".to_string(),
+            format!(
+                "Automatically assists with '{}' only when fast OCR confidence is below 85% or supplier is missing.",
+                settings.local_vision_model
+            ),
+        )
+    };
+
+    match state.ocr_manager.ping_details(&settings.root_dir).await {
+        Ok(val) => {
+            let caps = &val["capabilities"];
+            let langs = caps["tesseract_langs"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            Ok(OcrEngineStatus {
+                python_version: caps["python_version"].as_str().unwrap_or("unknown").to_string(),
+                worker_reachable: val["status"].as_str() == Some("ok"),
+                pymupdf_available: caps["pymupdf_available"].as_bool().unwrap_or(true),
+                paddleocr_available: caps["paddleocr_available"]
+                    .as_bool()
+                    .or_else(|| val["paddleocr"].as_bool())
+                    .unwrap_or(false),
+                paddleocr_note: caps["paddleocr_note"]
+                    .as_str()
+                    .unwrap_or("Check Python environment")
+                    .to_string(),
+                tesseract_available: caps["tesseract_available"].as_bool().unwrap_or(false),
+                tesseract_path: caps["tesseract_path"].as_str().unwrap_or("").to_string(),
+                tesseract_langs: langs,
+                winrt_available: caps["winrt_available"].as_bool().unwrap_or(cfg!(target_os = "windows")),
+                active_scanned_engine: caps["active_scanned_engine"]
+                    .as_str()
+                    .unwrap_or("tesseract_tha_eng")
+                    .to_string(),
+                vision_ai_enabled: settings.local_vision_enabled,
+                vision_ai_trigger_mode: settings.local_vision_trigger_mode,
+                vision_ai_model: settings.local_vision_model,
+                vision_ai_ready: vision.reachable,
+                vision_ai_status_label: vision_status_label,
+                vision_ai_message: vision_message,
+            })
+        }
+        Err(e) => Ok(OcrEngineStatus {
+            python_version: "offline".to_string(),
+            worker_reachable: false,
+            pymupdf_available: false,
+            paddleocr_available: false,
+            paddleocr_note: format!("OCR worker unreachable: {}", e),
+            tesseract_available: false,
+            tesseract_path: String::new(),
+            tesseract_langs: Vec::new(),
+            winrt_available: cfg!(target_os = "windows"),
+            active_scanned_engine: "none".to_string(),
+            vision_ai_enabled: settings.local_vision_enabled,
+            vision_ai_trigger_mode: settings.local_vision_trigger_mode,
+            vision_ai_model: settings.local_vision_model,
+            vision_ai_ready: vision.reachable,
+            vision_ai_status_label: vision_status_label,
+            vision_ai_message: vision_message,
+        }),
+    }
+}
+
 const DEFAULT_GITHUB_REPO: &str = "oscarpooper-lang/po-autoflow-enterprise";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1861,7 +1994,45 @@ pub struct GitHubUpdateStatus {
     pub installer_url: Option<String>,
     pub installer_name: Option<String>,
     pub installer_size_bytes: Option<u64>,
+    #[serde(default)]
+    pub detected_install_kind: String,
+    #[serde(default)]
+    pub detected_install_dir: String,
+    #[serde(default)]
+    pub msi_url: Option<String>,
+    #[serde(default)]
+    pub msi_name: Option<String>,
+    #[serde(default)]
+    pub msi_size_bytes: Option<u64>,
+    #[serde(default)]
+    pub nsis_url: Option<String>,
+    #[serde(default)]
+    pub nsis_name: Option<String>,
+    #[serde(default)]
+    pub nsis_size_bytes: Option<u64>,
     pub repository: String,
+}
+
+pub fn detect_installed_package_kind() -> (&'static str, String) {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let dir_str = dir.to_string_lossy().to_string();
+            let dir_low = dir_str.to_lowercase();
+            let has_msi_lnk = dir.join("Uninstall PO AutoFlow Enterprise.lnk").exists();
+            let has_nsis_exe = dir.join("uninstall.exe").exists();
+            if has_msi_lnk && !has_nsis_exe {
+                return ("msi", dir_str);
+            }
+            if has_nsis_exe && !has_msi_lnk {
+                return ("nsis", dir_str);
+            }
+            if dir_low.contains("\\program files") {
+                return ("msi", dir_str);
+            }
+            return ("nsis", dir_str);
+        }
+    }
+    ("nsis", String::new())
 }
 
 fn normalize_github_repo(input: Option<String>) -> Result<String, String> {
@@ -1921,9 +2092,24 @@ fn extract_tag_from_release_url(url: &str) -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn check_github_update(repo_override: Option<String>) -> Result<GitHubUpdateStatus, String> {
+pub async fn check_github_update(
+    repo_override: Option<String>,
+    package_preference: Option<String>,
+) -> Result<GitHubUpdateStatus, String> {
     let repo = normalize_github_repo(repo_override)?;
     let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let (detected_kind, detected_dir) = detect_installed_package_kind();
+    let chosen_kind = match package_preference
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("auto")
+        .to_lowercase()
+        .as_str()
+    {
+        "msi" => "msi",
+        "nsis" | "exe" => "nsis",
+        _ => detected_kind,
+    };
     let ua = format!("PO-AutoFlow-Enterprise/{}", current_version);
 
     let client = reqwest::Client::builder()
@@ -1958,22 +2144,46 @@ pub async fn check_github_update(repo_override: Option<String>) -> Result<GitHub
                         .unwrap_or("")
                         .to_string();
                     let published_at = json["published_at"].as_str().unwrap_or("").to_string();
-                    let installer_name = json["installer_name"]
+
+                    let nsis_name = json["installer_name"]
                         .as_str()
                         .filter(|s| !s.trim().is_empty())
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| format!("PO.AutoFlow.Enterprise_{}_x64-setup.exe", latest_version));
-                    let installer_url = json["installer_url"]
+                    let nsis_url = json["installer_url"]
                         .as_str()
                         .filter(|s| !s.trim().is_empty())
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| {
                             format!(
                                 "https://github.com/{}/releases/download/{}/{}",
-                                repo, tag_raw, installer_name
+                                repo, tag_raw, nsis_name
                             )
                         });
-                    let installer_size_bytes = json["installer_size_bytes"].as_u64();
+                    let nsis_size_bytes = json["installer_size_bytes"].as_u64();
+
+                    let msi_name = json["msi_name"]
+                        .as_str()
+                        .filter(|s| !s.trim().is_empty())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| format!("PO.AutoFlow.Enterprise_{}_x64_en-US.msi", latest_version));
+                    let msi_url = json["msi_url"]
+                        .as_str()
+                        .filter(|s| !s.trim().is_empty())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| {
+                            format!(
+                                "https://github.com/{}/releases/download/{}/{}",
+                                repo, tag_raw, msi_name
+                            )
+                        });
+                    let msi_size_bytes = json["msi_size_bytes"].as_u64();
+
+                    let (active_url, active_name, active_size) = if chosen_kind == "msi" {
+                        (msi_url.clone(), msi_name.clone(), msi_size_bytes)
+                    } else {
+                        (nsis_url.clone(), nsis_name.clone(), nsis_size_bytes)
+                    };
                     let release_url = format!("https://github.com/{}/releases/tag/{}", repo, tag_raw);
 
                     return Ok(GitHubUpdateStatus {
@@ -1984,9 +2194,17 @@ pub async fn check_github_update(repo_override: Option<String>) -> Result<GitHub
                         release_notes,
                         published_at,
                         release_url,
-                        installer_url: Some(installer_url),
-                        installer_name: Some(installer_name),
-                        installer_size_bytes,
+                        installer_url: Some(active_url),
+                        installer_name: Some(active_name),
+                        installer_size_bytes: active_size,
+                        detected_install_kind: detected_kind.to_string(),
+                        detected_install_dir: detected_dir,
+                        msi_url: Some(msi_url),
+                        msi_name: Some(msi_name),
+                        msi_size_bytes,
+                        nsis_url: Some(nsis_url),
+                        nsis_name: Some(nsis_name),
+                        nsis_size_bytes,
                         repository: repo,
                     });
                 }
@@ -2015,6 +2233,14 @@ pub async fn check_github_update(repo_override: Option<String>) -> Result<GitHub
             installer_url: None,
             installer_name: None,
             installer_size_bytes: None,
+            detected_install_kind: detected_kind.to_string(),
+            detected_install_dir: detected_dir,
+            msi_url: None,
+            msi_name: None,
+            msi_size_bytes: None,
+            nsis_url: None,
+            nsis_name: None,
+            nsis_size_bytes: None,
             repository: repo,
         });
     }
@@ -2034,24 +2260,40 @@ pub async fn check_github_update(repo_override: Option<String>) -> Result<GitHub
                 installer_url: None,
                 installer_name: None,
                 installer_size_bytes: None,
+                detected_install_kind: detected_kind.to_string(),
+                detected_install_dir: detected_dir,
+                msi_url: None,
+                msi_name: None,
+                msi_size_bytes: None,
+                nsis_url: None,
+                nsis_name: None,
+                nsis_size_bytes: None,
                 repository: repo,
             });
         }
     };
 
     let latest_version = tag_name.trim_start_matches(['v', 'V']).to_string();
-    let default_name = format!("PO.AutoFlow.Enterprise_{}_x64-setup.exe", latest_version);
-    let default_url = format!(
+    let default_nsis_name = format!("PO.AutoFlow.Enterprise_{}_x64-setup.exe", latest_version);
+    let default_nsis_url = format!(
         "https://github.com/{}/releases/download/{}/{}",
-        repo, tag_name, default_name
+        repo, tag_name, default_nsis_name
+    );
+    let default_msi_name = format!("PO.AutoFlow.Enterprise_{}_x64_en-US.msi", latest_version);
+    let default_msi_url = format!(
+        "https://github.com/{}/releases/download/{}/{}",
+        repo, tag_name, default_msi_name
     );
 
     let mut release_name = format!("PO AutoFlow Enterprise {}", tag_name);
     let mut release_notes = String::new();
     let mut published_at = String::new();
-    let mut installer_name = Some(default_name);
-    let mut installer_url = Some(default_url);
-    let mut installer_size_bytes = None;
+    let mut msi_name = Some(default_msi_name);
+    let mut msi_url = Some(default_msi_url);
+    let mut msi_size_bytes = None;
+    let mut nsis_name = Some(default_nsis_name);
+    let mut nsis_url = Some(default_nsis_url);
+    let mut nsis_size_bytes = None;
 
     // 3. Optional best-effort API enrichment for release notes (never fails if 403 rate-limited)
     let api_tag_url = format!("https://api.github.com/repos/{}/releases/tags/{}", repo, tag_name);
@@ -2077,7 +2319,6 @@ pub async fn check_github_update(repo_override: Option<String>) -> Result<GitHub
                     published_at = p.to_string();
                 }
                 if let Some(assets) = json["assets"].as_array() {
-                    let mut chosen: Option<(u8, String, String, Option<u64>)> = None;
                     for asset in assets {
                         let name = asset["name"].as_str().unwrap_or("");
                         let url = asset["browser_download_url"].as_str().unwrap_or("");
@@ -2086,30 +2327,26 @@ pub async fn check_github_update(repo_override: Option<String>) -> Result<GitHub
                             continue;
                         }
                         let lower = name.to_lowercase();
-                        let priority = if lower.ends_with(".exe") && lower.contains("setup") {
-                            Some(0u8)
-                        } else if lower.ends_with(".msi") {
-                            Some(1u8)
+                        if lower.ends_with(".msi") {
+                            msi_url = Some(url.to_string());
+                            msi_name = Some(name.to_string());
+                            msi_size_bytes = size;
                         } else if lower.ends_with(".exe") {
-                            Some(2u8)
-                        } else {
-                            None
-                        };
-                        if let Some(p) = priority {
-                            if chosen.as_ref().map(|c| p < c.0).unwrap_or(true) {
-                                chosen = Some((p, url.to_string(), name.to_string(), size));
-                            }
+                            nsis_url = Some(url.to_string());
+                            nsis_name = Some(name.to_string());
+                            nsis_size_bytes = size;
                         }
-                    }
-                    if let Some((_, url, name, size)) = chosen {
-                        installer_url = Some(url);
-                        installer_name = Some(name);
-                        installer_size_bytes = size;
                     }
                 }
             }
         }
     }
+
+    let (installer_url, installer_name, installer_size_bytes) = if chosen_kind == "msi" {
+        (msi_url.clone(), msi_name.clone(), msi_size_bytes)
+    } else {
+        (nsis_url.clone(), nsis_name.clone(), nsis_size_bytes)
+    };
 
     Ok(GitHubUpdateStatus {
         update_available: is_newer_semver(&current_version, &latest_version),
@@ -2122,6 +2359,14 @@ pub async fn check_github_update(repo_override: Option<String>) -> Result<GitHub
         installer_url,
         installer_name,
         installer_size_bytes,
+        detected_install_kind: detected_kind.to_string(),
+        detected_install_dir: detected_dir,
+        msi_url,
+        msi_name,
+        msi_size_bytes,
+        nsis_url,
+        nsis_name,
+        nsis_size_bytes,
         repository: repo,
     })
 }
@@ -2195,10 +2440,13 @@ pub async fn install_github_update(
     #[cfg(target_os = "windows")]
     {
         if lower.ends_with(".msi") {
-            std::process::Command::new("msiexec")
-                .arg("/i")
-                .arg(&installer_path)
-                .spawn()
+            let mut cmd = std::process::Command::new("msiexec");
+            cmd.arg("/i").arg(&installer_path);
+            let (_, install_dir) = detect_installed_package_kind();
+            if !install_dir.is_empty() {
+                cmd.arg(format!("INSTALLDIR={}", install_dir));
+            }
+            cmd.spawn()
                 .map_err(|e| format!("Failed to launch MSI installer: {}", e))?;
         } else {
             std::process::Command::new(&installer_path)

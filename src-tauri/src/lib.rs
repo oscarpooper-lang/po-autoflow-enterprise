@@ -311,7 +311,8 @@ pub fn run() {
             test_local_vision_ai,
             get_builtin_vision_status,
             download_builtin_vision_model,
-            delete_builtin_vision_model
+            delete_builtin_vision_model,
+            get_ocr_engine_status
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

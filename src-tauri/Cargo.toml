@@ -1,6 +1,6 @@
 [package]
 name = "po-autoflow"
-version = "1.2.4"
+version = "1.2.5"
 description = "PO AutoFlow Enterprise - Automated Purchase Order Processing System"
 authors = ["Enterprise Automation Team"]
 license = "Proprietary"

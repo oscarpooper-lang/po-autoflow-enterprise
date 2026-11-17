@@ -113,10 +113,13 @@ try {
         "## PO AutoFlow Enterprise $tag`n`n$Notes"
     }
 
-    # Generate rate-limit-free latest.json manifest alongside installers
+    # Generate rate-limit-free latest.json manifest alongside installers (includes both NSIS .exe and MSI)
     $setupExePath = $assets | Where-Object { $_ -like "*_x64-setup.exe" } | Select-Object -First 1
     $setupSize = if ($setupExePath -and (Test-Path $setupExePath)) { (Get-Item $setupExePath).Length } else { $null }
     $publishedName = "PO.AutoFlow.Enterprise_${cleanVersion}_x64-setup.exe"
+    $msiFilePath = $assets | Where-Object { $_ -like "*_x64_en-US.msi" } | Select-Object -First 1
+    $msiSize = if ($msiFilePath -and (Test-Path $msiFilePath)) { (Get-Item $msiFilePath).Length } else { $null }
+    $publishedMsiName = "PO.AutoFlow.Enterprise_${cleanVersion}_x64_en-US.msi"
     $latestManifest = [ordered]@{
         tag_name = $tag
         release_name = "PO AutoFlow Enterprise $tag"
@@ -125,6 +128,9 @@ try {
         installer_name = $publishedName
         installer_url = "https://github.com/oscarpooper-lang/po-autoflow-enterprise/releases/download/$tag/$publishedName"
         installer_size_bytes = $setupSize
+        msi_name = $publishedMsiName
+        msi_url = "https://github.com/oscarpooper-lang/po-autoflow-enterprise/releases/download/$tag/$publishedMsiName"
+        msi_size_bytes = $msiSize
     }
     $bundleDir = Join-Path $repoRoot "src-tauri\target\release\bundle"
     New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null

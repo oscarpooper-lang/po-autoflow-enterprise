@@ -861,12 +861,46 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
 
           {/* Match Summary Card */}
           <div className="p-4 rounded-xl bg-[#121215] border border-zinc-800 space-y-3">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
               <span className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                 Matched Supplier Summary
               </span>
-              {currentJob && <StatusBadge status={currentJob.status} />}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {currentRecord && (
+                  <span
+                    className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${
+                      currentRecord.engine.includes('vision_ai')
+                        ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                        : currentRecord.engine.includes('tesseract')
+                        ? 'bg-blue-500/15 text-blue-300 border-blue-500/30'
+                        : currentRecord.engine.includes('paddle')
+                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                        : currentRecord.engine.includes('native')
+                        ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
+                        : 'bg-zinc-800 text-zinc-300 border-zinc-700'
+                    }`}
+                    title={`Raw engine key: ${currentRecord.engine}`}
+                  >
+                    {[
+                      currentRecord.engine.includes('paddleocr')
+                        ? 'PaddleOCR PP-OCRv5'
+                        : currentRecord.engine.includes('tesseract')
+                        ? 'Scanned: Tesseract 5 (TH+EN)'
+                        : currentRecord.engine.includes('winrt')
+                        ? 'Scanned: Windows OCR'
+                        : currentRecord.engine === 'native_pdf'
+                        ? 'Digital PDF (PyMuPDF)'
+                        : currentRecord.engine,
+                      currentRecord.engine.includes('vision_ai') ? '+ Vision AI' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}{' '}
+                    ({currentRecord.confidence.toFixed(0)}%)
+                  </span>
+                )}
+                {currentJob && <StatusBadge status={currentJob.status} />}
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">

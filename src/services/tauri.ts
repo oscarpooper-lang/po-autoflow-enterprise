@@ -28,13 +28,44 @@ export interface GitHubUpdateStatus {
   installer_url?: string | null;
   installer_name?: string | null;
   installer_size_bytes?: number | null;
+  detected_install_kind?: string;
+  detected_install_dir?: string;
+  msi_url?: string | null;
+  msi_name?: string | null;
+  msi_size_bytes?: number | null;
+  nsis_url?: string | null;
+  nsis_name?: string | null;
+  nsis_size_bytes?: number | null;
   repository: string;
 }
 
-export async function checkGitHubUpdate(repoOverride?: string): Promise<GitHubUpdateStatus> {
+export interface OcrEngineStatus {
+  python_version: string;
+  worker_reachable: boolean;
+  pymupdf_available: boolean;
+  paddleocr_available: boolean;
+  paddleocr_note: string;
+  tesseract_available: boolean;
+  tesseract_path: string;
+  tesseract_langs: string[];
+  winrt_available: boolean;
+  active_scanned_engine: string;
+  vision_ai_enabled: boolean;
+  vision_ai_trigger_mode: string;
+  vision_ai_model: string;
+  vision_ai_ready: boolean;
+  vision_ai_status_label: string;
+  vision_ai_message: string;
+}
+
+export async function checkGitHubUpdate(
+  repoOverride?: string,
+  packagePreference: 'auto' | 'msi' | 'nsis' = 'auto'
+): Promise<GitHubUpdateStatus> {
   if (isTauriEnvironment()) {
     return await invoke<GitHubUpdateStatus>('check_github_update', {
       repoOverride: repoOverride || null,
+      packagePreference,
     });
   }
   return {
@@ -48,6 +79,8 @@ export async function checkGitHubUpdate(repoOverride?: string): Promise<GitHubUp
     installer_url: null,
     installer_name: null,
     installer_size_bytes: null,
+    detected_install_kind: 'msi',
+    detected_install_dir: 'D:\\Program Files\\PO AutoFlow Enterprise',
     repository: repoOverride || 'oscarpooper-lang/po-autoflow-enterprise',
   };
 }
@@ -789,6 +822,30 @@ export const api = {
       });
     }
     throw new Error('Managing models requires desktop Tauri runtime.');
+  },
+
+  getOcrEngineStatus: async (): Promise<OcrEngineStatus> => {
+    if (isTauriEnvironment()) {
+      return await invoke<OcrEngineStatus>('get_ocr_engine_status');
+    }
+    return {
+      python_version: '3.14.5',
+      worker_reachable: true,
+      pymupdf_available: true,
+      paddleocr_available: false,
+      paddleocr_note: 'Not installed on Python 3.14',
+      tesseract_available: true,
+      tesseract_path: 'D:\\PO-AutoFlow\\Models\\tesseract\\tesseract.exe',
+      tesseract_langs: ['eng', 'tha'],
+      winrt_available: true,
+      active_scanned_engine: 'tesseract_tha_eng',
+      vision_ai_enabled: false,
+      vision_ai_trigger_mode: 'fallback',
+      vision_ai_model: 'smolvlm2-2.2b',
+      vision_ai_ready: false,
+      vision_ai_status_label: 'Disabled',
+      vision_ai_message: 'Browser preview mode.',
+    };
   },
 
   checkGitHubUpdate,
