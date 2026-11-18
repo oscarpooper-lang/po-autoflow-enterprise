@@ -418,6 +418,7 @@ pub fn run() {
             ask_ai_assistant,
             get_ai_chat_status,
             stop_ai_chat_server,
+            warm_ai_chat_server,
             delete_job,
             get_ui_state,
             save_ui_state

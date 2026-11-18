@@ -4,8 +4,8 @@ use tauri::State;
 use tokio::sync::Mutex;
 
 use crate::ai_chat::{
-    build_ai_chat_status_snapshot, run_ai_assistant_query, AiAssistantResponse, AiChatStatus,
-    AiServerManager, ChatHistoryMessage,
+    build_ai_chat_status_snapshot, run_ai_assistant_query, warm_ai_chat_server_if_ready,
+    AiAssistantResponse, AiChatStatus, AiServerManager, ChatHistoryMessage,
 };
 use crate::database::models::*;
 use crate::database::Database;
@@ -3391,6 +3391,11 @@ pub async fn get_ai_chat_status(state: State<'_, AppState>) -> Result<AiChatStat
 pub async fn stop_ai_chat_server(state: State<'_, AppState>) -> Result<(), String> {
     state.ai_server.stop().await;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn warm_ai_chat_server(state: State<'_, AppState>) -> Result<AiChatStatus, String> {
+    warm_ai_chat_server_if_ready(&state.db, &state.ai_server).await
 }
 
 #[tauri::command]

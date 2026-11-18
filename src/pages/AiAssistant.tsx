@@ -19,14 +19,17 @@ import {
   Image as ImageIcon,
 } from 'lucide-react';
 import type {
-  AiAssistantResponse,
-  AiChatStatus,
-  ChatHistoryMessage,
   CompanyCacheEntry,
   DepartmentCcEntry,
   Job,
 } from '../types';
-import { api } from '../services/tauri';
+import {
+  clearAiChatHistory,
+  refreshAiChatStatus,
+  sendAiChatPrompt,
+  stopAiChatServerFromStore,
+  useAiChatState,
+} from '../utils/aiChatStore';
 import { usePersistedState } from '../utils/persistedState';
 import { StatusBadge } from './Overview';
 import { tx, type UiLang } from '../i18n';
@@ -41,16 +44,6 @@ interface AiAssistantProps {
   lang?: UiLang;
 }
 
-interface ConversationTurn {
-  id: string;
-  role: 'user' | 'assistant';
-  text: string;
-  timestamp: string;
-  hadVisionImage?: boolean;
-  response?: AiAssistantResponse;
-  error?: string;
-}
-
 export const AiAssistant: React.FC<AiAssistantProps> = ({
   jobs,
   companies,
@@ -60,7 +53,7 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
   onNavigateTab,
   lang = 'en',
 }) => {
-  const [status, setStatus] = useState<AiChatStatus | null>(null);
+  const { turns, isSending, sendingStartedAt, sendingWithVision, status } = useAiChatState();
   const [focusJobId, setFocusJobId] = usePersistedState<string>('assistant.focusJobId', '');
   const [includePageImage, setIncludePageImage] = usePersistedState<boolean>(
     'assistant.includePageImage',
@@ -69,10 +62,9 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
   const [manualImageCleared, setManualImageCleared] = useState<boolean>(false);
   const [attachedPage, setAttachedPage] = usePersistedState<number>('assistant.attachedPage', 1);
   const [inputText, setInputText] = usePersistedState<string>('assistant.inputText', '');
-  const [isSending, setIsSending] = useState<boolean>(false);
   const [isStoppingServer, setIsStoppingServer] = useState<boolean>(false);
-  const [turns, setTurns] = usePersistedState<ConversationTurn[]>('assistant.turns', []);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [elapsedSec, setElapsedSec] = useState<number>(0);
   const scrollEndRef = useRef<HTMLDivElement | null>(null);
 
   const attachedImageUrl =
@@ -80,29 +72,20 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
       ? transientAttachedImage.dataUrl
       : null;
 
-  const loadStatus = async () => {
-    try {
-      const s = await api.getAiChatStatus();
-      setStatus(s);
-    } catch {
-      // Ignore in offline/browser mode
-    }
-  };
+  useEffect(() => {
+    refreshAiChatStatus(true);
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    api
-      .getAiChatStatus()
-      .then((s) => {
-        if (!cancelled) {
-          setStatus(s);
-        }
-      })
-      .catch(() => {});
+    if (!isSending || !sendingStartedAt) return;
+    const timer = setInterval(() => {
+      setElapsedSec(Math.max(1, Math.floor((Date.now() - sendingStartedAt) / 1000)));
+    }, 1000);
     return () => {
-      cancelled = true;
+      clearInterval(timer);
+      setElapsedSec(0);
     };
-  }, []);
+  }, [isSending, sendingStartedAt]);
 
   useEffect(() => {
     scrollEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -134,8 +117,7 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
   const handleStopWarmServer = async () => {
     setIsStoppingServer(true);
     try {
-      await api.stopAiChatServer();
-      await loadStatus();
+      await stopAiChatServerFromStore();
     } finally {
       setIsStoppingServer(false);
     }
@@ -145,60 +127,20 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
     const prompt = rawPrompt.trim();
     if (!prompt || isSending) return;
 
-    const useVision = forceAttachVision !== undefined ? forceAttachVision : includePageImage && Boolean(focusJobId);
+    const useVision =
+      forceAttachVision !== undefined ? forceAttachVision : includePageImage && Boolean(focusJobId);
     if (forceAttachVision && focusJobId && !includePageImage) {
       setIncludePageImage(true);
     }
 
-    const userTurn: ConversationTurn = {
-      id: `user-${Date.now()}`,
-      role: 'user',
-      text: prompt,
-      timestamp: new Date().toLocaleTimeString(),
-      hadVisionImage: useVision,
-    };
-
-    const priorHistory: ChatHistoryMessage[] = turns.slice(-8).map((t) => ({
-      role: t.role,
-      content: t.text,
-    }));
-
-    setTurns((prev) => [...prev, userTurn].slice(-25));
     setInputText('');
-    setIsSending(true);
-
-    try {
-      const response = await api.askAiAssistant({
-        prompt,
-        history: priorHistory,
-        focusJobId: focusJobId || null,
-        includePageImage: useVision,
-        attachedImageDataUrl: useVision ? attachedImageUrl : null,
-        attachedPageNumber: attachedPage,
-      });
-
-      const assistantTurn: ConversationTurn = {
-        id: `ai-${Date.now()}`,
-        role: 'assistant',
-        text: response.answer,
-        timestamp: new Date().toLocaleTimeString(),
-        response,
-      };
-      setTurns((prev) => [...prev, assistantTurn].slice(-25));
-      loadStatus();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const errTurn: ConversationTurn = {
-        id: `err-${Date.now()}`,
-        role: 'assistant',
-        text: '',
-        error: msg,
-        timestamp: new Date().toLocaleTimeString(),
-      };
-      setTurns((prev) => [...prev, errTurn].slice(-25));
-    } finally {
-      setIsSending(false);
-    }
+    await sendAiChatPrompt({
+      prompt,
+      focusJobId: focusJobId || null,
+      includePageImage: useVision,
+      attachedImageUrl,
+      attachedPage,
+    });
   };
 
   const quickTasks = focusedJob
@@ -332,8 +274,9 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
             {turns.length > 0 && (
               <button
                 type="button"
-                onClick={() => setTurns([])}
-                className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs flex items-center gap-1"
+                onClick={clearAiChatHistory}
+                disabled={isSending}
+                className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs flex items-center gap-1 disabled:opacity-50"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 <span>{tx(lang, 'New Chat', 'เริ่มใหม่')}</span>
@@ -587,58 +530,68 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
                       </div>
                     )}
 
-                    {turn.response.matched_companies.length > 0 && (
+                    {turn.response.matched_companies.some(
+                      (comp) => (comp.company_name || comp.alternative_name || '').trim().length > 0
+                    ) && (
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                        {turn.response.matched_companies.map((comp, idx) => {
-                          const cKey = `${turn.id}-co-${idx}`;
-                          return (
-                            <div
-                              key={cKey}
-                              className="p-2.5 rounded-lg bg-zinc-900/70 border border-zinc-800 flex items-start justify-between gap-2 text-xs"
-                            >
-                              <div className="min-w-0 space-y-0.5">
-                                <div className="flex items-center gap-1.5 flex-wrap">
-                                  <Building2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                                  <span className="font-semibold text-zinc-100 truncate">
-                                    {comp.company_name}
-                                  </span>
-                                  {comp.vendor_group && (
-                                    <span className="px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-300 text-[10px]">
-                                      {comp.vendor_group}
+                        {turn.response.matched_companies
+                          .filter(
+                            (comp) =>
+                              (comp.company_name || comp.alternative_name || '').trim().length > 0
+                          )
+                          .map((comp, idx) => {
+                            const cKey = `${turn.id}-co-${idx}`;
+                            const displayName =
+                              comp.company_name.trim() || comp.alternative_name?.trim() || '';
+                            return (
+                              <div
+                                key={cKey}
+                                className="p-2.5 rounded-lg bg-zinc-900/70 border border-zinc-800 flex items-start justify-between gap-2 text-xs"
+                              >
+                                <div className="min-w-0 space-y-0.5">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <Building2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                    <span className="font-semibold text-zinc-100 truncate">
+                                      {displayName}
                                     </span>
+                                    {comp.vendor_group && (
+                                      <span className="px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-300 text-[10px]">
+                                        {comp.vendor_group}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {comp.alternative_name &&
+                                    comp.alternative_name !== displayName && (
+                                      <div className="text-[11px] text-zinc-400 truncate">
+                                        {comp.alternative_name}
+                                      </div>
+                                    )}
+                                  <div className="text-[11px] text-emerald-300 font-mono truncate">
+                                    {comp.email || tx(lang, '(no email)', '(ไม่มีอีเมล)')}
+                                  </div>
+                                  {comp.tax_id && (
+                                    <div className="text-[10px] text-zinc-500 font-mono">
+                                      Tax ID: {comp.tax_id}
+                                    </div>
                                   )}
                                 </div>
-                                {comp.alternative_name && (
-                                  <div className="text-[11px] text-zinc-400 truncate">
-                                    {comp.alternative_name}
-                                  </div>
-                                )}
-                                <div className="text-[11px] text-emerald-300 font-mono truncate">
-                                  {comp.email || tx(lang, '(no email)', '(ไม่มีอีเมล)')}
-                                </div>
-                                {comp.tax_id && (
-                                  <div className="text-[10px] text-zinc-500 font-mono">
-                                    Tax ID: {comp.tax_id}
-                                  </div>
+                                {comp.email && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyText(cKey, comp.email)}
+                                    className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] flex items-center gap-1 shrink-0"
+                                  >
+                                    {copiedKey === cKey ? (
+                                      <Check className="w-3 h-3 text-emerald-400" />
+                                    ) : (
+                                      <Copy className="w-3 h-3" />
+                                    )}
+                                    <span>{tx(lang, 'Copy', 'คัดลอก')}</span>
+                                  </button>
                                 )}
                               </div>
-                              {comp.email && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleCopyText(cKey, comp.email)}
-                                  className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] flex items-center gap-1 shrink-0"
-                                >
-                                  {copiedKey === cKey ? (
-                                    <Check className="w-3 h-3 text-emerald-400" />
-                                  ) : (
-                                    <Copy className="w-3 h-3" />
-                                  )}
-                                  <span>{tx(lang, 'Copy', 'คัดลอก')}</span>
-                                </button>
-                              )}
-                            </div>
-                          );
-                        })}
+                            );
+                          })}
                       </div>
                     )}
 
@@ -686,12 +639,20 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
         )}
 
         {isSending && (
-          <div className="flex items-center gap-2 text-xs text-zinc-400 px-2">
-            <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
+          <div className="flex items-center gap-2 text-xs text-zinc-400 px-2 py-1">
+            <Loader2 className="w-4 h-4 animate-spin text-purple-400 shrink-0" />
             <span>
-              {includePageImage
-                ? tx(lang, 'Reading live DB & analyzing PDF page with local VLM...', 'กำลังอ่านฐานข้อมูลและภาพหน้า PDF ด้วย AI ในเครื่อง...')
-                : tx(lang, 'Searching live database & thinking locally...', 'กำลังค้นหาฐานข้อมูลจริงและประมวลผลด้วย AI ในเครื่อง...')}
+              {sendingWithVision
+                ? tx(
+                    lang,
+                    `Reading live DB & analyzing PDF page (${elapsedSec}s) — safe to switch tabs, AI keeps running...`,
+                    `กำลังอ่านฐานข้อมูลและภาพ PDF (${elapsedSec} วินาที) — สลับไปทำหน้าอื่นได้ AI ยังทำงานต่อในพื้นหลัง...`
+                  )
+                : tx(
+                    lang,
+                    `Thinking locally (${elapsedSec}s) — safe to switch tabs, AI keeps running...`,
+                    `กำลังประมวลผลด้วย AI ในเครื่อง (${elapsedSec} วินาที) — สลับไปทำหน้าอื่นได้ คำตอบจะถูกบันทึกให้อัตโนมัติ...`
+                  )}
             </span>
           </div>
         )}

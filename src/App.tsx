@@ -16,6 +16,7 @@ import { DeveloperOptions } from './pages/DeveloperOptions';
 import { ModelBenchmark } from './pages/ModelBenchmark';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { api, defaultSettings } from './services/tauri';
+import { setCurrentUiTabForAiStore, useAiChatState } from './utils/aiChatStore';
 import {
   usePersistedState,
   hydrateUiStateFromBackend,
@@ -39,6 +40,7 @@ import type {
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = usePersistedState<string>('app.currentTab', 'overview');
   const [selectedJobId, setSelectedJobId] = usePersistedState<string>('app.selectedJobId', '');
+  const aiChatState = useAiChatState();
   const [assistantAttachedImage, setAssistantAttachedImage] = useState<{
     jobId: string;
     dataUrl: string;
@@ -250,9 +252,17 @@ export const App: React.FC = () => {
     setCurrentTab('overview');
   };
 
+  const navigateToTab = useCallback(
+    (tab: string) => {
+      setCurrentUiTabForAiStore(tab);
+      setCurrentTab(tab);
+    },
+    [setCurrentTab]
+  );
+
   const handleSelectJobForInspection = (jobId: string) => {
     setSelectedJobId(jobId);
-    setCurrentTab('ocr-inspector');
+    navigateToTab('ocr-inspector');
   };
 
   const handleRetryJob = async (jobId: string) => {
@@ -328,6 +338,10 @@ export const App: React.FC = () => {
       ? 'overview'
       : currentTab;
 
+  useEffect(() => {
+    setCurrentUiTabForAiStore(activeTab);
+  }, [activeTab]);
+
   const { title, subtitle } = getTabTitle();
 
   return (
@@ -335,12 +349,14 @@ export const App: React.FC = () => {
       {/* Sidebar Navigation */}
       <Sidebar
         currentTab={activeTab}
-        onSelectTab={setCurrentTab}
+        onSelectTab={navigateToTab}
         isMonitoringActive={isMonitoringActive}
         rootDir={settings.root_dir}
         needsReviewCount={jobs.filter((j) => j.status === 'needs_review').length}
         companiesCount={companies.length}
         developerMode={!!settings.developer_mode_enabled}
+        aiSending={aiChatState.isSending}
+        aiUnread={aiChatState.hasUnreadReply}
         lang={lang}
       />
 
@@ -411,7 +427,7 @@ export const App: React.FC = () => {
                 settings={settings}
                 onSaveSettings={handleSaveSettings}
                 onSelectJob={handleSelectJobForInspection}
-                onNavigateTab={setCurrentTab}
+                onNavigateTab={navigateToTab}
                 onSyncSheets={handleSyncSheets}
                 onRetryJob={handleRetryJob}
                 onDeleteJob={handleDeleteJob}
@@ -455,7 +471,7 @@ export const App: React.FC = () => {
                   notifyPageStateSync('assistant.attachedPage');
                   notifyPageStateSync('assistant.includePageImage');
                   setAssistantAttachedImage(pageImg ? { jobId, dataUrl: pageImg } : null);
-                  setCurrentTab('assistant');
+                  navigateToTab('assistant');
                 }}
                 lang={lang}
               />
@@ -468,7 +484,7 @@ export const App: React.FC = () => {
                 departments={departments}
                 transientAttachedImage={assistantAttachedImage}
                 onInspectJob={handleSelectJobForInspection}
-                onNavigateTab={setCurrentTab}
+                onNavigateTab={navigateToTab}
                 lang={lang}
               />
             )}

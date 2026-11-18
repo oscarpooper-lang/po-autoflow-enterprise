@@ -253,7 +253,7 @@ async fn spawn_and_wait_llama_server(
         .arg("--port")
         .arg(port.to_string())
         .arg("-c")
-        .arg("8192")
+        .arg("6144")
         .arg("--image-max-tokens")
         .arg("640")
         .arg("-t")
@@ -433,16 +433,152 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     format!("{}... [truncated]", clipped)
 }
 
+fn is_word_boundary_char(c: char) -> bool {
+    !c.is_alphanumeric() && c != '_'
+}
+
+fn contains_whole_word(haystack: &str, needle: &str) -> bool {
+    if haystack.is_empty() || needle.is_empty() {
+        return false;
+    }
+    let mut start = 0;
+    while let Some(pos) = haystack[start..].find(needle) {
+        let abs_start = start + pos;
+        let abs_end = abs_start + needle.len();
+        let left_ok = haystack[..abs_start]
+            .chars()
+            .next_back()
+            .map(is_word_boundary_char)
+            .unwrap_or(true);
+        let right_ok = haystack[abs_end..]
+            .chars()
+            .next()
+            .map(is_word_boundary_char)
+            .unwrap_or(true);
+        if left_ok && right_ok {
+            return true;
+        }
+        start = abs_start + needle.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+    }
+    false
+}
+
+/// Returns 2 for whole-word/digit match, 1 for safe substring match (>=4 ASCII or >=2 Thai),
+/// and 0 for noisy 1-2 char English substrings (so "hi" never matches "Hitachi" or "PARTNERSHIP").
+fn term_match_strength(haystack_lower: &str, tok: &str) -> i32 {
+    if haystack_lower.is_empty() || tok.is_empty() {
+        return 0;
+    }
+    let len = tok.chars().count();
+    let has_digit = tok.chars().any(|c| c.is_ascii_digit());
+    if tok.is_ascii() && !has_digit {
+        if len <= 2 {
+            return 0;
+        }
+        if len == 3 {
+            return if contains_whole_word(haystack_lower, tok) {
+                2
+            } else {
+                0
+            };
+        }
+        return if contains_whole_word(haystack_lower, tok) {
+            2
+        } else if haystack_lower.contains(tok) {
+            1
+        } else {
+            0
+        };
+    }
+
+    if has_digit {
+        if len < 3 {
+            return 0;
+        }
+        return if contains_whole_word(haystack_lower, tok) || haystack_lower.contains(tok) {
+            2
+        } else {
+            0
+        };
+    }
+
+    // Thai / Unicode terms
+    if len < 2 {
+        return 0;
+    }
+    if contains_whole_word(haystack_lower, tok) {
+        2
+    } else if haystack_lower.contains(tok) {
+        1
+    } else {
+        0
+    }
+}
+
+fn is_casual_greeting_or_smalltalk(q_norm: &str, focused_tokens: &[String], focus_job_id: Option<&str>) -> bool {
+    if focus_job_id.is_some() {
+        return false;
+    }
+    if detect_status_filter(q_norm).is_some() || wants_summary_or_recent(q_norm) || wants_directory_analytics(q_norm) {
+        return false;
+    }
+    let stripped = q_norm
+        .trim_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace())
+        .replace("ครับ", "")
+        .replace("ค่ะ", "")
+        .replace("คะ", "")
+        .replace("นะ", "")
+        .replace("จ้า", "")
+        .replace("ฮะ", "");
+    let clean = stripped.trim();
+    let exact_greetings = [
+        "hi", "hello", "hey", "yo", "gm", "sup", "ok", "okay", "k", "yes", "no", "thx", "ty",
+        "thanks", "thank you", "good morning", "good afternoon", "good evening", "test", "testing",
+        "ping", "help", "who are you", "what can you do", "สวัสดี", "หวัดดี", "ดี", "ทัก",
+        "ทักทาย", "ขอบคุณ", "โอเค", "เทส", "ทดสอบ", "คุณคือใคร", "ช่วยอะไรได้", "ทำอะไรได้บ้าง",
+    ];
+    if exact_greetings.iter().any(|g| clean == *g) {
+        return true;
+    }
+    focused_tokens.is_empty() && clean.chars().count() <= 20
+}
+
+fn wants_directory_analytics(q_norm: &str) -> bool {
+    [
+        "duplicate", "share email", "same email", "how many company", "how many supplier",
+        "how many vendor", "missing email", "no email", "dv", "ov", "กี่บริษัท", "กี่ผู้ขาย",
+        "อีเมลซ้ำ", "ไม่มีอีเมล", "กี่แผนก",
+    ]
+    .iter()
+    .any(|kw| q_norm.contains(kw))
+}
+
+fn wants_followup_context(q_norm: &str) -> bool {
+    [
+        "why", "email", "mail", "cc", "detail", "more", "that", "it", "this po", "what happened",
+        "fix", "approve", "ทำไม", "อีเมล", "เมล", "รายละเอียด", "อันนี้", "ใบนี้", "บริษัทนี้", "ส่งใคร", "แก้",
+    ]
+    .iter()
+    .any(|kw| q_norm.contains(kw))
+}
+
 fn extract_query_tokens(query: &str) -> (String, Vec<String>, Vec<String>) {
     let norm = ThaiNormalizer::normalize_unicode(query).to_lowercase();
     let stop_words: HashSet<&str> = [
+        "hi", "hey", "hello", "yo", "gm", "ok", "okay", "thanks", "thank", "thx", "ty", "test",
         "find", "search", "show", "list", "get", "what", "which", "who", "why", "is", "are",
         "the", "for", "of", "in", "on", "to", "a", "an", "and", "or", "with", "about", "this",
-        "that", "me", "my", "please", "tell", "give", "check", "can", "you", "do", "does", "did",
-        "po", "email", "emails", "company", "companies", "supplier", "vendor", "dept",
-        "department", "cc", "status", "pdf", "หา", "ค้นหา", "ขอ", "ดู", "แสดง", "อะไร", "คือ",
-        "ไหน", "ใคร", "ทำไม", "ที่", "ของ", "ใน", "ให้", "หน่อย", "ช่วย", "บริษัท", "ผู้ขาย",
-        "อีเมล", "เมล", "แผนก", "ฝ่าย", "ใบ", "ใบสั่งซื้อ", "สถานะ", "นี้", "บ้าง", "มี", "ไหม",
+        "that", "it", "them", "they", "there", "here", "any", "some", "have", "has", "was",
+        "were", "will", "would", "could", "should", "me", "my", "please", "tell", "give",
+        "check", "can", "you", "do", "does", "did", "how", "many", "detail", "details",
+        "more", "explain", "currently", "now", "from", "into", "po", "pos", "email", "emails",
+        "mail", "company", "companies", "supplier", "suppliers", "vendor", "vendors", "dept",
+        "department", "departments", "cc", "status", "statuses", "pdf", "file", "files",
+        "สวัสดี", "หวัดดี", "ดี", "ครับ", "ค่ะ", "คะ", "นะ", "จ้า", "ฮะ", "ขอบคุณ", "โอเค",
+        "เทส", "ทดสอบ", "หา", "ค้นหา", "ขอ", "ดู", "แสดง", "อะไร", "คือ", "ไหน", "ใคร", "ทำไม",
+        "ที่", "ของ", "ใน", "ให้", "หน่อย", "ช่วย", "บอก", "บริษัท", "ผู้ขาย", "อีเมล", "เมล",
+        "แผนก", "ฝ่าย", "ใบ", "ใบสั่งซื้อ", "สถานะ", "นี้", "อันนี้", "ใบนี้", "บ้าง", "มี",
+        "ไหม", "มั้ย", "ได้", "เป็น", "ยัง", "อยู่", "แล้ว", "กับ", "และ", "หรือ", "จาก", "กี่",
     ]
     .into_iter()
     .collect();
@@ -454,14 +590,21 @@ fn extract_query_tokens(query: &str) -> (String, Vec<String>, Vec<String>) {
     let mut seen_focused = HashSet::new();
 
     for raw_part in splitter.split(&norm) {
-        let tok = raw_part.trim();
+        let tok = raw_part.trim().trim_matches('.');
         if tok.chars().count() < 2 {
             continue;
         }
         if seen_all.insert(tok.to_string()) {
             all_tokens.push(tok.to_string());
         }
-        if !stop_words.contains(tok) && seen_focused.insert(tok.to_string()) {
+        if stop_words.contains(tok) {
+            continue;
+        }
+        // Drop standalone 2-letter ASCII noise words so they never dilute fuzzy scoring
+        if tok.is_ascii() && !tok.chars().any(|c| c.is_ascii_digit()) && tok.chars().count() < 3 {
+            continue;
+        }
+        if seen_focused.insert(tok.to_string()) {
             focused_tokens.push(tok.to_string());
         }
     }
@@ -473,6 +616,7 @@ fn detect_status_filter(q_norm: &str) -> Option<&'static str> {
     if [
         "review",
         "pending",
+        "needs_review",
         "รอตรวจ",
         "รอตรวจสอบ",
         "ค้าง",
@@ -520,61 +664,97 @@ fn score_company_entry(
     q_norm: &str,
     tokens: &[String],
 ) -> i32 {
+    let clean_name = company.company_name.trim();
+    let clean_alt = company.alternative_name.as_deref().unwrap_or("").trim();
+    if clean_name.is_empty() && clean_alt.is_empty() {
+        return 0;
+    }
+
     let mut score = 0;
-    let name_l = ThaiNormalizer::normalize_unicode(&company.company_name).to_lowercase();
-    let alt_l = company
-        .alternative_name
-        .as_deref()
-        .map(|s| ThaiNormalizer::normalize_unicode(s).to_lowercase())
-        .unwrap_or_default();
+    let name_l = ThaiNormalizer::normalize_unicode(clean_name).to_lowercase();
+    let alt_l = ThaiNormalizer::normalize_unicode(clean_alt).to_lowercase();
     let email_l = company.email.to_lowercase();
     let tax_l = company.tax_id.as_deref().unwrap_or("").to_lowercase();
     let notes_l = company.notes.as_deref().unwrap_or("").to_lowercase();
 
     for tok in tokens {
         if tok.chars().count() >= 10 && !tax_l.is_empty() && tax_l.contains(tok) {
-            score += 200;
+            score += 220;
         }
-        if !name_l.is_empty() && name_l.contains(tok) {
-            score += 75;
+        match term_match_strength(&name_l, tok) {
+            2 => score += 120,
+            1 => score += 85,
+            _ => {}
         }
-        if !alt_l.is_empty() && alt_l.contains(tok) {
-            score += 65;
+        match term_match_strength(&alt_l, tok) {
+            2 => score += 105,
+            1 => score += 75,
+            _ => {}
         }
-        if !email_l.is_empty() && email_l.contains(tok) {
+        match term_match_strength(&email_l, tok) {
+            2 => score += 110,
+            1 => score += 80,
+            _ => {}
+        }
+        if term_match_strength(&notes_l, tok) > 0 {
             score += 70;
         }
-        if !notes_l.is_empty() && notes_l.contains(tok) {
-            score += 45;
-        }
-        if aliases.iter().any(|a| a.to_lowercase().contains(tok)) {
-            score += 70;
+        if aliases.iter().any(|a| term_match_strength(&a.to_lowercase(), tok) > 0) {
+            score += 110;
         }
     }
 
-    // Whole-query fuzzy boost against company name / alternative name when tokens weren't exact Thai word-split
-    let query_focus = if tokens.is_empty() {
-        q_norm.to_string()
-    } else {
-        tokens.join(" ")
-    };
-    if query_focus.chars().count() >= 3 {
+    let query_focus = tokens.join(" ");
+    if query_focus.chars().count() >= 4 {
         let sim_main = CompanyMatcher::token_set_ratio(&query_focus, &name_l);
-        if sim_main >= 62.0 {
-            score += (sim_main * 0.9) as i32;
+        if sim_main >= 76.0 {
+            score += (sim_main * 1.1) as i32;
         }
         if !alt_l.is_empty() {
             let sim_alt = CompanyMatcher::token_set_ratio(&query_focus, &alt_l);
-            if sim_alt >= 62.0 {
-                score += (sim_alt * 0.85) as i32;
+            if sim_alt >= 76.0 {
+                score += (sim_alt * 1.0) as i32;
             }
         }
-        if !name_l.is_empty() && q_norm.contains(&name_l) {
-            score += 140;
+        if !name_l.is_empty() && name_l.chars().count() >= 4 && q_norm.contains(&name_l) {
+            score += 160;
         }
     }
 
     score
+}
+
+fn diagnose_job_reason(job: &Job) -> String {
+    match job.status.as_str() {
+        "needs_review" | "review" => {
+            if let Some(err) = job.error_details.as_deref().filter(|e| !e.trim().is_empty()) {
+                truncate_chars(err.trim(), 140)
+            } else if job.matched_email.as_deref().unwrap_or("").trim().is_empty() {
+                "Waiting manual review: no verified supplier email matched yet.".to_string()
+            } else {
+                format!(
+                    "Waiting manual review (confidence {:.1}% — confirm before email send).",
+                    job.match_confidence.unwrap_or(0.0)
+                )
+            }
+        }
+        "failed" => job
+            .error_details
+            .as_deref()
+            .filter(|e| !e.trim().is_empty())
+            .map(|e| format!("Failed: {}", truncate_chars(e.trim(), 160)))
+            .unwrap_or_else(|| format!("Failed at stage: {}", job.stage_message)),
+        "completed" | "sent" => format!(
+            "Sent to {}{}",
+            job.matched_email.as_deref().unwrap_or("(email recorded)"),
+            job.department_cc_emails
+                .as_deref()
+                .filter(|c| !c.trim().is_empty())
+                .map(|c| format!(" | CC: {}", c))
+                .unwrap_or_default()
+        ),
+        _ => job.stage_message.clone(),
+    }
 }
 
 fn to_matched_job(job: &Job) -> AiMatchedJob {
@@ -596,18 +776,24 @@ fn to_matched_job(job: &Job) -> AiMatchedJob {
     }
 }
 
-/// Deterministically searches live SQLite procurement records so smaller 2B-4B models stay 100% grounded.
+/// Backwards-compatible wrapper with empty conversation history.
 pub fn gather_procurement_context(
     db: &Database,
     query: &str,
     focus_job_id: Option<&str>,
 ) -> AiContextBundle {
-    let (q_norm, focused_tokens, all_tokens) = extract_query_tokens(query);
-    let search_tokens = if focused_tokens.is_empty() {
-        &all_tokens
-    } else {
-        &focused_tokens
-    };
+    gather_procurement_context_with_history(db, query, &[], focus_job_id)
+}
+
+/// Deterministically searches live SQLite procurement records so smaller 2B-4B models stay 100% grounded.
+pub fn gather_procurement_context_with_history(
+    db: &Database,
+    query: &str,
+    history: &[ChatHistoryMessage],
+    focus_job_id: Option<&str>,
+) -> AiContextBundle {
+    let (q_norm, focused_tokens, _all_tokens) = extract_query_tokens(query);
+    let now_label = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
 
     let stats = db.get_dashboard_stats().unwrap_or(DashboardStats {
         total_processed: 0,
@@ -624,25 +810,85 @@ pub fn gather_procurement_context(
     let departments = db.get_department_cc_cache().unwrap_or_default();
     let transactions = db.list_transactions(60, 0).unwrap_or_default();
 
+    // Fast clean greeting path: never pollute greetings like "hi" or "สวัสดี" with unrelated PO/company cards
+    if is_casual_greeting_or_smalltalk(&q_norm, &focused_tokens, focus_job_id) {
+        let prompt = format!(
+            "You are the built-in AI procurement assistant for PO AutoFlow Enterprise (QTC Energy).\n\
+            Current local time: {now_label}\n\
+            Live Queue Snapshot: Total {total} PO(s) (Sent: {sent}, Needs Review: {rev}, Failed: {fail}, Waiting: {wait}) | {co} suppliers synced | {dept} Department CC rules.\n\n\
+            The user sent a brief greeting/conversational opener. Respond naturally and briefly (1-2 sentences in the user's language, Thai or English).\n\
+            Briefly state the live snapshot counts above and offer what you can do right now (find POs/status blockers, look up vendor emails/Dept CCs, or read attached PDF pages). Do NOT invent any PO numbers or company names.",
+            now_label = now_label,
+            total = stats.total_processed,
+            sent = stats.successfully_sent,
+            rev = stats.needs_review,
+            fail = stats.failed_transactions,
+            wait = stats.waiting_processing,
+            co = companies.len(),
+            dept = departments.len(),
+        );
+        return AiContextBundle {
+            system_grounding_prompt: prompt,
+            matched_jobs: Vec::new(),
+            matched_companies: Vec::new(),
+            matched_departments: Vec::new(),
+        };
+    }
+
+    // Carry over entity terms on short follow-up questions (e.g. "what's the email?" right after "find PO-26004156")
+    let mut search_tokens = focused_tokens.clone();
+    if focus_job_id.is_none()
+        && !history.is_empty()
+        && (search_tokens.is_empty() || wants_followup_context(&q_norm))
+    {
+        for prev in history.iter().rev().take(3) {
+            if prev.role == "user" {
+                let (_, prev_tokens, _) = extract_query_tokens(&prev.content);
+                for tok in prev_tokens {
+                    if !search_tokens.contains(&tok) {
+                        search_tokens.push(tok);
+                    }
+                }
+            } else {
+                // Capture any explicit PO/alphanumeric IDs cited in prior assistant turn
+                for word in prev.content.split_whitespace() {
+                    let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_').to_lowercase();
+                    if clean.len() >= 5 && clean.chars().any(|c| c.is_ascii_digit()) && !search_tokens.contains(&clean) {
+                        search_tokens.push(clean);
+                    }
+                }
+            }
+            if search_tokens.len() >= 6 {
+                break;
+            }
+        }
+    }
+
     // Group aliases by canonical company name
     let mut alias_map: HashMap<String, Vec<String>> = HashMap::new();
     for a in &aliases {
-        alias_map
-            .entry(a.canonical_company_name.to_lowercase())
-            .or_default()
-            .push(a.alias.clone());
+        if !a.canonical_company_name.trim().is_empty() && !a.alias.trim().is_empty() {
+            alias_map
+                .entry(a.canonical_company_name.to_lowercase())
+                .or_default()
+                .push(a.alias.clone());
+        }
     }
 
-    // 1. Retrieve matching suppliers
+    // 1. Retrieve matching suppliers (skip empty rows, require high-confidence threshold >= 85)
     let mut scored_companies: Vec<(i32, &CompanyCacheEntry, Vec<String>)> = companies
         .iter()
+        .filter(|c| {
+            !c.company_name.trim().is_empty()
+                || !c.alternative_name.as_deref().unwrap_or("").trim().is_empty()
+        })
         .filter_map(|c| {
             let co_aliases = alias_map
                 .get(&c.company_name.to_lowercase())
                 .cloned()
                 .unwrap_or_default();
-            let s = score_company_entry(c, &co_aliases, &q_norm, search_tokens);
-            if s >= 55 {
+            let s = score_company_entry(c, &co_aliases, &q_norm, &search_tokens);
+            if s >= 85 {
                 Some((s, c, co_aliases))
             } else {
                 None
@@ -650,11 +896,12 @@ pub fn gather_procurement_context(
         })
         .collect();
     scored_companies.sort_by(|a, b| b.0.cmp(&a.0));
-    scored_companies.truncate(6);
+    scored_companies.truncate(4);
 
     let matched_company_names_lower: Vec<String> = scored_companies
         .iter()
         .map(|(_, c, _)| c.company_name.to_lowercase())
+        .filter(|s| !s.is_empty())
         .collect();
 
     let matched_companies: Vec<AiMatchedCompany> = scored_companies
@@ -671,8 +918,13 @@ pub fn gather_procurement_context(
                         .collect()
                 })
                 .unwrap_or_default();
+            let display_name = if c.company_name.trim().is_empty() {
+                c.alternative_name.clone().unwrap_or_default()
+            } else {
+                c.company_name.clone()
+            };
             AiMatchedCompany {
-                company_name: c.company_name.clone(),
+                company_name: display_name,
                 alternative_name: c.alternative_name.clone(),
                 tax_id: c.tax_id.clone(),
                 email: c.email.clone(),
@@ -688,6 +940,9 @@ pub fn gather_procurement_context(
     let query_vec = vec![query.to_string()];
     let (best_dept_name, _) = CompanyMatcher::match_department_cc(&query_vec, &departments);
     for d in &departments {
+        if d.department_name.trim().is_empty() || d.emails.trim().is_empty() {
+            continue;
+        }
         let mut s = 0;
         if let Some(ref matched_name) = best_dept_name {
             if matched_name.eq_ignore_ascii_case(&d.department_name) {
@@ -697,26 +952,28 @@ pub fn gather_procurement_context(
         let name_l = ThaiNormalizer::normalize_unicode(&d.department_name).to_lowercase();
         let emails_l = d.emails.to_lowercase();
         let id_l = d.id.to_lowercase();
-        for tok in search_tokens {
-            if !name_l.is_empty() && name_l.contains(tok) {
+        for tok in &search_tokens {
+            match term_match_strength(&name_l, tok) {
+                2 => s += 110,
+                1 => s += 85,
+                _ => {}
+            }
+            if term_match_strength(&emails_l, tok) > 0 {
                 s += 80;
             }
-            if !emails_l.is_empty() && emails_l.contains(tok) {
-                s += 60;
-            }
             if id_l == *tok {
-                s += 50;
+                s += 90;
             }
         }
-        if !name_l.is_empty() && q_norm.contains(&name_l) {
-            s += 150;
+        if name_l.chars().count() >= 4 && q_norm.contains(&name_l) {
+            s += 160;
         }
-        if s >= 50 {
+        if s >= 85 {
             dept_scores.push((s, d));
         }
     }
     dept_scores.sort_by(|a, b| b.0.cmp(&a.0));
-    dept_scores.truncate(5);
+    dept_scores.truncate(4);
     let matched_departments: Vec<AiMatchedDepartment> = dept_scores
         .into_iter()
         .map(|(_, d)| AiMatchedDepartment {
@@ -756,41 +1013,39 @@ pub fn gather_procurement_context(
                 .unwrap_or("")
                 .to_lowercase();
             let err_l = job.error_details.as_deref().unwrap_or("").to_lowercase();
-            let stage_l = job.stage_message.to_lowercase();
 
-            if !po_l.is_empty() && q_norm.contains(&po_l) {
+            if po_l.chars().count() >= 3 && q_norm.contains(&po_l) {
                 score += 500;
             }
-            if !folder_l.is_empty() && q_norm.contains(&folder_l) {
+            if folder_l.chars().count() >= 4 && q_norm.contains(&folder_l) {
                 score += 450;
             }
 
-            for tok in search_tokens {
-                if !po_l.is_empty() && po_l.contains(tok) {
-                    score += 180;
+            for tok in &search_tokens {
+                if term_match_strength(&po_l, tok) > 0 {
+                    score += 200;
                 }
-                if !folder_l.is_empty() && folder_l.contains(tok) {
-                    score += 150;
+                if term_match_strength(&folder_l, tok) > 0 {
+                    score += 170;
                 }
-                if !comp_l.is_empty() && comp_l.contains(tok) {
+                match term_match_strength(&comp_l, tok) {
+                    2 => score += 120,
+                    1 => score += 90,
+                    _ => {}
+                }
+                if term_match_strength(&raw_l, tok) > 0 {
+                    score += 95;
+                }
+                if term_match_strength(&dept_l, tok) > 0 {
                     score += 90;
                 }
-                if !raw_l.is_empty() && raw_l.contains(tok) {
-                    score += 75;
-                }
-                if !dept_l.is_empty() && dept_l.contains(tok) {
-                    score += 65;
-                }
-                if !err_l.is_empty() && err_l.contains(tok) {
-                    score += 45;
-                }
-                if stage_l.contains(tok) {
-                    score += 35;
+                if term_match_strength(&err_l, tok) > 0 {
+                    score += 80;
                 }
             }
 
             if !comp_l.is_empty() && matched_company_names_lower.iter().any(|mc| mc == &comp_l) {
-                score += 140;
+                score += 150;
             }
 
             if let Some(st) = status_filter {
@@ -810,14 +1065,11 @@ pub fn gather_procurement_context(
                 }
             }
 
-            if score == 0 && (summary_mode || status_filter.is_some()) {
-                // Only include recent jobs when the user asks for an overview/summary or status list without hitting other records
-                if status_filter.is_none() && idx < 6 {
-                    score = 15 - idx as i32;
-                }
+            if score == 0 && summary_mode && status_filter.is_none() && idx < 6 {
+                score = 115 - idx as i32;
             }
 
-            if score > 0 {
+            if score >= 100 {
                 Some((score, idx, job))
             } else {
                 None
@@ -826,7 +1078,7 @@ pub fn gather_procurement_context(
         .collect();
 
     scored_jobs.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    scored_jobs.truncate(8);
+    scored_jobs.truncate(6);
 
     let matched_jobs: Vec<AiMatchedJob> = scored_jobs.iter().map(|(_, _, j)| to_matched_job(j)).collect();
 
@@ -836,56 +1088,66 @@ pub fn gather_procurement_context(
         .or_else(|| {
             scored_jobs
                 .first()
-                .filter(|(score, _, _)| *score >= 300)
+                .filter(|(score, _, _)| *score >= 280)
                 .map(|(_, _, j)| j.id.clone())
         });
 
-    // 4. Construct concise grounded system prompt
+    // 4. Construct concise grounded system prompt with diagnostics & analytics
     let mut ctx = String::new();
-    ctx.push_str(
-        "You are the built-in AI assistant inside PO AutoFlow Enterprise (procurement PO automation for QTC Energy).\n\
-        Answer helpfully and concisely in the same language the user used (Thai or English).\n\
-        STRICT GROUNDING RULES:\n\
-        - ONLY state PO numbers, statuses, supplier names, emails, Tax IDs, totals, and Department CCs that appear verbatim in LIVE DATABASE CONTEXT below or are directly visible in an attached document image.\n\
-        - NEVER invent or guess emails, PO numbers, totals, or company names.\n\
-        - If a requested record is not present below, clearly say it was not found in the local database/cache.\n\n",
-    );
+    ctx.push_str(&format!(
+        "You are the built-in AI procurement assistant inside PO AutoFlow Enterprise (QTC Energy).\n\
+        Current local time: {}\n\
+        Answer directly, logically, and concisely in the same language the user asked (Thai or English).\n\
+        RULES:\n\
+        1. Rely ONLY on the VERIFIED CONTEXT below (and any attached PDF image). Never invent PO numbers, emails, totals, or supplier names.\n\
+        2. Give specific answers with actual numbers, reasons, and emails shown below — do not repeat every card field mechanically.\n\
+        3. If nothing matched in VERIFIED CONTEXT for the user's lookup, clearly state what was checked and not found.\n\n",
+        now_label,
+    ));
 
     ctx.push_str(&format!(
-        "[SYSTEM METRICS]\n\
-        Total POs tracked: {} | Completed/Sent: {} | Needs Review: {} | Failed: {} | Waiting: {} | Success Rate: {:.1}%\n\
-        Directory Cache: {} suppliers | {} department CC rules | {} custom aliases\n\n",
+        "[VERIFIED QUEUE METRICS]\n\
+        Total POs tracked: {} | Completed/Sent: {} | Needs Review: {} | Failed: {} | Waiting/In-Flight: {} | Avg OCR Conf: {:.1}%\n",
         stats.total_processed,
         stats.successfully_sent,
         stats.needs_review,
         stats.failed_transactions,
         stats.waiting_processing,
-        stats.success_rate_percent,
-        companies.len(),
-        departments.len(),
-        aliases.len(),
+        stats.avg_ocr_confidence,
     ));
 
-    if !matched_jobs.is_empty() {
-        ctx.push_str("[MATCHED / RELEVANT PO JOBS]\n");
-        for j in &matched_jobs {
+    if wants_directory_analytics(&q_norm) || summary_mode {
+        let dv_count = companies
+            .iter()
+            .filter(|c| !c.vendor_group.as_deref().unwrap_or("").eq_ignore_ascii_case("OV"))
+            .count();
+        let ov_count = companies.len().saturating_sub(dv_count);
+        let no_email_co = companies.iter().filter(|c| c.email.trim().is_empty()).count();
+        ctx.push_str(&format!(
+            "[SUPPLIER & RULE COUNTS]\n\
+            Total Synced Suppliers: {} (DV Domestic: {}, OV Overseas: {}, Missing Email: {}) | Department CC Rules: {} | Saved Aliases: {}\n",
+            companies.len(),
+            dv_count,
+            ov_count,
+            no_email_co,
+            departments.len(),
+            aliases.len(),
+        ));
+    }
+    ctx.push('\n');
+
+    if !scored_jobs.is_empty() {
+        ctx.push_str("[MATCHED PO JOBS & DIAGNOSIS]\n");
+        for (_, _, j) in &scored_jobs {
             ctx.push_str(&format!(
-                "- Folder: '{}' | PO: {} | Status: {} | Stage: {} | Supplier: {} (raw OCR: {}) | Email: {} | Dept CC: {} ({}) | Conf: {:.0}%{}\n",
+                "- {} (Folder: '{}') | Status: {} | Supplier: {} (raw OCR: {}) | Conf: {:.0}% | Diagnosis: {}\n",
+                j.po_number.as_deref().unwrap_or(&j.po_folder_name),
                 j.po_folder_name,
-                j.po_number.as_deref().unwrap_or("-"),
                 j.status,
-                j.stage_message,
                 j.matched_company_name.as_deref().unwrap_or("-"),
                 j.detected_company_raw.as_deref().unwrap_or("-"),
-                j.matched_email.as_deref().unwrap_or("-"),
-                j.matched_department.as_deref().unwrap_or("-"),
-                j.department_cc_emails.as_deref().unwrap_or("-"),
                 j.match_confidence.unwrap_or(0.0),
-                j.error_details
-                    .as_deref()
-                    .filter(|e| !e.is_empty())
-                    .map(|e| format!(" | Error: {}", truncate_chars(e, 180)))
-                    .unwrap_or_default(),
+                diagnose_job_reason(j),
             ));
         }
         ctx.push('\n');
@@ -930,12 +1192,12 @@ pub fn gather_procurement_context(
     if let Some(ref fid) = detailed_job_id {
         if let Ok(Some(job)) = db.get_job(fid) {
             ctx.push_str(&format!(
-                "[FOCUSED PO DOCUMENT DETAILS: {}]\nFolder: {} | PO#: {} | Status: {} | Stage: {}\n",
+                "[FOCUSED PO DOCUMENT DETAILS: {}]\nFolder: {} | PO#: {} | Status: {} | Diagnosis: {}\n",
                 job.id,
                 job.po_folder_name,
                 job.po_number.as_deref().unwrap_or("-"),
                 job.status,
-                job.stage_message,
+                diagnose_job_reason(&job),
             ));
 
             if let Ok(files) = db.get_processed_files_for_job(fid) {
@@ -971,19 +1233,23 @@ pub fn gather_procurement_context(
                         "--- {} (Page {}, Engine: {}, Conf: {:.0}%) ---\n{}\n",
                         rec.file_path, rec.page_number, rec.engine, rec.confidence, body
                     ));
-                    if combined_ocr.chars().count() >= 3200 {
+                    if combined_ocr.chars().count() >= 2800 {
                         break;
                     }
                 }
                 if !combined_ocr.is_empty() {
                     ctx.push_str(&format!(
                         "Extracted Document Text:\n{}\n",
-                        truncate_chars(&combined_ocr, 3200)
+                        truncate_chars(&combined_ocr, 2800)
                     ));
                 }
             }
             ctx.push('\n');
         }
+    } else if matched_jobs.is_empty() && matched_companies.is_empty() && matched_departments.is_empty() {
+        ctx.push_str(
+            "[SEARCH RESULT]\nNo matching PO jobs, supplier directory entries, or department CC rules matched the query terms.\n\n",
+        );
     }
 
     AiContextBundle {
@@ -1259,7 +1525,7 @@ pub async fn run_ai_assistant_query(
     }
 
     let settings = db.get_settings().map_err(|e| e.to_string())?;
-    let bundle = gather_procurement_context(db, trimmed_prompt, focus_job_id);
+    let bundle = gather_procurement_context_with_history(db, trimmed_prompt, history, focus_job_id);
     let prov = settings.local_vision_provider.trim().to_lowercase();
 
     // Case 1: Local Ollama provider
@@ -1301,8 +1567,8 @@ pub async fn run_ai_assistant_query(
                 image_data_url,
             ),
             "options": {
-                "temperature": 0.25,
-                "num_predict": 700,
+                "temperature": 0.15,
+                "num_predict": 550,
             }
         });
 
@@ -1454,8 +1720,9 @@ pub async fn run_ai_assistant_query(
             trimmed_prompt,
             image_data_url,
         ),
-        "temperature": 0.25,
-        "max_tokens": 768,
+        "temperature": 0.15,
+        "top_p": 0.9,
+        "max_tokens": 550,
         "stream": false,
     });
 
@@ -1531,4 +1798,45 @@ pub async fn run_ai_assistant_query(
             })
         }
     }
+}
+
+/// Pre-warms the local built-in `llama-server.exe` in the background so the first prompt runs without cold-start delay.
+pub async fn warm_ai_chat_server_if_ready(
+    db: &Database,
+    server_mgr: &AiServerManager,
+) -> Result<AiChatStatus, String> {
+    let settings = db.get_settings().map_err(|e| e.to_string())?;
+    if !settings.local_vision_provider.eq_ignore_ascii_case("builtin")
+        && !settings.local_vision_provider.trim().is_empty()
+    {
+        let running = server_mgr.running_snapshot().await;
+        return Ok(build_ai_chat_status_snapshot(&settings, running));
+    }
+
+    if let Some(model_id) =
+        select_best_installed_builtin_model(&settings.root_dir, &settings.local_vision_model)
+    {
+        let (server_exe, model_path, mmproj_path, _) =
+            resolve_builtin_server_paths(&settings.root_dir, &model_id);
+        if server_exe.exists() {
+            let has_vulkan = server_exe
+                .parent()
+                .map(|d| d.join("ggml-vulkan.dll").exists())
+                .unwrap_or(false);
+            let _lock = server_mgr.inference_lock.lock().await;
+            let _ = server_mgr
+                .ensure_server_ready(
+                    &settings.root_dir,
+                    &model_id,
+                    &server_exe,
+                    &model_path,
+                    &mmproj_path,
+                    has_vulkan,
+                )
+                .await;
+        }
+    }
+
+    let running = server_mgr.running_snapshot().await;
+    Ok(build_ai_chat_status_snapshot(&settings, running))
 }

@@ -1023,6 +1023,13 @@ export const api = {
     }
   },
 
+  warmAiChatServer: async (): Promise<AiChatStatus> => {
+    if (isTauriEnvironment()) {
+      return await invoke<AiChatStatus>('warm_ai_chat_server');
+    }
+    return await api.getAiChatStatus();
+  },
+
   askAiAssistant: async (params: {
     prompt: string;
     history?: ChatHistoryMessage[];

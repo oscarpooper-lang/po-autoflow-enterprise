@@ -1175,3 +1175,103 @@ fn test_delete_job_and_ui_state_persistence() {
     assert_eq!(db.list_transactions(10, 0).unwrap().len(), 1);
     assert!(db.delete_job("non-existent-id").unwrap().is_none());
 }
+
+#[test]
+fn test_ai_harness_greeting_and_anti_substring_noise_guards() {
+    use app_lib::ai_chat::{gather_procurement_context_with_history, ChatHistoryMessage};
+
+    let tmp = tempdir().unwrap();
+    let db = Database::new(tmp.path().join("harness_noise.db")).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // Seed companies whose names contain "hi" inside substrings + one malformed empty row!
+    db.sync_companies_cache(&[
+        CompanyCacheEntry {
+            id: "h1".to_string(),
+            company_name: "Hitachi Energy Hefei Transformer Co.,Ltd".to_string(),
+            alternative_name: None,
+            email: "wenbin@example.com".to_string(),
+            active: true,
+            tax_id: None,
+            notes: None,
+            vendor_group: Some("OV".to_string()),
+            synced_at: now.clone(),
+        },
+        CompanyCacheEntry {
+            id: "h2".to_string(),
+            company_name: "Toshiba Industrial Products".to_string(),
+            alternative_name: None,
+            email: "tosh@example.com".to_string(),
+            active: true,
+            tax_id: None,
+            notes: None,
+            vendor_group: Some("OV".to_string()),
+            synced_at: now.clone(),
+        },
+        CompanyCacheEntry {
+            id: "blank-row".to_string(),
+            company_name: "".to_string(),
+            alternative_name: None,
+            email: "".to_string(),
+            active: true,
+            tax_id: None,
+            notes: None,
+            vendor_group: Some("DV".to_string()),
+            synced_at: now.clone(),
+        },
+    ])
+    .unwrap();
+
+    db.insert_job(&Job {
+        id: "job-partner".to_string(),
+        po_folder_name: "PO-26004156".to_string(),
+        source_path: "C:\\PO-AutoFlow\\Sent\\PO-26004156".to_string(),
+        status: "completed".to_string(),
+        stage_message: "Delivered cleanly".to_string(),
+        po_number: Some("PO-26004156".to_string()),
+        detected_company_raw: Some("PASINSOOK LIMITED PARTNERSHIP".to_string()),
+        matched_company_name: Some("PASINSOOK LIMITED PARTNERSHIP".to_string()),
+        matched_email: Some("pasinsook@example.com".to_string()),
+        matched_department: None,
+        department_cc_emails: None,
+        match_confidence: Some(99.0),
+        match_category: Some("verified".to_string()),
+        archive_path: None,
+        archive_sha256: None,
+        archive_size_bytes: None,
+        drive_file_id: None,
+        drive_web_link: None,
+        email_transaction_id: None,
+        retry_count: 0,
+        error_details: None,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+        completed_at: Some(now.clone()),
+    })
+    .unwrap();
+
+    // 1. Greeting "hi" MUST NEVER match "Hitachi", "Toshiba", blank rows, or "PARTNERSHIP"
+    let hi_res = gather_procurement_context_with_history(&db, "hi", &[], None);
+    assert!(hi_res.matched_jobs.is_empty(), "hi must not match PO jobs: {:?}", hi_res.matched_jobs);
+    assert!(hi_res.matched_companies.is_empty(), "hi must not match Hitachi/Toshiba/blank: {:?}", hi_res.matched_companies);
+    assert!(hi_res.matched_departments.is_empty());
+
+    // Thai greeting too!
+    let th_hi = gather_procurement_context_with_history(&db, "สวัสดีครับ", &[], None);
+    assert!(th_hi.matched_jobs.is_empty());
+    assert!(th_hi.matched_companies.is_empty());
+
+    // 2. Real supplier lookup "Hitachi" matches Hitachi accurately and ignores blank row
+    let hitachi_res = gather_procurement_context_with_history(&db, "find Hitachi email", &[], None);
+    assert_eq!(hitachi_res.matched_companies.len(), 1);
+    assert!(hitachi_res.matched_companies[0].company_name.contains("Hitachi"));
+
+    // 3. Follow-up question in history carries PO-26004156 context automatically
+    let history = vec![ChatHistoryMessage {
+        role: "user".to_string(),
+        content: "find PO-26004156".to_string(),
+    }];
+    let followup = gather_procurement_context_with_history(&db, "what email was that sent to?", &history, None);
+    assert_eq!(followup.matched_jobs.len(), 1);
+    assert_eq!(followup.matched_jobs[0].po_number.as_deref(), Some("PO-26004156"));
+}

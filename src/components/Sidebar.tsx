@@ -25,6 +25,8 @@ interface SidebarProps {
   needsReviewCount?: number;
   companiesCount?: number;
   developerMode?: boolean;
+  aiSending?: boolean;
+  aiUnread?: boolean;
   lang?: UiLang;
 }
 
@@ -36,6 +38,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   needsReviewCount = 0,
   companiesCount = 0,
   developerMode = false,
+  aiSending = false,
+  aiUnread = false,
   lang = 'en',
 }) => {
   const [updateStatus, setUpdateStatus] = useState<GitHubUpdateStatus | null>(null);
@@ -106,22 +110,40 @@ export const Sidebar: React.FC<SidebarProps> = ({
       setInstallingUpdate(false);
     }
   };
-  const navItems = [
+  const navItems: Array<{
+    id: string;
+    label: string;
+    icon: typeof Inbox;
+    badge?: string;
+    badgeTone?: 'amber' | 'neutral' | 'purple' | 'emerald';
+    pulse?: boolean;
+  }> = [
     {
       id: 'overview',
       label: tr(lang, 'navOverview'),
       icon: Inbox,
       badge: needsReviewCount > 0 ? String(needsReviewCount) : undefined,
-      badgeTone: 'amber' as const,
+      badgeTone: 'amber',
     },
     { id: 'ocr-inspector', label: tr(lang, 'navInspector'), icon: FileSearch },
-    { id: 'assistant', label: tr(lang, 'navAssistant'), icon: Sparkles },
+    {
+      id: 'assistant',
+      label: tr(lang, 'navAssistant'),
+      icon: Sparkles,
+      badge: aiSending
+        ? tx(lang, 'Thinking...', 'กำลังคิด...')
+        : aiUnread
+        ? tx(lang, 'New', 'ตอบแล้ว')
+        : undefined,
+      badgeTone: aiSending ? 'purple' : 'emerald',
+      pulse: aiSending,
+    },
     {
       id: 'directory',
       label: tr(lang, 'navDirectory'),
       icon: Building2,
       badge: companiesCount > 0 ? String(companiesCount) : undefined,
-      badgeTone: 'neutral' as const,
+      badgeTone: 'neutral',
     },
     { id: 'transactions', label: tr(lang, 'navTransactions'), icon: History },
     ...(developerMode
@@ -167,9 +189,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </span>
               {item.badge && (
                 <span
-                  className={`text-[11px] font-mono px-1.5 py-0.5 rounded-md ${
+                  className={`text-[10px] font-mono px-1.5 py-0.5 rounded-md ${
+                    item.pulse ? 'animate-pulse ' : ''
+                  }${
                     item.badgeTone === 'amber'
                       ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                      : item.badgeTone === 'purple'
+                      ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40'
+                      : item.badgeTone === 'emerald'
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
                       : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
                   }`}
                 >
