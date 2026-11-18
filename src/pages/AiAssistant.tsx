@@ -16,7 +16,7 @@ import {
   Settings as SettingsIcon,
   AlertTriangle,
   ExternalLink,
-  Image as ImageIcon,
+  X,
 } from 'lucide-react';
 import type {
   CompanyCacheEntry,
@@ -92,6 +92,11 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
   }, [turns, isSending]);
 
   const focusedJob = jobs.find((j) => j.id === focusJobId) || null;
+  const recentJobOptions = jobs.slice(0, 80);
+  const dropdownJobs =
+    focusedJob && !recentJobOptions.some((j) => j.id === focusedJob.id)
+      ? [focusedJob, ...recentJobOptions]
+      : recentJobOptions;
 
   const handleSelectFocusJob = (nextJobId: string) => {
     setFocusJobId(nextJobId);
@@ -299,7 +304,7 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
               <option value="">
                 {tx(lang, 'All POs, Suppliers & Department CCs', 'ค้นหาทั้งหมดในฐานข้อมูล (PO + ผู้ขาย + แผนก)')}
               </option>
-              {jobs.slice(0, 80).map((j) => (
+              {dropdownJobs.map((j) => (
                 <option key={j.id} value={j.id}>
                   {j.po_number ? `PO ${j.po_number}` : j.po_folder_name} • {j.status}
                   {j.matched_company_name ? ` — ${j.matched_company_name}` : ''}
@@ -337,9 +342,24 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
                     className="w-11 bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5 text-center font-mono text-zinc-100"
                   />
                   {attachedImageUrl && (
-                    <span className="ml-1 inline-flex items-center gap-1 text-emerald-400 font-medium">
-                      <ImageIcon className="w-3 h-3" />
-                      {tx(lang, 'Cached', 'พร้อมส่ง')}
+                    <span className="ml-1 inline-flex items-center gap-1.5 text-emerald-400 font-medium">
+                      <img
+                        src={attachedImageUrl}
+                        alt="Attached PDF preview"
+                        className="w-5 h-6 object-cover rounded border border-emerald-500/40"
+                      />
+                      <span>{tx(lang, 'Ready', 'พร้อมส่ง')}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setManualImageCleared(true);
+                          setIncludePageImage(false);
+                        }}
+                        title={tx(lang, 'Detach cached page image', 'นำภาพหน้าที่แนบออก')}
+                        className="text-zinc-400 hover:text-rose-300"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
                     </span>
                   )}
                 </div>
@@ -658,6 +678,27 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
         )}
         <div ref={scrollEndRef} />
       </div>
+
+      {/* Compact follow-up quick tasks when focused PO is active */}
+      {turns.length > 0 && focusedJob && !isSending && (
+        <div className="flex flex-wrap items-center gap-1.5 px-1 shrink-0">
+          {quickTasks.map((qt, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => submitPrompt(qt.prompt, qt.vision)}
+              className="px-2.5 py-1 rounded-full bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-[11px] text-zinc-300 flex items-center gap-1 transition-colors"
+            >
+              {qt.vision ? (
+                <Eye className="w-3 h-3 text-purple-400" />
+              ) : (
+                <Sparkles className="w-3 h-3 text-blue-400" />
+              )}
+              <span>{qt.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Prompt Composer */}
       <form

@@ -134,14 +134,16 @@ export const App: React.FC = () => {
       try {
         const results = await Promise.allSettled([
           api.getDashboardStats(),
-          api.listJobs(50),
-          api.getRecentEvents(30),
+          api.listJobs(100),
+          api.getRecentEvents(50),
           api.isMonitoringActive(),
+          api.listTransactions(100),
         ]);
         if (results[0].status === 'fulfilled' && results[0].value) setStats(results[0].value);
         if (results[1].status === 'fulfilled' && results[1].value) setJobs(results[1].value);
         if (results[2].status === 'fulfilled' && results[2].value) setEvents(results[2].value);
         if (results[3].status === 'fulfilled') setIsMonitoringActive(results[3].value);
+        if (results[4].status === 'fulfilled' && results[4].value) setTransactions(results[4].value);
       } catch (e) {
         console.error('Poll update failed', e);
       }
@@ -427,6 +429,7 @@ export const App: React.FC = () => {
                 settings={settings}
                 onSaveSettings={handleSaveSettings}
                 onSelectJob={handleSelectJobForInspection}
+                onRememberSelectedJob={setSelectedJobId}
                 onNavigateTab={navigateToTab}
                 onSyncSheets={handleSyncSheets}
                 onRetryJob={handleRetryJob}

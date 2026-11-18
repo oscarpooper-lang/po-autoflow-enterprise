@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { usePersistedState } from '../utils/persistedState';
+import { refreshAiChatStatus } from '../utils/aiChatStore';
 import {
   Settings as SettingsIcon,
   FolderOpen,
@@ -194,6 +195,7 @@ export const Settings: React.FC<SettingsProps> = ({
     await onSaveSettings(next);
     const updated = await api.getBuiltInVisionStatus().catch(() => null);
     if (updated) setBuiltInVision(updated);
+    refreshAiChatStatus(false);
   };
 
   const handleDeleteBuiltInModel = async (modelId: string) => {
@@ -203,6 +205,7 @@ export const Settings: React.FC<SettingsProps> = ({
       if (formData.local_vision_model === modelId) {
         setFormData((prev) => ({ ...prev, local_vision_enabled: false }));
       }
+      refreshAiChatStatus(false);
     } catch (err: any) {
       setVisionStatus({
         reachable: false,
@@ -632,6 +635,11 @@ export const Settings: React.FC<SettingsProps> = ({
     </div>
   );
 
+  const hasUnsavedChanges = useMemo(
+    () => JSON.stringify(formData) !== JSON.stringify(initialSettings),
+    [formData, initialSettings]
+  );
+
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -645,14 +653,27 @@ export const Settings: React.FC<SettingsProps> = ({
           </p>
         </div>
 
-        <button
-          onClick={handleSave}
-          disabled={isSaving}
-          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-md shadow-blue-500/20 transition-all flex items-center space-x-1.5"
-        >
-          <Save className="w-4 h-4" />
-          <span>{isSaving ? tr(lang, 'saving') : tr(lang, 'saveConfig')}</span>
-        </button>
+        <div className="flex items-center gap-2.5">
+          {hasUnsavedChanges && (
+            <span className="px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-300 text-[11px] font-medium flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+              {tx(lang, 'Unsaved changes', 'มีการแก้ไขที่ยังไม่บันทึก')}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={isSaving}
+            className={`px-4 py-2 rounded-lg text-white text-xs font-semibold shadow-md transition-all flex items-center space-x-1.5 ${
+              hasUnsavedChanges
+                ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-500/25 ring-2 ring-amber-400/40'
+                : 'bg-blue-600 hover:bg-blue-500 shadow-blue-500/20'
+            }`}
+          >
+            <Save className="w-4 h-4" />
+            <span>{isSaving ? tr(lang, 'saving') : tr(lang, 'saveConfig')}</span>
+          </button>
+        </div>
       </div>
 
       {saveToast && (
@@ -1269,22 +1290,28 @@ export const Settings: React.FC<SettingsProps> = ({
                     })}
                   </div>
                   {(formData.ocr_quality_preset || 'balanced') === 'max_accuracy' &&
-                    !(builtInVision?.models || []).some((m) => m.id === 'qwen2.5-vl-3b' && m.installed) && (
+                    !(builtInVision?.models || []).some(
+                      (m) =>
+                        m.installed &&
+                        ['qwen3-vl-4b', 'qwen3-vl-2b', 'lfm3-vl-2b', 'qwen2.5-vl-3b', 'gemma-4-e2b', 'typhoon-ocr-3b'].includes(
+                          m.id
+                        )
+                    ) && (
                       <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-200 text-[11px] flex flex-wrap items-center justify-between gap-2">
                         <span>
                           {tx(
                             lang,
-                            'Tip: For Maximum Accuracy Vision AI fallback, download Qwen2.5-VL-3B (2.65 GB) below.',
-                            'คำแนะนำ: เพื่อใช้ Vision AI เต็มประสิทธิภาพในโหมดแม่นยำสูงสุด กรุณาดาวน์โหลด Qwen2.5-VL-3B (2.65 GB) ด้านล่าง'
+                            'Tip: For Maximum Accuracy Vision OCR + Ask AI Chat, download Qwen3-VL-4B (2.75 GB) or Qwen2.5-VL-3B below.',
+                            'คำแนะนำ: เพื่อใช้ Vision OCR + ผู้ช่วย Ask AI เต็มประสิทธิภาพ แนะนำดาวน์โหลด Qwen3-VL-4B (2.75 GB) ด้านล่าง'
                           )}
                         </span>
                         <button
                           type="button"
-                          onClick={() => handleDownloadBuiltInModel('qwen2.5-vl-3b')}
+                          onClick={() => handleDownloadBuiltInModel('qwen3-vl-4b')}
                           disabled={!!downloadingModelId || !!builtInVision?.download?.active}
                           className="px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-[10px] disabled:opacity-50"
                         >
-                          {tx(lang, 'Download Qwen2.5-VL-3B', 'ดาวน์โหลด Qwen2.5-VL-3B')}
+                          {tx(lang, 'Download Qwen3-VL-4B', 'ดาวน์โหลด Qwen3-VL-4B')}
                         </button>
                       </div>
                     )}

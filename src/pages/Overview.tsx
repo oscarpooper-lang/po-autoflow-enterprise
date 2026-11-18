@@ -55,6 +55,7 @@ interface OverviewProps {
   settings?: AppSettings;
   onSaveSettings?: (newSettings: AppSettings) => Promise<void>;
   onSelectJob: (jobId: string) => void;
+  onRememberSelectedJob?: (jobId: string) => void;
   onNavigateTab: (tab: string) => void;
   onSyncSheets: () => void;
   onRetryJob?: (jobId: string) => Promise<void> | void;
@@ -79,6 +80,7 @@ export const Overview: React.FC<OverviewProps> = ({
   settings,
   onSaveSettings,
   onSelectJob,
+  onRememberSelectedJob,
   onNavigateTab,
   onSyncSheets,
   onRetryJob,
@@ -695,7 +697,10 @@ export const Overview: React.FC<OverviewProps> = ({
                   >
                     <button
                       type="button"
-                      onClick={() => setSelectedId(job.id)}
+                      onClick={() => {
+                        setSelectedId(job.id);
+                        onRememberSelectedJob?.(job.id);
+                      }}
                       className="flex-1 min-w-0 text-left p-4 pr-2"
                     >
                       <div className="flex items-center justify-between gap-2">

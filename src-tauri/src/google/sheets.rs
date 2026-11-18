@@ -296,19 +296,35 @@ impl SheetsClient {
                     let entries = items
                         .into_iter()
                         .enumerate()
-                        .map(|(idx, item)| CompanyCacheEntry {
-                            id: format!("gas_{}_{}", idx, uuid::Uuid::new_v4().simple()),
-                            company_name: item.company_name,
-                            alternative_name: item.alternative_name,
-                            email: item.email,
-                            active: item.active.unwrap_or(true),
-                            tax_id: item.tax_id,
-                            notes: item.notes.filter(|n| !n.trim().is_empty()),
-                            vendor_group: item
-                                .vendor_group
-                                .filter(|v| !v.trim().is_empty())
-                                .or_else(|| tab_hint.clone()),
-                            synced_at: now.clone(),
+                        .filter_map(|(idx, item)| {
+                            let primary = item.company_name.trim().to_string();
+                            let alt_clean = item
+                                .alternative_name
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string);
+                            let (name, alt) = if !primary.is_empty() {
+                                (primary, alt_clean)
+                            } else if let Some(only_alt) = alt_clean {
+                                (only_alt, None)
+                            } else {
+                                return None;
+                            };
+                            Some(CompanyCacheEntry {
+                                id: format!("gas_{}_{}", idx, uuid::Uuid::new_v4().simple()),
+                                company_name: name,
+                                alternative_name: alt,
+                                email: item.email.trim().to_string(),
+                                active: item.active.unwrap_or(true),
+                                tax_id: item.tax_id.filter(|t| !t.trim().is_empty()),
+                                notes: item.notes.filter(|n| !n.trim().is_empty()),
+                                vendor_group: item
+                                    .vendor_group
+                                    .filter(|v| !v.trim().is_empty())
+                                    .or_else(|| tab_hint.clone()),
+                                synced_at: now.clone(),
+                            })
                         })
                         .collect();
                     return Ok(Some((

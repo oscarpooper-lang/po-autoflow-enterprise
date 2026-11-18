@@ -801,6 +801,11 @@ impl Database {
         tx.execute("DELETE FROM companies_cache", [])?;
 
         for c in entries {
+            if c.company_name.trim().is_empty()
+                && c.alternative_name.as_deref().unwrap_or("").trim().is_empty()
+            {
+                continue;
+            }
             tx.execute(
                 r#"
                 INSERT INTO companies_cache (

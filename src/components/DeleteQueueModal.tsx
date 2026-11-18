@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Trash2, AlertTriangle, X, FolderX, Database } from 'lucide-react';
 import type { Job } from '../types';
 import { tx, type UiLang } from '../i18n';
@@ -18,13 +18,32 @@ export const DeleteQueueModal: React.FC<DeleteQueueModalProps> = ({
   onConfirmDelete,
   lang = 'en',
 }) => {
+  useEffect(() => {
+    if (!job || isDeleting) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onCancel();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [job, isDeleting, onCancel]);
+
   if (!job) return null;
 
   const isCompleted = job.status === 'completed';
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="w-full max-w-md rounded-xl bg-[#121215] border border-zinc-800 shadow-2xl overflow-hidden">
+    <div
+      className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={() => {
+        if (!isDeleting) onCancel();
+      }}
+    >
+      <div
+        className="w-full max-w-md rounded-xl bg-[#121215] border border-zinc-800 shadow-2xl overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
           <div className="flex items-center gap-2 text-rose-400">
             <Trash2 className="w-4 h-4" />

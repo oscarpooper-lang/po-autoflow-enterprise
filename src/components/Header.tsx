@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Play,
   Pause,
@@ -43,7 +43,28 @@ export const Header: React.FC<HeaderProps> = ({
   isLoggingIn,
 }) => {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const lang: UiLang = resolveUiLang(settings);
+
+  useEffect(() => {
+    if (!showProfileMenu) return;
+    const handleOutside = (e: MouseEvent) => {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(e.target as Node)) {
+        setShowProfileMenu(false);
+      }
+    };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowProfileMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    window.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      window.removeEventListener('keydown', handleEsc);
+    };
+  }, [showProfileMenu]);
 
   const currentAutoSendKey: 'verified_and_high' | 'verified_only' | 'manual_review_all' =
     !settings
@@ -178,7 +199,7 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         {/* Google Account */}
-        <div className="relative">
+        <div className="relative" ref={profileMenuRef}>
           {googleAccount ? (
             <div>
               <button
