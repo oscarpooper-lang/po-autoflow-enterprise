@@ -56,6 +56,7 @@ interface OcrInspectorProps {
   onSelectJob: (id: string) => void;
   onRefreshData?: () => void;
   onRetryJob?: (jobId: string) => Promise<void> | void;
+  onAskAiAboutJob?: (jobId: string, pageNumber?: number, pageImageDataUrl?: string | null) => void;
   lang?: UiLang;
 }
 
@@ -134,6 +135,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   onSelectJob,
   onRefreshData,
   onRetryJob,
+  onAskAiAboutJob,
   lang = 'en',
 }) => {
   const [manualJobId, setManualJobId] = useState<string>('');
@@ -1108,7 +1110,24 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                     ({currentRecord.confidence.toFixed(0)}%)
                   </span>
                 )}
-                {currentJob && <StatusBadge status={currentJob.status} lang={lang} />}
+              {currentJob && <StatusBadge status={currentJob.status} lang={lang} />}
+              {currentJob && onAskAiAboutJob && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onAskAiAboutJob(
+                      currentJob.id,
+                      currentRecord?.page_number || currentPageIndex + 1,
+                      pagePreview?.data_url || null
+                    )
+                  }
+                  className="px-2 py-0.5 rounded bg-purple-600/20 hover:bg-purple-600/35 border border-purple-500/40 text-purple-200 text-[10px] font-semibold flex items-center gap-1 transition-colors"
+                  title={tx(lang, 'Open in Ask AI with this PDF page attached', 'ถาม AI พร้อมแนบหน้าเอกสารนี้')}
+                >
+                  <Sparkles className="w-3 h-3 text-purple-300" />
+                  <span>{tx(lang, 'Ask AI', 'ถาม AI')}</span>
+                </button>
+              )}
               </div>
             </div>
 

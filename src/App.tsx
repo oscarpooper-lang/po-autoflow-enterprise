@@ -6,6 +6,7 @@ import { Overview } from './pages/Overview';
 import { LiveMonitor } from './pages/LiveMonitor';
 import { Transactions } from './pages/Transactions';
 import { OcrInspector } from './pages/OcrInspector';
+import { AiAssistant } from './pages/AiAssistant';
 import { CompanyDirectory } from './pages/CompanyDirectory';
 import { EmailHistory } from './pages/EmailHistory';
 import { Analytics } from './pages/Analytics';
@@ -31,6 +32,9 @@ import type {
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<string>('overview');
   const [selectedJobId, setSelectedJobId] = useState<string>('');
+  const [assistantFocusJobId, setAssistantFocusJobId] = useState<string>('');
+  const [assistantAttachedImage, setAssistantAttachedImage] = useState<string | null>(null);
+  const [assistantAttachedPage, setAssistantAttachedPage] = useState<number>(1);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [stats, setStats] = useState<DashboardStats>({
     total_processed: 0,
@@ -273,6 +277,8 @@ export const App: React.FC = () => {
         return { title: tr(lang, 'tabTxTitle'), subtitle: tr(lang, 'tabTxSub') };
       case 'ocr-inspector':
         return { title: tr(lang, 'tabInspectorTitle'), subtitle: tr(lang, 'tabInspectorSub') };
+      case 'assistant':
+        return { title: tr(lang, 'tabAssistantTitle'), subtitle: tr(lang, 'tabAssistantSub') };
       case 'directory':
         return { title: tr(lang, 'tabDirectoryTitle'), subtitle: tr(lang, 'tabDirectorySub') };
       case 'email-history':
@@ -414,6 +420,27 @@ export const App: React.FC = () => {
                 onSelectJob={setSelectedJobId}
                 onRefreshData={loadInitialData}
                 onRetryJob={handleRetryJob}
+                onAskAiAboutJob={(jobId, pageNum, pageImg) => {
+                  setAssistantFocusJobId(jobId);
+                  setAssistantAttachedPage(pageNum || 1);
+                  setAssistantAttachedImage(pageImg || null);
+                  setCurrentTab('assistant');
+                }}
+                lang={lang}
+              />
+            )}
+
+            {activeTab === 'assistant' && (
+              <AiAssistant
+                key={`${assistantFocusJobId}:${assistantAttachedPage}:${assistantAttachedImage ? 'img' : 'noimg'}`}
+                jobs={jobs}
+                companies={companies}
+                departments={departments}
+                initialFocusJobId={assistantFocusJobId}
+                initialAttachedImage={assistantAttachedImage}
+                initialAttachedPage={assistantAttachedPage}
+                onInspectJob={handleSelectJobForInspection}
+                onNavigateTab={setCurrentTab}
                 lang={lang}
               />
             )}

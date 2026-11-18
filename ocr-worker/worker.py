@@ -77,18 +77,26 @@ def is_strictly_localhost(endpoint: str) -> bool:
 def _extract_json_object(raw: str) -> Dict[str, Any]:
     if not raw:
         return {}
-    raw_s = raw.strip()
-    try:
-        val = json.loads(raw_s)
-        return val if isinstance(val, dict) else {}
-    except Exception:
-        m = re.search(r"\{[\s\S]*\}", raw_s)
-        if m:
-            try:
-                val = json.loads(m.group(0))
-                return val if isinstance(val, dict) else {}
-            except Exception:
-                return {}
+    # Strip <think>...</think> reasoning blocks emitted by Qwen3 / LFM3 / Gemma reasoning variants
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", raw, flags=re.IGNORECASE)
+    # Strip markdown code fences if present
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned.strip(), flags=re.IGNORECASE | re.MULTILINE).strip()
+    for candidate_text in (cleaned, raw.strip()):
+        if not candidate_text:
+            continue
+        try:
+            val = json.loads(candidate_text)
+            if isinstance(val, dict):
+                return val
+        except Exception:
+            m = re.search(r"\{[\s\S]*\}", candidate_text)
+            if m:
+                try:
+                    val = json.loads(m.group(0))
+                    if isinstance(val, dict):
+                        return val
+                except Exception:
+                    pass
     return {}
 
 
@@ -172,7 +180,7 @@ def query_local_vision_model(
         "Note: QTC ENERGY PUBLIC COMPANY LIMITED is the BUYER, so ignore QTC completely. "
         "Read ONLY text visibly printed on this image. Never guess or invent an email, company name, or number; "
         "if a field is not visibly printed, leave it as empty string \"\". "
-        "Return ONLY valid JSON with these exact keys: "
+        "Do not output <think> reasoning or extra text. Return ONLY valid JSON with these exact keys: "
         '{"supplier_th": "", "supplier_en": "", "po_number": "", "tax_id": "", "email": ""}.'
     )
 
@@ -203,7 +211,7 @@ def query_local_vision_model(
             tmp_png = ""
             engine_dir = os.path.dirname(engine_path)
             has_vulkan = os.path.exists(os.path.join(engine_dir, "ggml-vulkan.dll"))
-            max_gen_tok = 220 if is_max else 180
+            max_gen_tok = 512 if is_max else 384
             img_tok_cap = 768 if is_max else 512
             timeout_sec = 120 if is_max else 90
             try:

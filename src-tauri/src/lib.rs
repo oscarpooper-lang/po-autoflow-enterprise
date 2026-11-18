@@ -1,3 +1,4 @@
+pub mod ai_chat;
 pub mod archive;
 pub mod commands;
 pub mod database;
@@ -14,6 +15,7 @@ pub mod pipeline;
 pub mod security;
 pub mod watcher;
 
+use ai_chat::AiServerManager;
 use commands::*;
 use database::Database;
 use ocr::OcrManager;
@@ -219,6 +221,10 @@ pub fn run() {
                 .tooltip("PO AutoFlow Enterprise - Running in Background")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => {
+                        if let Some(st) = app.try_state::<AppState>() {
+                            let srv = st.ai_server.clone();
+                            tauri::async_runtime::block_on(srv.stop());
+                        }
                         app.exit(0);
                     }
                     "show" => {
@@ -334,10 +340,13 @@ pub fn run() {
                 });
             }
 
+            let ai_server = Arc::new(AiServerManager::new());
+
             // Manage global application state
             app.manage(AppState {
                 db,
                 ocr_manager,
+                ai_server,
                 coordinator,
                 watcher: watcher_arc,
                 job_tx,
@@ -405,7 +414,10 @@ pub fn run() {
             install_vulkan_vision_engine,
             run_ocr_self_test,
             benchmark_ocr_layers,
-            list_benchmark_candidates
+            list_benchmark_candidates,
+            ask_ai_assistant,
+            get_ai_chat_status,
+            stop_ai_chat_server
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -3,6 +3,10 @@ use std::sync::Arc;
 use tauri::State;
 use tokio::sync::Mutex;
 
+use crate::ai_chat::{
+    build_ai_chat_status_snapshot, run_ai_assistant_query, AiAssistantResponse, AiChatStatus,
+    AiServerManager, ChatHistoryMessage,
+};
 use crate::database::models::*;
 use crate::database::Database;
 use crate::email::EmailDeliveryClient;
@@ -15,6 +19,7 @@ use crate::watcher::FolderWatcher;
 pub struct AppState {
     pub db: Database,
     pub ocr_manager: OcrManager,
+    pub ai_server: Arc<AiServerManager>,
     pub coordinator: Arc<PipelineCoordinator>,
     pub watcher: Arc<Mutex<Option<FolderWatcher>>>,
     pub job_tx: tokio::sync::mpsc::Sender<PathBuf>,
@@ -1059,6 +1064,70 @@ pub fn minimize_to_tray(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+async fn resolve_job_document_path(
+    db: &Database,
+    coordinator: &PipelineCoordinator,
+    job_id: &str,
+    file_path: &str,
+) -> Result<PathBuf, String> {
+    let direct = PathBuf::from(file_path);
+    if direct.is_absolute() && direct.exists() && direct.is_file() {
+        return Ok(direct);
+    }
+
+    let settings = db.get_settings().map_err(|e| e.to_string())?;
+    let job_opt = db.get_job(job_id).map_err(|e| e.to_string())?;
+    let mut search_roots = Vec::new();
+
+    if let Some(ref job) = job_opt {
+        if let Some(folder) = coordinator.locate_job_folder(job, &settings) {
+            search_roots.push(folder);
+        }
+        for base in [
+            &settings.processing_dir,
+            &settings.review_dir,
+            &settings.incoming_dir,
+            &settings.sent_dir,
+            &settings.failed_dir,
+        ] {
+            search_roots.push(PathBuf::from(base).join(&job.po_folder_name));
+        }
+    }
+
+    let rel = PathBuf::from(file_path);
+    let file_name_only = rel.file_name().map(|n| n.to_os_string());
+
+    for root in &search_roots {
+        if !root.exists() {
+            continue;
+        }
+        let cand = root.join(&rel);
+        if cand.exists() && cand.is_file() {
+            return Ok(cand);
+        }
+        if let Some(ref fname) = file_name_only {
+            let by_name = root.join(fname);
+            if by_name.exists() && by_name.is_file() {
+                return Ok(by_name);
+            }
+            for entry in walkdir::WalkDir::new(root)
+                .max_depth(3)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                if entry.file_type().is_file() && entry.file_name() == fname {
+                    return Ok(entry.path().to_path_buf());
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "Document '{}' was not found on disk (checked job source & workflow directories).",
+        file_path
+    ))
+}
+
 #[tauri::command]
 pub async fn get_document_page_preview(
     state: State<'_, AppState>,
@@ -1066,71 +1135,7 @@ pub async fn get_document_page_preview(
     file_path: String,
     page_number: i32,
 ) -> Result<crate::ocr::PagePreviewResponse, String> {
-    let direct = PathBuf::from(&file_path);
-    let mut resolved: Option<PathBuf> = if direct.is_absolute() && direct.exists() && direct.is_file() {
-        Some(direct)
-    } else {
-        None
-    };
-
-    if resolved.is_none() {
-        let settings = state.db.get_settings().map_err(|e| e.to_string())?;
-        let job_opt = state.db.get_job(&job_id).map_err(|e| e.to_string())?;
-        let mut search_roots = Vec::new();
-
-        if let Some(ref job) = job_opt {
-            if let Some(folder) = state.coordinator.locate_job_folder(job, &settings) {
-                search_roots.push(folder);
-            }
-            for base in [
-                &settings.processing_dir,
-                &settings.review_dir,
-                &settings.incoming_dir,
-                &settings.sent_dir,
-                &settings.failed_dir,
-            ] {
-                search_roots.push(PathBuf::from(base).join(&job.po_folder_name));
-            }
-        }
-
-        let rel = PathBuf::from(&file_path);
-        let file_name_only = rel.file_name().map(|n| n.to_os_string());
-
-        for root in &search_roots {
-            if !root.exists() {
-                continue;
-            }
-            let cand = root.join(&rel);
-            if cand.exists() && cand.is_file() {
-                resolved = Some(cand);
-                break;
-            }
-            if let Some(ref fname) = file_name_only {
-                let by_name = root.join(fname);
-                if by_name.exists() && by_name.is_file() {
-                    resolved = Some(by_name);
-                    break;
-                }
-                for entry in walkdir::WalkDir::new(root).max_depth(3).into_iter().filter_map(|e| e.ok()) {
-                    if entry.file_type().is_file() && entry.file_name() == fname {
-                        resolved = Some(entry.path().to_path_buf());
-                        break;
-                    }
-                }
-                if resolved.is_some() {
-                    break;
-                }
-            }
-        }
-    }
-
-    let final_path = resolved.ok_or_else(|| {
-        format!(
-            "Document '{}' was not found on disk (checked job source & workflow directories).",
-            file_path
-        )
-    })?;
-
+    let final_path = resolve_job_document_path(&state.db, &state.coordinator, &job_id, &file_path).await?;
     state
         .ocr_manager
         .render_page_preview(&final_path, page_number)
@@ -1472,15 +1477,59 @@ const BUILTIN_VISION_MODELS: &[BuiltinModelPreset] = &[
         mmproj_url: "https://huggingface.co/ggml-org/SmolVLM2-2.2B-Instruct-GGUF/resolve/main/mmproj-SmolVLM2-2.2B-Instruct-Q8_0.gguf",
     },
     BuiltinModelPreset {
+        id: "lfm3-vl-2b",
+        name: "LFM3-VL-2B (Fast Vision + Ask AI Chat)",
+        size_label: "1.21 GB",
+        total_size_bytes: 1_302_659_680,
+        description: "Ultra-fast ~1.5-2 GB VRAM hybrid model by Liquid AI: highest tokens/sec for Ask AI PO Q&A + visual lookup.",
+        model_filename: "LFM3-VL-2B-Q4_K_M.gguf",
+        mmproj_filename: "mmproj-LFM3-VL-2B-Q8_0.gguf",
+        model_url: "https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/main/LFM3-VL-2B-Q4_K_M.gguf",
+        mmproj_url: "https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/main/mmproj-LFM3-VL-2B-Q8_0.gguf",
+    },
+    BuiltinModelPreset {
+        id: "qwen3-vl-2b",
+        name: "Qwen3-VL-2B-Instruct (Thai + Vision Chat)",
+        size_label: "1.45 GB",
+        total_size_bytes: 1_552_463_168,
+        description: "Lightweight dual-use (~1.5-2 GB VRAM): strong Thai/English chatbot plus reliable PDF & table OCR.",
+        model_filename: "Qwen3VL-2B-Instruct-Q4_K_M.gguf",
+        mmproj_filename: "mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
+        model_url: "https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/main/Qwen3VL-2B-Instruct-Q4_K_M.gguf",
+        mmproj_url: "https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
+    },
+    BuiltinModelPreset {
         id: "qwen2.5-vl-3b",
-        name: "Qwen2.5-VL-3B-Instruct (Best Visual Helper)",
+        name: "Qwen2.5-VL-3B-Instruct (Proven Balanced Helper)",
         size_label: "2.65 GB",
         total_size_bytes: 2_774_630_000,
-        description: "Runs in ~8-12s with Vulkan GPU for English/Thai tables when fast OpenThai OCR needs a second opinion.",
+        description: "Proven stability (~2.5 GB VRAM) for strict JSON OCR + Ask AI procurement Q&A without <think> overhead.",
         model_filename: "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
         mmproj_filename: "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
         model_url: "https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
         mmproj_url: "https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
+    },
+    BuiltinModelPreset {
+        id: "qwen3-vl-4b",
+        name: "Qwen3-VL-4B-Instruct (Best All-Rounder • 8 GB GPU)",
+        size_label: "2.75 GB",
+        total_size_bytes: 2_951_255_968,
+        description: "Best overall accuracy (~3-3.5 GB VRAM) for Thai/English Ask AI chat and dense scanned POs (fits 8 GB RX 580 easily).",
+        model_filename: "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+        mmproj_filename: "mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf",
+        model_url: "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+        mmproj_url: "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf",
+    },
+    BuiltinModelPreset {
+        id: "gemma-4-e2b",
+        name: "Gemma 4 E2B-it (Natural Chat + Vision)",
+        size_label: "3.17 GB",
+        total_size_bytes: 3_398_849_280,
+        description: "Google Gemma 4 E2B (~2.5-3.2 GB): natural conversational tone plus fast multimodal document queries.",
+        model_filename: "gemma-4-E2B-it-Q4_0.gguf",
+        mmproj_filename: "mmproj-gemma-4-E2B-it-Q8_0.gguf",
+        model_url: "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf",
+        mmproj_url: "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf",
     },
     BuiltinModelPreset {
         id: "typhoon-ocr-3b",
@@ -1508,6 +1557,29 @@ pub fn resolve_builtin_vision_paths(root_dir: &str, model_id: &str) -> (PathBuf,
         model_dir.join(preset.model_filename),
         model_dir.join(preset.mmproj_filename),
     )
+}
+
+pub fn resolve_builtin_server_paths(root_dir: &str, model_id: &str) -> (PathBuf, PathBuf, PathBuf, String) {
+    let models_dir = PathBuf::from(root_dir).join("Models");
+    let server_exe = models_dir.join("engine").join("llama-server.exe");
+    let preset = BUILTIN_VISION_MODELS
+        .iter()
+        .find(|p| p.id == model_id)
+        .unwrap_or(&BUILTIN_VISION_MODELS[1]);
+    let model_dir = models_dir.join(preset.id);
+    (
+        server_exe,
+        model_dir.join(preset.model_filename),
+        model_dir.join(preset.mmproj_filename),
+        preset.name.to_string(),
+    )
+}
+
+pub fn builtin_vision_presets_summary() -> Vec<(&'static str, &'static str, u64, &'static str, &'static str)> {
+    BUILTIN_VISION_MODELS
+        .iter()
+        .map(|p| (p.id, p.name, p.total_size_bytes, p.model_url, p.mmproj_url))
+        .collect()
 }
 
 fn verify_builtin_vision_ready(root_dir: &str, model_id: &str) -> LocalVisionStatus {
@@ -1817,8 +1889,9 @@ pub async fn download_builtin_vision_model(
     let (engine_exe, model_path, mmproj_path) = resolve_builtin_vision_paths(&root_dir, preset.id);
     let models_dir = PathBuf::from(&root_dir).join("Models");
     let engine_dir = models_dir.join("engine");
+    let server_exe = engine_dir.join("llama-server.exe");
     let has_vulkan_dll = engine_dir.join("ggml-vulkan.dll").exists();
-    let need_engine = !engine_exe.exists() || !has_vulkan_dll;
+    let need_engine = !engine_exe.exists() || !server_exe.exists() || !has_vulkan_dll;
     let engine_estimate: u64 = if need_engine { 40_160_000 } else { 0 };
     let total_expected = engine_estimate + preset.total_size_bytes;
 
@@ -1979,7 +2052,7 @@ pub async fn download_builtin_vision_model(
 }
 
 #[tauri::command]
-pub fn delete_builtin_vision_model(
+pub async fn delete_builtin_vision_model(
     state: State<'_, AppState>,
     model_id: String,
 ) -> Result<BuiltInVisionStatus, String> {
@@ -1987,6 +2060,9 @@ pub fn delete_builtin_vision_model(
         .iter()
         .find(|p| p.id == model_id.trim())
         .ok_or_else(|| format!("Unknown built-in model ID '{}'", model_id))?;
+
+    // Release memory-mapped GGUF handle before deleting on Windows
+    state.ai_server.stop().await;
 
     let mut settings = state.db.get_settings().map_err(|e| e.to_string())?;
     let model_dir = PathBuf::from(&settings.root_dir).join("Models").join(preset.id);
@@ -2178,6 +2254,7 @@ pub async fn install_vulkan_vision_engine(
     if state.ocr_manager.get_download_progress().active {
         return build_builtin_vision_status(&state.db, &state.ocr_manager);
     }
+    state.ai_server.stop().await;
     let settings = state.db.get_settings().map_err(|e| e.to_string())?;
     let models_dir = PathBuf::from(&settings.root_dir).join("Models");
     let engine_dir = models_dir.join("engine");
@@ -3134,6 +3211,78 @@ pub async fn install_github_update(
             installer_path
         ))
     }
+}
+
+#[tauri::command]
+pub async fn get_ai_chat_status(state: State<'_, AppState>) -> Result<AiChatStatus, String> {
+    let settings = state.db.get_settings().map_err(|e| e.to_string())?;
+    let running = state.ai_server.running_snapshot().await;
+    Ok(build_ai_chat_status_snapshot(&settings, running))
+}
+
+#[tauri::command]
+pub async fn stop_ai_chat_server(state: State<'_, AppState>) -> Result<(), String> {
+    state.ai_server.stop().await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn ask_ai_assistant(
+    state: State<'_, AppState>,
+    prompt: String,
+    history: Option<Vec<ChatHistoryMessage>>,
+    focus_job_id: Option<String>,
+    include_page_image: Option<bool>,
+    attached_image_data_url: Option<String>,
+    attached_page_number: Option<i32>,
+) -> Result<AiAssistantResponse, String> {
+    let focus_id = focus_job_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let mut final_image_data_url = attached_image_data_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| s.starts_with("data:image/"))
+        .map(str::to_string);
+
+    if include_page_image.unwrap_or(false) && final_image_data_url.is_none() {
+        if let Some(fid) = focus_id {
+            if let Ok(files) = state.db.get_processed_files_for_job(fid) {
+                let target_file = files
+                    .iter()
+                    .find(|f| f.relative_path.to_lowercase().ends_with(".pdf"))
+                    .or_else(|| files.first());
+                if let Some(f) = target_file {
+                    if let Ok(resolved) =
+                        resolve_job_document_path(&state.db, &state.coordinator, fid, &f.relative_path)
+                            .await
+                    {
+                        if let Ok(preview) = state
+                            .ocr_manager
+                            .render_page_preview(&resolved, attached_page_number.unwrap_or(1))
+                            .await
+                        {
+                            if let Some(url) = preview.data_url.filter(|u| u.starts_with("data:image/")) {
+                                final_image_data_url = Some(url);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    run_ai_assistant_query(
+        &state.db,
+        &state.ai_server,
+        &prompt,
+        &history.unwrap_or_default(),
+        focus_id,
+        final_image_data_url.as_deref(),
+    )
+    .await
 }
 
 #[cfg(test)]

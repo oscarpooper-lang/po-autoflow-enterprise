@@ -291,3 +291,69 @@ export interface BuiltInVisionStatus {
   download: BuiltInDownloadProgress;
 }
 
+export interface ChatHistoryMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface AiMatchedJob {
+  id: string;
+  po_folder_name: string;
+  po_number?: string | null;
+  status: string;
+  stage_message: string;
+  detected_company_raw?: string | null;
+  matched_company_name?: string | null;
+  matched_email?: string | null;
+  matched_department?: string | null;
+  department_cc_emails?: string | null;
+  match_confidence?: number | null;
+  match_category?: string | null;
+  error_details?: string | null;
+  created_at: string;
+}
+
+export interface AiMatchedCompany {
+  company_name: string;
+  alternative_name?: string | null;
+  tax_id?: string | null;
+  email: string;
+  vendor_group?: string | null;
+  aliases: string[];
+  proofing_notes: string[];
+}
+
+export interface AiMatchedDepartment {
+  department_no: string;
+  department_name: string;
+  emails: string;
+}
+
+export interface AiAssistantResponse {
+  answer: string;
+  model_used: string;
+  engine_mode: string;
+  ai_available: boolean;
+  used_vision_image: boolean;
+  duration_ms: number;
+  note?: string | null;
+  matched_jobs: AiMatchedJob[];
+  matched_companies: AiMatchedCompany[];
+  matched_departments: AiMatchedDepartment[];
+}
+
+export interface AiChatStatus {
+  ready: boolean;
+  provider: string;
+  active_model_id: string;
+  active_model_name: string;
+  server_running: boolean;
+  server_running_model?: string | null;
+  server_port?: number | null;
+  has_vulkan: boolean;
+  llama_server_installed: boolean;
+  installed_models: string[];
+  message: string;
+}
+
+

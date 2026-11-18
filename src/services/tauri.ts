@@ -16,6 +16,9 @@ import type {
   LearningStats,
   LocalVisionStatus,
   BuiltInVisionStatus,
+  ChatHistoryMessage,
+  AiAssistantResponse,
+  AiChatStatus,
 } from '../types';
 
 export interface GitHubUpdateStatus {
@@ -970,6 +973,100 @@ export const api = {
       return await invoke<BenchmarkReport>('benchmark_ocr_layers', { filePath });
     }
     throw new Error('Model benchmarking requires desktop Tauri runtime.');
+  },
+
+  getAiChatStatus: async (): Promise<AiChatStatus> => {
+    if (isTauriEnvironment()) {
+      return await invoke<AiChatStatus>('get_ai_chat_status');
+    }
+    return {
+      ready: false,
+      provider: 'builtin',
+      active_model_id: 'qwen3-vl-4b',
+      active_model_name: 'Qwen3-VL-4B-Instruct',
+      server_running: false,
+      server_running_model: null,
+      server_port: null,
+      has_vulkan: false,
+      llama_server_installed: false,
+      installed_models: [],
+      message: 'Browser preview mode — desktop runtime powers local Vulkan/CPU llama-server inference.',
+    };
+  },
+
+  stopAiChatServer: async (): Promise<void> => {
+    if (isTauriEnvironment()) {
+      await invoke<void>('stop_ai_chat_server');
+    }
+  },
+
+  askAiAssistant: async (params: {
+    prompt: string;
+    history?: ChatHistoryMessage[];
+    focusJobId?: string | null;
+    includePageImage?: boolean;
+    attachedImageDataUrl?: string | null;
+    attachedPageNumber?: number;
+  }): Promise<AiAssistantResponse> => {
+    if (isTauriEnvironment()) {
+      return await invoke<AiAssistantResponse>('ask_ai_assistant', {
+        prompt: params.prompt,
+        history: params.history || [],
+        focusJobId: params.focusJobId || null,
+        includePageImage: !!params.includePageImage,
+        attachedImageDataUrl: params.attachedImageDataUrl || null,
+        attachedPageNumber: params.attachedPageNumber || 1,
+      });
+    }
+    const q = params.prompt.toLowerCase();
+    const matchedJobs = mockJobs.filter(
+      (j) =>
+        (params.focusJobId && j.id === params.focusJobId) ||
+        j.po_folder_name.toLowerCase().includes(q) ||
+        (j.po_number || '').toLowerCase().includes(q) ||
+        (j.matched_company_name || '').toLowerCase().includes(q)
+    );
+    const matchedCompanies = mockCompanies.filter(
+      (c) =>
+        c.company_name.toLowerCase().includes(q) ||
+        (c.alternative_name || '').toLowerCase().includes(q) ||
+        c.email.toLowerCase().includes(q)
+    );
+    return {
+      answer: `Browser preview database search found ${matchedJobs.length} PO(s) and ${matchedCompanies.length} supplier(s). Launch the desktop app with Qwen3-VL / LFM3-VL / Gemma 4 to run local AI chat & vision reasoning.`,
+      model_used: 'Browser Preview',
+      engine_mode: 'db-only',
+      ai_available: false,
+      used_vision_image: false,
+      duration_ms: 5,
+      note: 'Desktop Tauri runtime required for local llama-server inference.',
+      matched_jobs: matchedJobs.map((j) => ({
+        id: j.id,
+        po_folder_name: j.po_folder_name,
+        po_number: j.po_number,
+        status: j.status,
+        stage_message: j.stage_message,
+        detected_company_raw: j.detected_company_raw,
+        matched_company_name: j.matched_company_name,
+        matched_email: j.matched_email,
+        matched_department: j.matched_department,
+        department_cc_emails: j.department_cc_emails,
+        match_confidence: j.match_confidence,
+        match_category: j.match_category,
+        error_details: j.error_details,
+        created_at: j.created_at,
+      })),
+      matched_companies: matchedCompanies.map((c) => ({
+        company_name: c.company_name,
+        alternative_name: c.alternative_name,
+        tax_id: c.tax_id,
+        email: c.email,
+        vendor_group: c.vendor_group,
+        aliases: [],
+        proofing_notes: c.notes ? [c.notes] : [],
+      })),
+      matched_departments: [],
+    };
   },
 
   checkGitHubUpdate,

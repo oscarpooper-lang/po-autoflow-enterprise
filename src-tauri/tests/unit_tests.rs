@@ -903,3 +903,162 @@ fn test_department_cc_sheet_parsing_and_exact_matching() {
 
 
 
+
+#[test]
+fn test_ai_chat_builtin_presets_and_reply_cleaning() {
+    use app_lib::ai_chat::{clean_ai_reply_text, is_localhost_url};
+    use app_lib::commands::builtin_vision_presets_summary;
+    use std::collections::HashSet;
+
+    let presets = builtin_vision_presets_summary();
+    let ids: HashSet<&str> = presets.iter().map(|p| p.0).collect();
+    assert_eq!(ids.len(), presets.len(), "Preset IDs must be unique");
+    for required in [
+        "smolvlm2-500m",
+        "smolvlm2-2.2b",
+        "lfm3-vl-2b",
+        "qwen3-vl-2b",
+        "qwen2.5-vl-3b",
+        "qwen3-vl-4b",
+        "gemma-4-e2b",
+        "typhoon-ocr-3b",
+    ] {
+        assert!(ids.contains(required), "Missing preset: {}", required);
+    }
+
+    for (id, name, bytes, model_url, mmproj_url) in &presets {
+        assert!(!name.trim().is_empty(), "Empty name for {}", id);
+        assert!(*bytes > 400_000_000, "Suspicious size for {}", id);
+        assert!(model_url.starts_with("https://huggingface.co/") && model_url.ends_with(".gguf"));
+        assert!(mmproj_url.starts_with("https://huggingface.co/") && mmproj_url.ends_with(".gguf"));
+    }
+
+    let raw_think = "<think>\nChecking DB PO records carefully...\n</think>\nPO-690123 is currently in needs_review.";
+    assert_eq!(
+        clean_ai_reply_text(raw_think),
+        "PO-690123 is currently in needs_review."
+    );
+
+    let unclosed = "Found email: sales@ample.co.th\n<think>unfinished internal note";
+    assert_eq!(clean_ai_reply_text(unclosed), "Found email: sales@ample.co.th");
+
+    assert!(is_localhost_url("http://127.0.0.1:11434"));
+    assert!(is_localhost_url("http://localhost:8080/v1"));
+    assert!(!is_localhost_url("https://api.openai.com/v1"));
+}
+
+#[test]
+fn test_ai_procurement_grounding_retrieval() {
+    use app_lib::ai_chat::gather_procurement_context;
+
+    let tmp = tempdir().unwrap();
+    let db = Database::new(tmp.path().join("ai_test.db")).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    db.sync_companies_cache(&[
+        CompanyCacheEntry {
+            id: "c1".to_string(),
+            company_name: "บริษัท แอมเพิล เทคโนโลยี จำกัด".to_string(),
+            alternative_name: Some("AMPLE TECHNOLOGY CO., LTD.".to_string()),
+            email: "sales@ample.co.th, billing@ample.co.th".to_string(),
+            active: true,
+            tax_id: Some("0105551234567".to_string()),
+            notes: Some("VIP electrical vendor".to_string()),
+            vendor_group: Some("DV".to_string()),
+            synced_at: now.clone(),
+        },
+        CompanyCacheEntry {
+            id: "c2".to_string(),
+            company_name: "Schneider Electric (Thailand) Ltd.".to_string(),
+            alternative_name: None,
+            email: "orders@se.example.com".to_string(),
+            active: true,
+            tax_id: Some("0105544001122".to_string()),
+            notes: None,
+            vendor_group: Some("DV".to_string()),
+            synced_at: now.clone(),
+        },
+    ])
+    .unwrap();
+
+    db.sync_department_cc_cache(&[
+        DepartmentCcEntry {
+            id: "40".to_string(),
+            department_name: "ฝ่ายขายในประเทศ".to_string(),
+            emails: "domsales@qtc-energy.com, lead@qtc-energy.com".to_string(),
+            synced_at: now.clone(),
+        },
+        DepartmentCcEntry {
+            id: "22".to_string(),
+            department_name: "แผนก MIS".to_string(),
+            emails: "mis@qtc-energy.com".to_string(),
+            synced_at: now.clone(),
+        },
+    ])
+    .unwrap();
+
+    db.insert_job(&Job {
+        id: "job-690123".to_string(),
+        po_folder_name: "PO-690123_Ample".to_string(),
+        source_path: "C:\\PO-AutoFlow\\Review\\PO-690123_Ample".to_string(),
+        status: "needs_review".to_string(),
+        stage_message: "Waiting manual confirmation (78.5%)".to_string(),
+        po_number: Some("690123".to_string()),
+        detected_company_raw: Some("AMPLE TECH CO LTD".to_string()),
+        matched_company_name: Some("บริษัท แอมเพิล เทคโนโลยี จำกัด".to_string()),
+        matched_email: Some("sales@ample.co.th, billing@ample.co.th".to_string()),
+        matched_department: Some("ฝ่ายขายในประเทศ".to_string()),
+        department_cc_emails: Some("domsales@qtc-energy.com, lead@qtc-energy.com".to_string()),
+        match_confidence: Some(78.5),
+        match_category: Some("review".to_string()),
+        archive_path: None,
+        archive_sha256: None,
+        archive_size_bytes: None,
+        drive_file_id: None,
+        drive_web_link: None,
+        email_transaction_id: None,
+        retry_count: 0,
+        error_details: Some("Confidence 78.5% below auto-send threshold 90%".to_string()),
+        created_at: now.clone(),
+        updated_at: now.clone(),
+        completed_at: None,
+    })
+    .unwrap();
+
+    db.record_ocr_result(&OcrResultRecord {
+        id: "ocr-1".to_string(),
+        job_id: "job-690123".to_string(),
+        file_path: "PO690123.pdf".to_string(),
+        page_number: 1,
+        raw_text: "Purchase Order 690123 Grand Total 42,800.00 THB".to_string(),
+        normalized_text: "Purchase Order 690123 Grand Total 42,800.00 THB".to_string(),
+        confidence: 96.0,
+        engine: "Digital PDF".to_string(),
+        bounding_boxes_json: "[]".to_string(),
+        detected_entities_json: "{}".to_string(),
+        created_at: now.clone(),
+    })
+    .unwrap();
+
+    // Query by PO number brings in the job AND its OCR document text
+    let by_po = gather_procurement_context(&db, "ทำไม PO 690123 ค้างอยู่ และยอดรวมเท่าไหร่?", None);
+    assert_eq!(by_po.matched_jobs.len(), 1);
+    assert_eq!(by_po.matched_jobs[0].id, "job-690123");
+    assert!(by_po.system_grounding_prompt.contains("42,800.00 THB"));
+    assert!(by_po.system_grounding_prompt.contains("Confidence 78.5% below auto-send threshold 90%"));
+
+    // Query by Thai supplier & department pulls both Supplier & Dept CC cards accurately
+    let by_thai = gather_procurement_context(&db, "ขออีเมล แอมเพิล กับ CC ฝ่ายขายในประเทศ", None);
+    assert!(by_thai
+        .matched_companies
+        .iter()
+        .any(|c| c.email.contains("sales@ample.co.th")));
+    assert!(by_thai
+        .matched_departments
+        .iter()
+        .any(|d| d.emails.contains("domsales@qtc-energy.com")));
+
+    // Query by review status surfaces needs_review jobs cleanly
+    let by_review = gather_procurement_context(&db, "Find POs needing review", None);
+    assert!(by_review.matched_jobs.iter().any(|j| j.id == "job-690123"));
+}

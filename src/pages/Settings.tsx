@@ -1540,7 +1540,7 @@ export const Settings: React.FC<SettingsProps> = ({
                           <code className="text-zinc-300 font-mono">
                             {builtInVision?.models_dir || `${formData.root_dir}\\Models`}
                           </code>{' '}
-                          {tx(lang, '— no Ollama, no localhost server, zero cloud uploads.', '— ไม่ต้องใช้ Ollama และไม่ส่งไฟล์ขึ้นคลาวด์')}
+                          {tx(lang, '— runs offline inside PO AutoFlow for BOTH Document Vision OCR and Ask AI Chat.', '— ประมวลผลออฟไลน์ภายในโปรแกรม ใช้ได้ทั้งอ่านเอกสาร OCR และผู้ช่วยคุยถาม-ตอบ Ask AI')}
                         </span>
                       </p>
                     </div>

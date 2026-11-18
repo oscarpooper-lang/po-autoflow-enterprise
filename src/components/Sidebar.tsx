@@ -12,6 +12,7 @@ import {
   Download,
   ExternalLink,
   Gauge,
+  Sparkles,
 } from 'lucide-react';
 import { checkGitHubUpdate, installGitHubUpdate, type GitHubUpdateStatus } from '../services/tauri';
 import { tr, tx, type UiLang } from '../i18n';
@@ -114,6 +115,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badgeTone: 'amber' as const,
     },
     { id: 'ocr-inspector', label: tr(lang, 'navInspector'), icon: FileSearch },
+    { id: 'assistant', label: tr(lang, 'navAssistant'), icon: Sparkles },
     {
       id: 'directory',
       label: tr(lang, 'navDirectory'),
