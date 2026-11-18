@@ -26,6 +26,7 @@ import type {
   ApplicationEvent,
   AppSettings,
   CompanyCacheEntry,
+  DepartmentCcEntry,
   CompanyAlias,
   OcrResultRecord,
   PagePreviewResponse,
@@ -37,6 +38,8 @@ import {
   matchSupplierAgainstDirectory,
   findCompaniesSharingEmail,
   splitEmailAddresses,
+  matchDepartmentCc,
+  mergeCcLists,
 } from '../utils/supplierMatcher';
 
 interface OverviewProps {
@@ -44,6 +47,7 @@ interface OverviewProps {
   recentJobs: Job[];
   recentEvents?: ApplicationEvent[];
   companies?: CompanyCacheEntry[];
+  departments?: DepartmentCcEntry[];
   aliases?: CompanyAlias[];
   settings?: AppSettings;
   onSaveSettings?: (newSettings: AppSettings) => Promise<void>;
@@ -66,6 +70,7 @@ export const Overview: React.FC<OverviewProps> = ({
   stats,
   recentJobs = [],
   companies = [],
+  departments = [],
   aliases = [],
   settings,
   onSaveSettings,
@@ -192,6 +197,7 @@ export const Overview: React.FC<OverviewProps> = ({
       primaryTh: summary.primaryTh,
       primaryEn: summary.primaryEn,
       emails: summary.emails,
+      departments: summary.departments,
       poNums: summary.poNumbers,
     };
   }, [ocrRecords, activeJobFolderName]);
@@ -212,6 +218,16 @@ export const Overview: React.FC<OverviewProps> = ({
   const activeJobEmail = activeJob?.matched_email || '';
   const activeJobPo = activeJob?.po_number || '';
   const activeJobFolder = activeJob?.po_folder_name || '';
+  const activeJobDept = activeJob?.matched_department || '';
+  const activeJobDeptCc = activeJob?.department_cc_emails || '';
+
+  const deptAutoMatch = useMemo(
+    () => matchDepartmentCc([activeJobDept, ...predictions.departments], departments),
+    [activeJobDept, predictions.departments, departments]
+  );
+  const resolvedDeptName =
+    deptAutoMatch.departmentName || activeJobDept || predictions.departments[0] || '';
+  const resolvedDeptCc = deptAutoMatch.ccEmails || activeJobDeptCc || '';
 
   const jobAutoMatch = useMemo(
     () =>
@@ -261,7 +277,7 @@ export const Overview: React.FC<OverviewProps> = ({
       '';
     setApproveCompany(defaultComp);
     setApproveEmail(activeJobEmail || matchedComp?.email || predictions.emails[0] || '');
-    setApproveCc(settings?.email_cc_default || '');
+    setApproveCc(mergeCcLists([settings?.email_cc_default, resolvedDeptCc]));
     setApprovePo(activeJobPo || predictions.poNums[0] || activeJobFolder || '');
   }, [
     activeJobId,
@@ -274,6 +290,7 @@ export const Overview: React.FC<OverviewProps> = ({
     predictions,
     jobAutoMatch,
     settings?.email_cc_default,
+    resolvedDeptCc,
   ]);
 
   const applySheetSupplier = (compName: string) => {
@@ -1078,6 +1095,28 @@ export const Overview: React.FC<OverviewProps> = ({
                       placeholder="yuwanit.n@qtc-energy.com, manager@company.com"
                       className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-blue-500"
                     />
+                    {resolvedDeptName && (
+                      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                        <span className="text-cyan-300">
+                          {tx(lang, 'Dept. in PO:', 'แผนกในใบ PO:')}{' '}
+                          <strong className="text-cyan-200">{resolvedDeptName}</strong>
+                          {resolvedDeptCc
+                            ? ` → ${resolvedDeptCc}`
+                            : tx(lang, ' (no Sheet CC email yet)', ' (ยังไม่พบอีเมลแผนกใน Sheet)')}
+                        </span>
+                        {resolvedDeptCc && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setApproveCc((prev) => mergeCcLists([prev, resolvedDeptCc]))
+                            }
+                            className="px-2 py-0.5 rounded bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-200"
+                          >
+                            {tx(lang, '+ Add Dept CC', '+ เพิ่ม CC แผนก')}
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 

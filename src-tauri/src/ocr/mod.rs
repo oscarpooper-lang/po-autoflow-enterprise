@@ -48,6 +48,8 @@ pub struct ParsedEntities {
     pub tax_ids: Vec<String>,
     #[serde(default)]
     pub emails: Vec<String>,
+    #[serde(default)]
+    pub departments: Vec<String>,
     pub supplier_candidates: Vec<SupplierCandidate>,
     pub primary_supplier: Option<String>,
     pub primary_confidence: f64,

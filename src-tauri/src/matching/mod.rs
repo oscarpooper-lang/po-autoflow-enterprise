@@ -2,7 +2,9 @@ pub mod thai_normalizer;
 
 use std::collections::HashSet;
 use thai_normalizer::ThaiNormalizer;
-use crate::database::models::{CompanyAlias, CompanyCacheEntry, LearningMemoryEntry};
+use crate::database::models::{
+    CompanyAlias, CompanyCacheEntry, DepartmentCcEntry, LearningMemoryEntry,
+};
 
 #[derive(Debug, Clone)]
 pub struct MatchResult {
@@ -743,6 +745,114 @@ impl CompanyMatcher {
             category: "no_match".to_string(),
             is_ambiguous: false,
             matched_by: "none".to_string(),
+        }
+    }
+
+    /// Normalizes a Thai/English department label for exact/whitespace-insensitive matching.
+    pub fn normalize_department_key(text: &str) -> (String, String) {
+        let norm = ThaiNormalizer::normalize_unicode(text)
+            .to_lowercase()
+            .replace(['.', ',', ':', ';', '/', '(', ')', '[', ']'], " ");
+        let collapsed: Vec<&str> = norm.split_whitespace().collect();
+        let spaced = collapsed.join(" ");
+        let compact = collapsed.concat();
+        (spaced, compact)
+    }
+
+    /// Matches extracted department name candidates from the Digital PO (or OCR text) against the
+    /// synced Google Sheets Department CC table, returning `(matched_department_display, merged_cc_emails)`.
+    /// Longest department names are checked first so e.g. `ฝ่ายขายในประเทศ` and `ฝ่ายขายต่างประเทศ`
+    /// or `ส่วนสนับสนุนขายธุรกิจโซล่าร์` and `ธุรกิจโซล่าร์` never collide.
+    pub fn match_department_cc(
+        candidates: &[String],
+        directory: &[DepartmentCcEntry],
+    ) -> (Option<String>, String) {
+        if candidates.is_empty() || directory.is_empty() {
+            return (None, String::new());
+        }
+
+        let mut sorted_depts: Vec<(&DepartmentCcEntry, String, String)> = directory
+            .iter()
+            .filter_map(|entry| {
+                let (spaced, compact) = Self::normalize_department_key(&entry.department_name);
+                if compact.is_empty() || entry.emails.trim().is_empty() {
+                    None
+                } else {
+                    Some((entry, spaced, compact))
+                }
+            })
+            .collect();
+        sorted_depts.sort_by(|a, b| b.2.chars().count().cmp(&a.2.chars().count()));
+
+        let mut matched_names: Vec<String> = Vec::new();
+        let mut cc_parts: Vec<String> = Vec::new();
+
+        for raw_cand in candidates {
+            let (cand_spaced, cand_compact) = Self::normalize_department_key(raw_cand);
+            if cand_compact.is_empty() {
+                continue;
+            }
+
+            // Pass 1: Exact normalized equality (insensitive to whitespace & punctuation)
+            let mut hit = sorted_depts
+                .iter()
+                .find(|(_, _, dept_compact)| cand_compact == *dept_compact)
+                .map(|(e, _, _)| *e);
+
+            // Pass 2: Longest exact department phrase contained in extracted cell
+            if hit.is_none() {
+                hit = sorted_depts
+                    .iter()
+                    .find(|(_, _, dept_compact)| {
+                        dept_compact.chars().count() >= 4 && cand_compact.contains(dept_compact.as_str())
+                    })
+                    .map(|(e, _, _)| *e);
+            }
+
+            // Pass 3: High-threshold OCR typo tolerance (>=94%), guarding opposing qualifiers
+            if hit.is_none() {
+                let mut best: Option<(&DepartmentCcEntry, f64)> = None;
+                for (entry, dept_spaced, dept_compact) in &sorted_depts {
+                    if dept_compact.chars().count() < 4 || cand_compact.chars().count() < 4 {
+                        continue;
+                    }
+                    let clash = (cand_compact.contains("ในประเทศ") && dept_compact.contains("ต่างประเทศ"))
+                        || (cand_compact.contains("ต่างประเทศ") && dept_compact.contains("ในประเทศ"));
+                    if clash {
+                        continue;
+                    }
+                    let sim = Self::similarity_ratio(&cand_spaced, dept_spaced)
+                        .max(Self::similarity_ratio(&cand_compact, dept_compact));
+                    if sim >= 94.0 {
+                        if best.map(|(_, bs)| sim > bs).unwrap_or(true) {
+                            best = Some((*entry, sim));
+                        }
+                    }
+                }
+                hit = best.map(|(e, _)| e);
+            }
+
+            if let Some(dept_entry) = hit {
+                if !matched_names
+                    .iter()
+                    .any(|n| n.eq_ignore_ascii_case(&dept_entry.department_name))
+                {
+                    matched_names.push(dept_entry.department_name.clone());
+                }
+                cc_parts.push(dept_entry.emails.clone());
+            }
+        }
+
+        if matched_names.is_empty() {
+            return (None, String::new());
+        }
+
+        let refs: Vec<&str> = cc_parts.iter().map(|s| s.as_str()).collect();
+        let merged_cc = crate::email::EmailDeliveryClient::merge_cc_lists(&refs);
+        if merged_cc.is_empty() {
+            (None, String::new())
+        } else {
+            (Some(matched_names.join(", ")), merged_cc)
         }
     }
 }

@@ -9,12 +9,13 @@ import {
   XCircle,
   Trash2,
 } from 'lucide-react';
-import type { CompanyCacheEntry, CompanyAlias } from '../types';
+import type { CompanyCacheEntry, CompanyAlias, DepartmentCcEntry } from '../types';
 import { api } from '../services/tauri';
 import { tr, tx, type UiLang } from '../i18n';
 
 interface CompanyDirectoryProps {
   companies: CompanyCacheEntry[];
+  departments?: DepartmentCcEntry[];
   aliases: CompanyAlias[];
   onRefreshCompanies: () => void;
   onSyncSheets?: () => void;
@@ -24,13 +25,14 @@ interface CompanyDirectoryProps {
 
 export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
   companies = [],
+  departments = [],
   aliases = [],
   onRefreshCompanies,
   onSyncSheets,
   isSyncing,
   lang = 'en',
 }) => {
-  const [activeTab, setActiveTab] = useState<'directory' | 'aliases'>('directory');
+  const [activeTab, setActiveTab] = useState<'directory' | 'departments' | 'aliases'>('directory');
   const [groupFilter, setGroupFilter] = useState<'all' | 'DV' | 'OV'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -73,6 +75,15 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
     return (
       a.alias.toLowerCase().includes(q) ||
       a.canonical_company_name.toLowerCase().includes(q)
+    );
+  });
+
+  const filteredDepartments = departments.filter((d) => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      d.department_name.toLowerCase().includes(q) ||
+      d.emails.toLowerCase().includes(q)
     );
   });
 
@@ -150,6 +161,16 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
               {tx(lang, 'Google Sheets Directory', 'รายชื่อจาก Google Sheets')} ({companies.length})
             </button>
             <button
+              onClick={() => setActiveTab('departments')}
+              className={`px-3 py-1.5 rounded text-xs font-semibold transition-all ${
+                activeTab === 'departments'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              {tx(lang, 'Department CC', 'อีเมล CC ตามแผนก')} ({departments.length})
+            </button>
+            <button
               onClick={() => setActiveTab('aliases')}
               className={`px-3 py-1.5 rounded text-xs font-semibold transition-all ${
                 activeTab === 'aliases'
@@ -201,6 +222,8 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
             placeholder={
               activeTab === 'directory'
                 ? tx(lang, 'Search companies or email...', 'ค้นหาชื่อบริษัทหรืออีเมล...')
+                : activeTab === 'departments'
+                ? tx(lang, 'Search department or CC email...', 'ค้นหาแผนกหรืออีเมล CC...')
                 : tx(lang, 'Search aliases...', 'ค้นหาชื่อเรียกสำรอง...')
             }
             value={searchQuery}
@@ -286,6 +309,47 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
                     </tr>
                     );
                   })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : activeTab === 'departments' ? (
+        <div className="rounded-xl bg-[#121215] border border-zinc-800 overflow-hidden shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-zinc-950/70 text-zinc-400 font-semibold border-b border-zinc-800">
+                <tr>
+                  <th className="py-3 px-4">#</th>
+                  <th className="py-3 px-4">{tx(lang, 'Department (แผนก)', 'ชื่อแผนก (แผนก)')}</th>
+                  <th className="py-3 px-4">{tx(lang, 'Auto-CC Email(s)', 'อีเมล CC อัตโนมัติ')}</th>
+                  <th className="py-3 px-4 text-right">{tx(lang, 'Synced At', 'วันที่ซิงก์')}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-800/70">
+                {filteredDepartments.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="py-12 text-center text-zinc-500">
+                      {tx(
+                        lang,
+                        'No Department CC mappings synced yet. Add a tab (No. | แผนก | Email) in Google Sheets and click "Sync from Google Sheets".',
+                        'ยังไม่มีข้อมูล CC ตามแผนก — สร้างแท็บที่มีคอลัมน์ No. | แผนก | Email ใน Google Sheet แล้วกด "ซิงก์ Google Sheet"'
+                      )}
+                    </td>
+                  </tr>
+                ) : (
+                  filteredDepartments.map((dept, idx) => (
+                    <tr key={dept.id} className="hover:bg-zinc-900/50 transition-colors">
+                      <td className="py-3 px-4 font-mono text-zinc-500">{idx + 1}</td>
+                      <td className="py-3 px-4">
+                        <span className="font-bold text-white">{dept.department_name}</span>
+                      </td>
+                      <td className="py-3 px-4 font-mono text-cyan-300">{dept.emails}</td>
+                      <td className="py-3 px-4 text-right text-zinc-500 font-mono text-[11px]">
+                        {new Date(dept.synced_at).toLocaleDateString()}
+                      </td>
+                    </tr>
+                  ))
                 )}
               </tbody>
             </table>

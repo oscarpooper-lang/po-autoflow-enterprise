@@ -1,4 +1,4 @@
-use crate::database::models::CompanyCacheEntry;
+use crate::database::models::{CompanyCacheEntry, DepartmentCcEntry};
 use reqwest::Client;
 use serde::Deserialize;
 use std::time::Duration;
@@ -27,6 +27,22 @@ struct GasSuppliersResponse {
     tab_used: Option<String>,
     tab_missing: Option<bool>,
     access_token: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct GasDepartmentItem {
+    department_name: String,
+    emails: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct GasDepartmentsResponse {
+    status: String,
+    departments: Option<Vec<GasDepartmentItem>>,
+    #[serde(default)]
+    tab_missing: Option<bool>,
+    #[serde(default)]
     error: Option<String>,
 }
 
@@ -768,6 +784,259 @@ impl SheetsClient {
             }
         }
         Self::parse_matrix(lines)
+    }
+
+    pub async fn fetch_departments_via_gas(
+        &self,
+        gas_url: &str,
+        gas_secret: &str,
+        spreadsheet_id: &str,
+        dept_tab: &str,
+    ) -> Result<Vec<DepartmentCcEntry>, SheetsError> {
+        let clean_url = gas_url.trim();
+        if clean_url.is_empty() || spreadsheet_id.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let secrets = crate::google::auth::candidate_gas_secrets(gas_secret);
+        let mut last_err = String::new();
+
+        for secret in &secrets {
+            let get_url = format!(
+                "{}?action=sync_departments&auth={}&sheet_id={}&tab_name={}",
+                clean_url,
+                urlencoding::encode(secret),
+                urlencoding::encode(spreadsheet_id.trim()),
+                urlencoding::encode(dept_tab.trim()),
+            );
+            if let Ok(resp) = self.client.get(&get_url).send().await {
+                if let Ok(text) = resp.text().await {
+                    if let Ok(parsed) = serde_json::from_str::<GasDepartmentsResponse>(&text) {
+                        if parsed.status == "ok" {
+                            if let Some(items) = parsed.departments {
+                                if !items.is_empty() || parsed.tab_missing.unwrap_or(false) {
+                                    let now = chrono::Utc::now().to_rfc3339();
+                                    let list = items
+                                        .into_iter()
+                                        .enumerate()
+                                        .filter_map(|(idx, item)| {
+                                            let emails = crate::email::EmailDeliveryClient::merge_cc_lists(&[&item.emails]);
+                                            if item.department_name.trim().is_empty() || emails.is_empty() {
+                                                None
+                                            } else {
+                                                Some(DepartmentCcEntry {
+                                                    id: format!("dept_gas_{}", idx + 1),
+                                                    department_name: item.department_name.trim().to_string(),
+                                                    emails,
+                                                    synced_at: now.clone(),
+                                                })
+                                            }
+                                        })
+                                        .collect();
+                                    return Ok(list);
+                                }
+                            }
+                        } else if let Some(err) = parsed.error {
+                            if err.to_lowercase().contains("unauthorized") {
+                                last_err = err;
+                                continue;
+                            }
+                            return Err(SheetsError::Parse(err));
+                        }
+                    }
+                }
+            }
+
+            let payload = serde_json::json!({
+                "action": "sync_departments",
+                "auth_secret": secret,
+                "sheet_id": spreadsheet_id.trim(),
+                "tab_name": dept_tab.trim(),
+            });
+            if let Ok(resp) = self.client.post(clean_url).json(&payload).send().await {
+                if let Ok(text) = resp.text().await {
+                    if let Ok(parsed) = serde_json::from_str::<GasDepartmentsResponse>(&text) {
+                        if parsed.status == "ok" {
+                            let items = parsed.departments.unwrap_or_default();
+                            let now = chrono::Utc::now().to_rfc3339();
+                            let list = items
+                                .into_iter()
+                                .enumerate()
+                                .filter_map(|(idx, item)| {
+                                    let emails = crate::email::EmailDeliveryClient::merge_cc_lists(&[&item.emails]);
+                                    if item.department_name.trim().is_empty() || emails.is_empty() {
+                                        None
+                                    } else {
+                                        Some(DepartmentCcEntry {
+                                            id: format!("dept_gas_{}", idx + 1),
+                                            department_name: item.department_name.trim().to_string(),
+                                            emails,
+                                            synced_at: now.clone(),
+                                        })
+                                    }
+                                })
+                                .collect();
+                            return Ok(list);
+                        } else if let Some(err) = parsed.error {
+                            if err.to_lowercase().contains("unauthorized") {
+                                last_err = err;
+                                continue;
+                            }
+                            return Err(SheetsError::Parse(err));
+                        }
+                    }
+                }
+            }
+        }
+
+        if !last_err.is_empty() {
+            Err(SheetsError::Parse(last_err))
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    pub async fn fetch_departments(
+        &self,
+        spreadsheet_id: &str,
+        dept_tab: &str,
+        access_token: Option<&str>,
+    ) -> Result<Vec<DepartmentCcEntry>, SheetsError> {
+        let clean_id = spreadsheet_id.trim();
+        let clean_tab = dept_tab.trim();
+        if clean_id.is_empty() || clean_tab.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if let Some(token) = access_token.filter(|t| !t.trim().is_empty() && *t != "gas_hub_authenticated") {
+            let url = format!(
+                "https://sheets.googleapis.com/v4/spreadsheets/{}/values/{}!A1:Z500",
+                clean_id, clean_tab
+            );
+            if let Ok(res) = self.client.get(&url).bearer_auth(token).send().await {
+                if res.status().is_success() {
+                    let data: SheetsApiResponse = res.json().await?;
+                    if let Some(values) = data.values {
+                        return Self::parse_department_matrix(values);
+                    }
+                }
+            }
+        }
+
+        let csv_url = format!(
+            "https://docs.google.com/spreadsheets/d/{}/gviz/tq?tqx=out:csv&sheet={}",
+            clean_id,
+            urlencoding_simple(clean_tab)
+        );
+        let mut req = self.client.get(&csv_url);
+        if let Some(token) = access_token.filter(|t| !t.trim().is_empty() && *t != "gas_hub_authenticated") {
+            req = req.bearer_auth(token);
+        }
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            return Ok(Vec::new());
+        }
+        let csv_text = resp.text().await?;
+        if csv_text.trim_start().starts_with('<') {
+            return Ok(Vec::new());
+        }
+        let mut rows = Vec::new();
+        for line in csv_text.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                rows.push(split_csv_line(trimmed));
+            }
+        }
+        Self::parse_department_matrix(rows)
+    }
+
+    /// Parses a Department -> Email mapping sheet (supports `No. | แผนก | Email`, merging duplicate departments).
+    pub fn parse_department_matrix(matrix: Vec<Vec<String>>) -> Result<Vec<DepartmentCcEntry>, SheetsError> {
+        if matrix.is_empty() {
+            return Ok(Vec::new());
+        }
+        let first_row = &matrix[0];
+        let has_header = find_header_col(
+            first_row,
+            &["แผนก", "department", "dept", "email", "อีเมล", "no.", "no", "#"],
+        )
+        .is_some();
+
+        let (dept_idx, email_idx, start_row) = if has_header {
+            let d_idx = find_header_col_excluding(
+                first_row,
+                &["แผนก", "department", "dept", "section", "division"],
+                &[],
+            )
+            .unwrap_or(if first_row.len() >= 3 { 1 } else { 0 });
+            let e_idx = find_header_col_excluding(
+                first_row,
+                &["email", "อีเมล", "e-mail", "mail", "cc"],
+                &[d_idx],
+            )
+            .unwrap_or(if first_row.len() >= 3 { 2 } else { 1 });
+            (d_idx, e_idx, 1usize)
+        } else {
+            let e_idx = first_row
+                .iter()
+                .position(|c| c.contains('@'))
+                .unwrap_or(if first_row.len() >= 3 { 2 } else { 1 });
+            let d_idx = first_row
+                .iter()
+                .enumerate()
+                .position(|(idx, c)| {
+                    idx != e_idx
+                        && !c.trim().is_empty()
+                        && !c.trim().chars().all(|ch| ch.is_ascii_digit())
+                })
+                .unwrap_or(if first_row.len() >= 3 { 1 } else { 0 });
+            (d_idx, e_idx, 0usize)
+        };
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut merged_order: Vec<String> = Vec::new();
+        let mut merged_map: std::collections::HashMap<String, (String, Vec<String>)> =
+            std::collections::HashMap::new();
+
+        for row in matrix.iter().skip(start_row) {
+            let dept_name = row.get(dept_idx).map(|s| s.trim()).unwrap_or("");
+            let raw_email = row.get(email_idx).map(|s| s.trim()).unwrap_or("");
+            if dept_name.is_empty() || raw_email.is_empty() {
+                continue;
+            }
+            let normalized_email = crate::email::EmailDeliveryClient::merge_cc_lists(&[raw_email]);
+            if normalized_email.is_empty() {
+                continue;
+            }
+            let (_, key) = crate::matching::CompanyMatcher::normalize_department_key(dept_name);
+            if key.is_empty() {
+                continue;
+            }
+            let entry = merged_map
+                .entry(key.clone())
+                .or_insert_with(|| {
+                    merged_order.push(key.clone());
+                    (dept_name.to_string(), Vec::new())
+                });
+            entry.1.push(normalized_email);
+        }
+
+        let entries = merged_order
+            .into_iter()
+            .enumerate()
+            .filter_map(|(idx, key)| {
+                merged_map.remove(&key).map(|(dept_name, email_chunks)| {
+                    let refs: Vec<&str> = email_chunks.iter().map(|s| s.as_str()).collect();
+                    DepartmentCcEntry {
+                        id: format!("dept_row_{}", idx + 1),
+                        department_name: dept_name,
+                        emails: crate::email::EmailDeliveryClient::merge_cc_lists(&refs),
+                        synced_at: now.clone(),
+                    }
+                })
+            })
+            .collect();
+
+        Ok(entries)
     }
 
     pub async fn test_connection(&self, spreadsheet_id: &str, tab_name: &str, access_token: Option<&str>) -> Result<usize, SheetsError> {

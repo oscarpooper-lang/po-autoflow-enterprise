@@ -1,5 +1,5 @@
 /**
- * PO AutoFlow Enterprise - Google Apps Script All-In-One Cloud Hub (v2.3.0)
+ * PO AutoFlow Enterprise - Google Apps Script All-In-One Cloud Hub (v2.4.0)
  *
  * Capabilities:
  * 1. Private Google Sheets Supplier Directory Reader (SpreadsheetApp + OAuth CSV fallback)
@@ -119,23 +119,34 @@ function doGet(e) {
     return handleGetSuppliers(sheetId, tabName, strictTab);
   }
 
+  // Action: Read Department -> CC Email Mapping Tab via GET
+  if (action === "sync_departments" || action === "get_departments") {
+    if (!authorized) {
+      return jsonError("Unauthorized: Invalid AUTH_SECRET", 401);
+    }
+    const sheetId = (e.parameter && e.parameter.sheet_id) || PropertiesService.getScriptProperties().getProperty("SHEET_ID");
+    const tabName = (e.parameter && e.parameter.tab_name) || "";
+    return handleGetDepartments(sheetId, tabName);
+  }
+
   // Default: Healthcheck diagnostic
   return ContentService.createTextOutput(JSON.stringify({
     status: "ok",
     service: "PO AutoFlow Enterprise Cloud Hub",
-    version: "2.2.0",
+    version: "2.4.0",
     authorized: authorized,
-    capabilities: ["sheets_directory", "drive_storage", "gmail_delivery", "cloud_hub_auth"],
+    capabilities: ["sheets_directory", "department_cc", "drive_storage", "gmail_delivery", "cloud_hub_auth"],
     timestamp: new Date().toISOString()
   })).setMimeType(ContentService.MimeType.JSON);
 }
 
 /**
  * Handles incoming POST requests:
- * - action: "get_account"    -> Returns effective Google account & OAuth token
- * - action: "sync_suppliers" -> Reads private Google Sheet
- * - action: "upload_drive"   -> Uploads file/ZIP to private Google Drive folder
- * - action: "send_email"     -> Delivers PO package via Gmail (default)
+ * - action: "get_account"      -> Returns effective Google account & OAuth token
+ * - action: "sync_suppliers"   -> Reads private Google Sheet (Suppliers / DV / OV)
+ * - action: "sync_departments" -> Reads private Google Sheet (Department -> CC Email tab)
+ * - action: "upload_drive"     -> Uploads file/ZIP to private Google Drive folder
+ * - action: "send_email"       -> Delivers PO package via Gmail (default)
  */
 function doPost(e) {
   const lock = LockService.getScriptLock();
@@ -172,6 +183,12 @@ function doPost(e) {
       const tabName = payload.tab_name || (e.parameter && e.parameter.tab_name) || "Suppliers";
       const strictTab = Boolean(payload.strict_tab || (e.parameter && (e.parameter.strict_tab === "1" || e.parameter.strict_tab === "true")));
       return handleGetSuppliers(sheetId, tabName, strictTab);
+    }
+
+    if (action === "sync_departments" || action === "get_departments") {
+      const sheetId = payload.sheet_id || (e.parameter && e.parameter.sheet_id) || PropertiesService.getScriptProperties().getProperty("SHEET_ID");
+      const tabName = payload.tab_name || (e.parameter && e.parameter.tab_name) || "";
+      return handleGetDepartments(sheetId, tabName);
     }
 
     // =========================================================================
@@ -777,6 +794,157 @@ function inferMimeType(fileName) {
   if (lower.endsWith(".csv")) return "text/csv";
   if (lower.endsWith(".txt")) return "text/plain";
   return "application/octet-stream";
+}
+
+function findDepartmentSheetTab(ss, tabName) {
+  const allSheets = ss.getSheets();
+  if (tabName) {
+    const exact = ss.getSheetByName(tabName);
+    if (exact) return exact;
+    const low = String(tabName).trim().toLowerCase();
+    for (let i = 0; i < allSheets.length; i++) {
+      if (allSheets[i].getName().trim().toLowerCase() === low) {
+        return allSheets[i];
+      }
+    }
+  }
+  for (let i = 0; i < allSheets.length; i++) {
+    const sn = allSheets[i].getName().trim().toLowerCase();
+    const isVendorTab = sn === "dv" || sn === "ov" || sn.indexOf("supplier") >= 0 || sn.indexOf("domestic") >= 0 || sn.indexOf("oversea") >= 0 || sn.indexOf("vendor") >= 0;
+    if (!isVendorTab && (sn.indexOf("department") >= 0 || sn.indexOf("dept") >= 0 || sn.indexOf("แผนก") >= 0)) {
+      return allSheets[i];
+    }
+  }
+  return null;
+}
+
+function buildDepartmentsResponse(values, tabUsed) {
+  let token = "";
+  try {
+    token = ScriptApp.getOAuthToken();
+  } catch (tokErr) {
+    token = "";
+  }
+
+  if (!values || values.length === 0) {
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "ok",
+      count: 0,
+      departments: [],
+      tab_used: tabUsed || "",
+      access_token: token
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  const firstRow = values[0].map(h => String(h).trim());
+  const firstRowLow = firstRow.map(h => h.toLowerCase());
+  const hasHeaderKeyword = firstRowLow.some(h =>
+    h === "no." || h === "no" || h === "#" || h.includes("แผนก") ||
+    h.includes("department") || h.includes("dept") || h.includes("email") || h.includes("อีเมล")
+  );
+
+  let deptCol = -1;
+  let emailCol = -1;
+  let startRow = 0;
+
+  if (hasHeaderKeyword) {
+    deptCol = firstRowLow.findIndex(h =>
+      h.includes("แผนก") || h.includes("department") || h.includes("dept") || h.includes("section") || h.includes("division")
+    );
+    emailCol = firstRowLow.findIndex((h, idx) =>
+      idx !== deptCol && (h.includes("email") || h.includes("อีเมล") || h.includes("mail") || h === "cc")
+    );
+    if (deptCol < 0) deptCol = firstRowLow.length >= 3 ? 1 : 0;
+    if (emailCol < 0) emailCol = firstRowLow.length >= 3 ? 2 : 1;
+    startRow = 1;
+  } else {
+    emailCol = firstRow.findIndex(h => Boolean(parseRecipientEmails(h)));
+    if (emailCol < 0) emailCol = firstRow.length >= 3 ? 2 : 1;
+    deptCol = firstRow.findIndex((h, idx) => idx !== emailCol && !/^\d+$/.test(h) && h.length > 0);
+    if (deptCol < 0) deptCol = firstRow.length >= 3 ? 1 : 0;
+    startRow = 0;
+  }
+
+  const mergedByKey = {};
+  const orderedKeys = [];
+  for (let r = startRow; r < values.length; r++) {
+    const row = values[r];
+    if (!row || row.length === 0) continue;
+    const deptName = String(row[deptCol] || "").replace(/\s+/g, " ").trim();
+    const rawEmail = String(row[emailCol] || "").trim();
+    if (!deptName || !rawEmail) continue;
+
+    // Split multiple comma/semicolon/newline emails cleanly
+    const cleanEmailTokens = [];
+    const rawParts = rawEmail.split(/[,;\n\r]+/);
+    for (let p = 0; p < rawParts.length; p++) {
+      const part = rawParts[p].trim();
+      const valid = parseRecipientEmails(part);
+      if (valid) {
+        const singles = valid.split(",");
+        for (let s = 0; s < singles.length; s++) {
+          const single = singles[s].trim();
+          if (single && cleanEmailTokens.indexOf(single) < 0) {
+            cleanEmailTokens.push(single);
+          }
+        }
+      }
+    }
+    if (cleanEmailTokens.length === 0) continue;
+
+    const normKey = deptName.replace(/\s+/g, "").toLowerCase();
+    if (!mergedByKey[normKey]) {
+      mergedByKey[normKey] = {
+        department_name: deptName,
+        emails: []
+      };
+      orderedKeys.push(normKey);
+    }
+    for (let k = 0; k < cleanEmailTokens.length; k++) {
+      const em = cleanEmailTokens[k];
+      if (!mergedByKey[normKey].emails.some(x => x.toLowerCase() === em.toLowerCase())) {
+        mergedByKey[normKey].emails.push(em);
+      }
+    }
+  }
+
+  const departments = orderedKeys.map(k => ({
+    department_name: mergedByKey[k].department_name,
+    emails: mergedByKey[k].emails.join(", ")
+  }));
+
+  return ContentService.createTextOutput(JSON.stringify({
+    status: "ok",
+    count: departments.length,
+    departments: departments,
+    tab_used: tabUsed || "",
+    access_token: token,
+    timestamp: new Date().toISOString()
+  })).setMimeType(ContentService.MimeType.JSON);
+}
+
+function handleGetDepartments(sheetId, tabName) {
+  if (!sheetId) {
+    return jsonError("Missing sheet_id parameter for department sync.", 400);
+  }
+  try {
+    const ss = SpreadsheetApp.openById(sheetId);
+    const sheet = findDepartmentSheetTab(ss, tabName);
+    if (!sheet) {
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "ok",
+        count: 0,
+        departments: [],
+        tab_used: tabName || "",
+        tab_missing: true,
+        message: "Department CC tab not found (0 rows)"
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+    const values = sheet.getDataRange().getValues();
+    return buildDepartmentsResponse(values, sheet.getName());
+  } catch (err) {
+    return jsonError("Failed to read Department CC tab: " + err.message, 500);
+  }
 }
 
 function jsonError(message, code) {

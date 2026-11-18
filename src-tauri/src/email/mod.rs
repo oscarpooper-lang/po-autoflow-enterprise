@@ -156,6 +156,23 @@ impl EmailDeliveryClient {
         Self::normalize_recipient_list(raw)
     }
 
+    /// Merges multiple optional CC strings (e.g. global default CC + department auto-CC),
+    /// validating and deduplicating addresses case-insensitively while preserving order.
+    pub fn merge_cc_lists(parts: &[&str]) -> String {
+        let mut out: Vec<String> = Vec::new();
+        for raw in parts {
+            for token in raw.split([',', ';', '\n', '\r']) {
+                let trimmed = token.trim();
+                if Self::is_valid_single_email(trimmed)
+                    && !out.iter().any(|existing| existing.eq_ignore_ascii_case(trimmed))
+                {
+                    out.push(trimmed.to_string());
+                }
+            }
+        }
+        out.join(", ")
+    }
+
     /// Validates one or more comma/semicolon-separated email addresses.
     pub fn is_valid_email(email: &str) -> bool {
         Self::parse_recipient_emails(email).is_ok()

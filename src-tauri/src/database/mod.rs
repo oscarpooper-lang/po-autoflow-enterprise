@@ -149,6 +149,13 @@ impl Database {
                 synced_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS department_cc_cache (
+                id TEXT PRIMARY KEY,
+                department_name TEXT NOT NULL,
+                emails TEXT NOT NULL,
+                synced_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS company_aliases (
                 id TEXT PRIMARY KEY,
                 alias TEXT NOT NULL UNIQUE,
@@ -213,6 +220,19 @@ impl Database {
             conn.execute("ALTER TABLE companies_cache ADD COLUMN vendor_group TEXT", [])?;
         }
 
+        // Ensure `matched_department` & `department_cc_emails` columns exist on `jobs`
+        let job_cols: Vec<String> = {
+            let mut stmt = conn.prepare("PRAGMA table_info(jobs)")?;
+            let cols = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            cols.filter_map(|r| r.ok()).collect()
+        };
+        if !job_cols.iter().any(|c| c == "matched_department") {
+            conn.execute("ALTER TABLE jobs ADD COLUMN matched_department TEXT", [])?;
+        }
+        if !job_cols.iter().any(|c| c == "department_cc_emails") {
+            conn.execute("ALTER TABLE jobs ADD COLUMN department_cc_emails TEXT", [])?;
+        }
+
         Ok(())
     }
 
@@ -270,11 +290,12 @@ impl Database {
             INSERT INTO jobs (
                 id, po_folder_name, source_path, status, stage_message,
                 po_number, detected_company_raw, matched_company_name, matched_email,
+                matched_department, department_cc_emails,
                 match_confidence, match_category, archive_path, archive_sha256,
                 archive_size_bytes, drive_file_id, drive_web_link, email_transaction_id,
                 retry_count, error_details, created_at, updated_at, completed_at
             ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
             )
             "#,
             params![
@@ -287,6 +308,8 @@ impl Database {
                 job.detected_company_raw,
                 job.matched_company_name,
                 job.matched_email,
+                job.matched_department,
+                job.department_cc_emails,
                 job.match_confidence,
                 job.match_category,
                 job.archive_path,
@@ -318,18 +341,20 @@ impl Database {
                 detected_company_raw = ?7,
                 matched_company_name = ?8,
                 matched_email = ?9,
-                match_confidence = ?10,
-                match_category = ?11,
-                archive_path = ?12,
-                archive_sha256 = ?13,
-                archive_size_bytes = ?14,
-                drive_file_id = ?15,
-                drive_web_link = ?16,
-                email_transaction_id = ?17,
-                retry_count = ?18,
-                error_details = ?19,
-                updated_at = ?20,
-                completed_at = ?21
+                matched_department = ?10,
+                department_cc_emails = ?11,
+                match_confidence = ?12,
+                match_category = ?13,
+                archive_path = ?14,
+                archive_sha256 = ?15,
+                archive_size_bytes = ?16,
+                drive_file_id = ?17,
+                drive_web_link = ?18,
+                email_transaction_id = ?19,
+                retry_count = ?20,
+                error_details = ?21,
+                updated_at = ?22,
+                completed_at = ?23
             WHERE id = ?1
             "#,
             params![
@@ -342,6 +367,8 @@ impl Database {
                 job.detected_company_raw,
                 job.matched_company_name,
                 job.matched_email,
+                job.matched_department,
+                job.department_cc_emails,
                 job.match_confidence,
                 job.match_category,
                 job.archive_path,
@@ -370,19 +397,21 @@ impl Database {
             detected_company_raw: row.get(6)?,
             matched_company_name: row.get(7)?,
             matched_email: row.get(8)?,
-            match_confidence: row.get(9)?,
-            match_category: row.get(10)?,
-            archive_path: row.get(11)?,
-            archive_sha256: row.get(12)?,
-            archive_size_bytes: row.get(13)?,
-            drive_file_id: row.get(14)?,
-            drive_web_link: row.get(15)?,
-            email_transaction_id: row.get(16)?,
-            retry_count: row.get(17)?,
-            error_details: row.get(18)?,
-            created_at: row.get(19)?,
-            updated_at: row.get(20)?,
-            completed_at: row.get(21)?,
+            matched_department: row.get(9)?,
+            department_cc_emails: row.get(10)?,
+            match_confidence: row.get(11)?,
+            match_category: row.get(12)?,
+            archive_path: row.get(13)?,
+            archive_sha256: row.get(14)?,
+            archive_size_bytes: row.get(15)?,
+            drive_file_id: row.get(16)?,
+            drive_web_link: row.get(17)?,
+            email_transaction_id: row.get(18)?,
+            retry_count: row.get(19)?,
+            error_details: row.get(20)?,
+            created_at: row.get(21)?,
+            updated_at: row.get(22)?,
+            completed_at: row.get(23)?,
         })
     }
 
@@ -393,6 +422,7 @@ impl Database {
             SELECT
                 id, po_folder_name, source_path, status, stage_message,
                 po_number, detected_company_raw, matched_company_name, matched_email,
+                matched_department, department_cc_emails,
                 match_confidence, match_category, archive_path, archive_sha256,
                 archive_size_bytes, drive_file_id, drive_web_link, email_transaction_id,
                 retry_count, error_details, created_at, updated_at, completed_at
@@ -411,6 +441,7 @@ impl Database {
             SELECT
                 id, po_folder_name, source_path, status, stage_message,
                 po_number, detected_company_raw, matched_company_name, matched_email,
+                matched_department, department_cc_emails,
                 match_confidence, match_category, archive_path, archive_sha256,
                 archive_size_bytes, drive_file_id, drive_web_link, email_transaction_id,
                 retry_count, error_details, created_at, updated_at, completed_at
@@ -463,6 +494,7 @@ impl Database {
             SELECT
                 id, po_folder_name, source_path, status, stage_message,
                 po_number, detected_company_raw, matched_company_name, matched_email,
+                matched_department, department_cc_emails,
                 match_confidence, match_category, archive_path, archive_sha256,
                 archive_size_bytes, drive_file_id, drive_web_link, email_transaction_id,
                 retry_count, error_details, created_at, updated_at, completed_at
@@ -486,6 +518,7 @@ impl Database {
             SELECT
                 id, po_folder_name, source_path, status, stage_message,
                 po_number, detected_company_raw, matched_company_name, matched_email,
+                matched_department, department_cc_emails,
                 match_confidence, match_category, archive_path, archive_sha256,
                 archive_size_bytes, drive_file_id, drive_web_link, email_transaction_id,
                 retry_count, error_details, created_at, updated_at, completed_at
@@ -932,6 +965,40 @@ impl Database {
             })
         })?;
 
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn sync_department_cc_cache(&self, entries: &[DepartmentCcEntry]) -> Result<(), DbError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM department_cc_cache", [])?;
+        for e in entries {
+            tx.execute(
+                "INSERT INTO department_cc_cache (id, department_name, emails, synced_at) VALUES (?1, ?2, ?3, ?4)",
+                params![e.id, e.department_name, e.emails, e.synced_at],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn get_department_cc_cache(&self) -> Result<Vec<DepartmentCcEntry>, DbError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, department_name, emails, synced_at FROM department_cc_cache ORDER BY department_name ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(DepartmentCcEntry {
+                id: row.get(0)?,
+                department_name: row.get(1)?,
+                emails: row.get(2)?,
+                synced_at: row.get(3)?,
+            })
+        })?;
         let mut list = Vec::new();
         for r in rows {
             list.push(r?);

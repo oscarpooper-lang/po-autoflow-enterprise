@@ -1929,14 +1929,17 @@ export const Settings: React.FC<SettingsProps> = ({
                     onClick={() => {
                       handleChange('google_sheets_tab_name', 'DV');
                       handleChange('google_sheets_ov_tab_name', 'OV');
+                      if (!formData.google_sheets_dept_tab_name) {
+                        handleChange('google_sheets_dept_tab_name', 'Department');
+                      }
                     }}
                     className="px-2.5 py-1 rounded bg-blue-500/15 hover:bg-blue-500/25 border border-blue-500/30 text-blue-300 text-[11px] font-semibold"
                   >
-                    {tx(lang, 'Set DV + OV Tabs', 'ตั้งค่าเป็นแท็บ DV + OV')}
+                    {tx(lang, 'Set DV + OV + Dept Tabs', 'ตั้งค่าแท็บ DV + OV + แผนก')}
                   </button>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div>
                     <label className="text-zinc-400 text-[11px] font-medium block mb-1">
                       {tx(lang, 'Domestic Vendors Tab (DV):', 'แท็บผู้ขายในประเทศ (DV / หลัก):')}
@@ -1961,12 +1964,24 @@ export const Settings: React.FC<SettingsProps> = ({
                       className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 font-medium"
                     />
                   </div>
+                  <div>
+                    <label className="text-zinc-400 text-[11px] font-medium block mb-1">
+                      {tx(lang, 'Department CC Tab (Optional):', 'แท็บอีเมล CC ตามแผนก (ไม่บังคับ):')}
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.google_sheets_dept_tab_name || ''}
+                      onChange={(e) => handleChange('google_sheets_dept_tab_name', e.target.value)}
+                      placeholder="Department (or แผนก)"
+                      className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 font-medium"
+                    />
+                  </div>
                 </div>
                 <p className="text-[11px] text-zinc-500">
                   {tx(
                     lang,
-                    'Keep Domestic (DV) and Overseas (OV) vendors separated on two sheet tabs. Leave OV empty to use a single tab.',
-                    'แยกผู้ขายในประเทศ (DV) และต่างประเทศ (OV) ไว้คนละแท็บได้ ระบบจะซิงก์ทั้งคู่ให้อัตโนมัติ (เว้นว่าง OV ได้หากใช้แท็บเดียว)'
+                    'Separate DV & OV supplier tabs, plus an optional Department tab (No. | แผนก | Email) to auto-CC the requesting department from each PO.',
+                    'แยกแท็บ DV และ OV พร้อมแท็บแผนก (No. | แผนก | Email) เพื่อให้ระบบใส่ CC แผนกที่ขอซื้อในใบ PO ให้อัตโนมัติ'
                   )}
                 </p>
               </div>

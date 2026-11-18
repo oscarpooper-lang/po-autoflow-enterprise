@@ -1,10 +1,80 @@
-import type { CompanyAlias, CompanyCacheEntry } from '../types';
+import type { CompanyAlias, CompanyCacheEntry, DepartmentCcEntry } from '../types';
 
 export interface SupplierMatchCandidateResult {
   company: CompanyCacheEntry | null;
   score: number;
   matchedBy: 'alias' | 'exact_name' | 'exact_email' | 'fuzzy_name' | 'none';
   sameEmailMatches: CompanyCacheEntry[];
+}
+
+export function mergeCcLists(parts: Array<string | null | undefined>): string {
+  const out: string[] = [];
+  for (const part of parts) {
+    if (!part) continue;
+    for (const token of part.split(/[,;\n\r]+/)) {
+      const clean = token.trim();
+      if (clean && clean.includes('@') && !out.some((e) => e.toLowerCase() === clean.toLowerCase())) {
+        out.push(clean);
+      }
+    }
+  }
+  return out.join(', ');
+}
+
+export function normalizeDepartmentKey(raw?: string | null): { spaced: string; compact: string } {
+  if (!raw) return { spaced: '', compact: '' };
+  const norm = raw
+    .normalize('NFC')
+    .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, '')
+    .toLowerCase()
+    .replace(/[.,:;/()[\]]/g, ' ');
+  const tokens = norm.split(/\s+/).filter(Boolean);
+  return { spaced: tokens.join(' '), compact: tokens.join('') };
+}
+
+export function matchDepartmentCc(
+  deptCandidates: Array<string | null | undefined>,
+  departments: DepartmentCcEntry[]
+): { departmentName: string | null; ccEmails: string } {
+  const cleanCandidates = deptCandidates.map((d) => (d || '').trim()).filter(Boolean);
+  if (cleanCandidates.length === 0 || departments.length === 0) {
+    return { departmentName: null, ccEmails: '' };
+  }
+
+  const sorted = departments
+    .map((entry) => ({
+      entry,
+      ...normalizeDepartmentKey(entry.department_name),
+    }))
+    .filter((d) => d.compact.length > 0 && d.entry.emails.trim().length > 0)
+    .sort((a, b) => b.compact.length - a.compact.length);
+
+  const matchedNames: string[] = [];
+  const ccParts: string[] = [];
+
+  for (const rawCand of cleanCandidates) {
+    const { compact: candCompact } = normalizeDepartmentKey(rawCand);
+    if (!candCompact) continue;
+
+    let hit = sorted.find((d) => d.compact === candCompact)?.entry;
+    if (!hit) {
+      hit = sorted.find((d) => d.compact.length >= 4 && candCompact.includes(d.compact))?.entry;
+    }
+    if (hit) {
+      if (!matchedNames.some((n) => n.toLowerCase() === hit!.department_name.toLowerCase())) {
+        matchedNames.push(hit.department_name);
+      }
+      ccParts.push(hit.emails);
+    }
+  }
+
+  if (matchedNames.length === 0) {
+    return { departmentName: null, ccEmails: '' };
+  }
+  return {
+    departmentName: matchedNames.join(', '),
+    ccEmails: mergeCcLists(ccParts),
+  };
 }
 
 export function splitEmailAddresses(raw?: string | null): string[] {

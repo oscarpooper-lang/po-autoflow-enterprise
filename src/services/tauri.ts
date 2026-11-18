@@ -5,6 +5,7 @@ import type {
   PoTransaction,
   OcrResultRecord,
   CompanyCacheEntry,
+  DepartmentCcEntry,
   CompanyAlias,
   DashboardStats,
   ApplicationEvent,
@@ -172,6 +173,7 @@ export const defaultSettings: AppSettings = {
   google_sheets_id: '',
   google_sheets_tab_name: 'Suppliers',
   google_sheets_ov_tab_name: '',
+  google_sheets_dept_tab_name: '',
   google_drive_folder_id: '',
   gas_webhook_url: '',
   gas_auth_secret: 'po-autoflow-enterprise-secret-key',
@@ -442,6 +444,13 @@ export const api = {
       return await invoke<CompanyCacheEntry[]>('get_companies_cache');
     }
     return [...mockCompanies];
+  },
+
+  getDepartmentCcCache: async (): Promise<DepartmentCcEntry[]> => {
+    if (isTauriEnvironment()) {
+      return await invoke<DepartmentCcEntry[]>('get_department_cc_cache');
+    }
+    return [];
   },
 
   syncCompaniesFromSheets: async (): Promise<number> => {

@@ -204,6 +204,62 @@ impl PipelineCoordinator {
         };
 
         self.db.sync_companies_cache(&entries).map_err(|e| e.to_string())?;
+
+        // Also sync Department -> Auto-CC mappings from the optional Department tab (best-effort)
+        let dept_entries = if !settings.gas_webhook_url.trim().is_empty() {
+            match self
+                .sheets_client
+                .fetch_departments_via_gas(
+                    &settings.gas_webhook_url,
+                    &settings.gas_auth_secret,
+                    &settings.google_sheets_id,
+                    &settings.google_sheets_dept_tab_name,
+                )
+                .await
+            {
+                Ok(list) => Some(list),
+                Err(e) => {
+                    warn!("GAS department CC sync notice: {}", e);
+                    None
+                }
+            }
+        } else if !settings.google_sheets_dept_tab_name.trim().is_empty() {
+            let mut token_opt = None;
+            if let Some(ref mut acct) = settings.google_account {
+                if let Ok(tok) = crate::google::auth::GoogleAuthManager::get_valid_access_token(
+                    acct,
+                    &settings.google_oauth_client_id,
+                    &settings.google_oauth_client_secret,
+                )
+                .await
+                {
+                    token_opt = Some(tok);
+                }
+            }
+            self.sheets_client
+                .fetch_departments(
+                    &settings.google_sheets_id,
+                    &settings.google_sheets_dept_tab_name,
+                    token_opt.as_deref(),
+                )
+                .await
+                .ok()
+        } else {
+            None
+        };
+
+        if let Some(depts) = dept_entries {
+            if let Err(e) = self.db.sync_department_cc_cache(&depts) {
+                warn!("Failed saving department CC cache: {}", e);
+            } else if !depts.is_empty() {
+                info!("Synchronized {} department auto-CC rule(s) from Google Sheets", depts.len());
+                self.ocr_manager.push_log(format!(
+                    "[sheets] Synced {} department CC rule(s) from Google Sheets",
+                    depts.len()
+                ));
+            }
+        }
+
         Ok(entries)
     }
 
@@ -290,6 +346,8 @@ impl PipelineCoordinator {
                     detected_company_raw: None,
                     matched_company_name: None,
                     matched_email: None,
+                    matched_department: None,
+                    department_cc_emails: None,
                     match_confidence: None,
                     match_category: None,
                     archive_path: None,
@@ -430,6 +488,9 @@ impl PipelineCoordinator {
         let mut primary_digital_po_candidates = Vec::new();
         let mut primary_po_ocr_candidates = Vec::new();
         let mut supporting_doc_candidates = Vec::new();
+        let mut primary_digital_po_depts: Vec<String> = Vec::new();
+        let mut primary_po_ocr_depts: Vec<String> = Vec::new();
+        let mut supporting_doc_depts: Vec<String> = Vec::new();
         let mut all_po_numbers = Vec::new();
         let mut all_extracted_emails: Vec<String> = Vec::new();
         let mut all_tax_ids: Vec<String> = Vec::new();
@@ -524,6 +585,22 @@ impl PipelineCoordinator {
                                         primary_po_ocr_candidates.push(c);
                                     } else {
                                         supporting_doc_candidates.push(c);
+                                    }
+                                }
+                            }
+                            for dept in page.parsed.departments {
+                                let d_clean = dept.trim().to_string();
+                                if !d_clean.is_empty() {
+                                    if looks_like_po_page && is_native_pdf {
+                                        if !primary_digital_po_depts.contains(&d_clean) {
+                                            primary_digital_po_depts.push(d_clean);
+                                        }
+                                    } else if looks_like_po_page {
+                                        if !primary_po_ocr_depts.contains(&d_clean) {
+                                            primary_po_ocr_depts.push(d_clean);
+                                        }
+                                    } else if !supporting_doc_depts.contains(&d_clean) {
+                                        supporting_doc_depts.push(d_clean);
                                     }
                                 }
                             }
@@ -674,6 +751,39 @@ impl PipelineCoordinator {
             job.matched_email = Some(comp.email.clone());
         } else if settings.allow_pdf_email_fallback && !all_extracted_emails.is_empty() {
             job.matched_email = Some(all_extracted_emails[0].clone());
+        }
+
+        // Match extracted requesting department (e.g. "แผนก / Dept. -> ฝ่ายขายในประเทศ") against Sheet Department CC cache
+        let dept_directory = self.db.get_department_cc_cache().unwrap_or_default();
+        let dept_candidates: Vec<String> = if !primary_digital_po_depts.is_empty() {
+            primary_digital_po_depts.clone()
+        } else if !primary_po_ocr_depts.is_empty() {
+            primary_po_ocr_depts.clone()
+        } else {
+            supporting_doc_depts.clone()
+        };
+        let (matched_dept, dept_cc_emails) =
+            CompanyMatcher::match_department_cc(&dept_candidates, &dept_directory);
+        if let Some(ref dept_name) = matched_dept {
+            self.ocr_manager.push_log(format!(
+                "[dept-cc] PO {} matched requesting department '{}' -> Auto-CC: {}",
+                resolved_po, dept_name, dept_cc_emails
+            ));
+            self.db
+                .add_event(
+                    Some(&job_id),
+                    "info",
+                    &format!("Matched department '{}' -> Auto-CC: {}", dept_name, dept_cc_emails),
+                )
+                .ok();
+            job.matched_department = Some(dept_name.clone());
+            job.department_cc_emails = Some(dept_cc_emails);
+        } else if !dept_candidates.is_empty() {
+            job.matched_department = Some(dept_candidates[0].clone());
+            job.department_cc_emails = None;
+        } else {
+            job.matched_department = None;
+            job.department_cc_emails = None;
         }
 
         let auto_send_active = settings.auto_send_email_enabled
@@ -1053,11 +1163,13 @@ impl PipelineCoordinator {
             }
         }
 
-        let raw_cc = match cc_emails_override {
-            Some(ov) => ov.to_string(),
-            None => settings.email_cc_default.clone(),
+        let clean_cc = match cc_emails_override {
+            Some(ov) => EmailDeliveryClient::normalize_cc_list(ov)?,
+            None => EmailDeliveryClient::merge_cc_lists(&[
+                &settings.email_cc_default,
+                job.department_cc_emails.as_deref().unwrap_or(""),
+            ]),
         };
-        let clean_cc = EmailDeliveryClient::normalize_cc_list(&raw_cc)?;
 
         // 7. Stage: Triggering Google Apps Script Delivery
         job.status = "sending_email".to_string();

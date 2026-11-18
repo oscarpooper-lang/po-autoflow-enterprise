@@ -17,6 +17,7 @@ export interface AppSettings {
   google_sheets_id: string;
   google_sheets_tab_name: string;
   google_sheets_ov_tab_name?: string;
+  google_sheets_dept_tab_name?: string;
   google_drive_folder_id: string;
   gas_webhook_url: string;
   gas_auth_secret: string;
@@ -104,6 +105,8 @@ export interface Job {
   detected_company_raw?: string;
   matched_company_name?: string;
   matched_email?: string;
+  matched_department?: string;
+  department_cc_emails?: string;
   match_confidence?: number;
   match_category?: 'verified' | 'high' | 'review' | 'no_match';
   archive_path?: string;
@@ -168,6 +171,13 @@ export interface CompanyCacheEntry {
   tax_id?: string;
   notes?: string;
   vendor_group?: string;
+  synced_at: string;
+}
+
+export interface DepartmentCcEntry {
+  id: string;
+  department_name: string;
+  emails: string;
   synced_at: string;
 }
 

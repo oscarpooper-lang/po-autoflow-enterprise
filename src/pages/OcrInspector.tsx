@@ -28,6 +28,7 @@ import type {
   Job,
   OcrResultRecord,
   CompanyCacheEntry,
+  DepartmentCcEntry,
   CompanyAlias,
   AppSettings,
   PagePreviewResponse,
@@ -41,12 +42,15 @@ import {
   findCompaniesSharingEmail,
   normalizeCompanyKey,
   splitEmailAddresses,
+  matchDepartmentCc,
+  mergeCcLists,
 } from '../utils/supplierMatcher';
 
 interface OcrInspectorProps {
   selectedJobId?: string;
   jobs: Job[];
   companies: CompanyCacheEntry[];
+  departments?: DepartmentCcEntry[];
   aliases?: CompanyAlias[];
   settings?: AppSettings;
   onSelectJob: (id: string) => void;
@@ -124,6 +128,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   selectedJobId,
   jobs = [],
   companies = [],
+  departments = [],
   aliases = [],
   settings,
   onSelectJob,
@@ -244,6 +249,16 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   const currentMatchedName = currentJob?.matched_company_name || '';
   const currentMatchedEmail = currentJob?.matched_email || '';
   const currentPoNumber = currentJob?.po_number || '';
+  const currentJobDept = currentJob?.matched_department || '';
+  const currentJobDeptCc = currentJob?.department_cc_emails || '';
+
+  const deptAutoMatch = useMemo(
+    () => matchDepartmentCc([currentJobDept, ...aggregatedEntities.departments], departments),
+    [currentJobDept, aggregatedEntities.departments, departments]
+  );
+  const resolvedDeptName =
+    deptAutoMatch.departmentName || currentJobDept || aggregatedEntities.departments[0] || '';
+  const resolvedDeptCc = deptAutoMatch.ccEmails || currentJobDeptCc || '';
 
   const matchedSheetEntry = useMemo(
     () =>
@@ -384,7 +399,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     setApproveEmail(
       currentMatchedEmail || autoEntry?.email || aggregatedEntities.emails[0] || ''
     );
-    setApproveCc(settings?.email_cc_default || '');
+    setApproveCc(mergeCcLists([settings?.email_cc_default, resolvedDeptCc]));
     setApprovePo(
       currentPoNumber || aggregatedEntities.poNumbers[0] || currentJobFolder || ''
     );
@@ -399,6 +414,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     aggregatedEntities,
     jobAutoMatch,
     settings?.email_cc_default,
+    resolvedDeptCc,
   ]);
 
   const effectiveCanonical = selectedCanonical || linkedSheetCompany?.company_name || '';
@@ -1420,6 +1436,28 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                     placeholder="yuwanit.n@qtc-energy.com, manager@company.com"
                     className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-2.5 py-2 font-mono"
                   />
+                  {resolvedDeptName && (
+                    <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                      <span className="text-cyan-300">
+                        {tx(lang, 'Dept. in PO:', 'แผนกใน PO:')}{' '}
+                        <strong className="text-cyan-200">{resolvedDeptName}</strong>
+                        {resolvedDeptCc
+                          ? ` → ${resolvedDeptCc}`
+                          : tx(lang, ' (no Sheet CC mapping yet)', ' (ยังไม่พบ CC แผนกใน Sheet)')}
+                      </span>
+                      {resolvedDeptCc && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setApproveCc((prev) => mergeCcLists([prev, resolvedDeptCc]))
+                          }
+                          className="px-2 py-0.5 rounded bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-200"
+                        >
+                          {tx(lang, '+ Add Dept CC', '+ เพิ่ม CC แผนก')}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer select-none">

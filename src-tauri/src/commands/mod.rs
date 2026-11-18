@@ -110,6 +110,11 @@ pub fn get_companies_cache(state: State<'_, AppState>) -> Result<Vec<CompanyCach
 }
 
 #[tauri::command]
+pub fn get_department_cc_cache(state: State<'_, AppState>) -> Result<Vec<DepartmentCcEntry>, String> {
+    state.db.get_department_cc_cache().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn sync_companies_from_sheets(state: State<'_, AppState>) -> Result<usize, String> {
     let entries = state.coordinator.sync_directory_from_google().await?;
     let count = entries.len();
@@ -391,12 +396,14 @@ pub async fn approve_and_send_job(
         .ok_or_else(|| "Job not found".to_string())?;
 
     let settings = state.db.get_settings().map_err(|e| e.to_string())?;
-    let raw_cc = cc_emails
-        .as_deref()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| settings.email_cc_default.clone());
-    let clean_cc = EmailDeliveryClient::normalize_cc_list(&raw_cc)
-        .map_err(|_| format!("Invalid CC email address: '{}'", raw_cc.trim()))?;
+    let clean_cc = match cc_emails.as_deref() {
+        Some(ov) => EmailDeliveryClient::normalize_cc_list(ov)
+            .map_err(|_| format!("Invalid CC email address: '{}'", ov.trim()))?,
+        None => EmailDeliveryClient::merge_cc_lists(&[
+            &settings.email_cc_default,
+            job.department_cc_emails.as_deref().unwrap_or(""),
+        ]),
+    };
 
     let folder_path = state
         .coordinator

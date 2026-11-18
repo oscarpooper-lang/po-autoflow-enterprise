@@ -1370,6 +1370,44 @@ def _find_right_adjacent_box(label_box: Dict[str, Any], all_boxes: List[Dict[str
     return best_val
 
 
+def _find_below_adjacent_box(label_box: Dict[str, Any], all_boxes: List[Dict[str, Any]]) -> Optional[str]:
+    """Finds the table cell box positioned directly below a column header (e.g. 'แผนก / Dept.')."""
+    rect_a = _box_rect(label_box)
+    if not rect_a:
+        return None
+    ax0, ay0, ax1, ay1 = rect_a
+    ax_mid = (ax0 + ax1) / 2.0
+    a_width = max(ax1 - ax0, 20.0)
+    line_h = max(ay1 - ay0, 14.0)
+    max_dy = max(65.0, line_h * 4.5)
+
+    best_val = None
+    best_dy = 1e9
+    for other in all_boxes:
+        if other is label_box:
+            continue
+        rect_b = _box_rect(other)
+        if not rect_b:
+            continue
+        bx0, by0, bx1, by1 = rect_b
+        dy = by0 - ay1
+        if dy < -4.0 or dy > max_dy:
+            continue
+        bx_mid = (bx0 + bx1) / 2.0
+        horiz_overlap = min(ax1, bx1) - max(ax0, bx0)
+        if horiz_overlap >= 4.0 or abs(bx_mid - ax_mid) <= max(60.0, a_width * 0.9):
+            cand = re.sub(r"\s+", " ", other.get("text", "")).strip()
+            if not cand:
+                continue
+            cand_low = cand.lower().strip(":.")
+            if cand_low in ("dept", "dept.", "department", "แผนก"):
+                continue
+            if dy < best_dy:
+                best_dy = dy
+                best_val = cand
+    return best_val
+
+
 def _clean_thai_candidate_tail(candidate: str) -> str:
     """Stops Thai company name before trailing address clauses, invoice metadata, or contact info."""
     # If prefixed with บริษัท / บจก., stop cleanly right after จำกัด (มหาชน) or จำกัด
@@ -1776,10 +1814,94 @@ def parse_supplier_and_po(
     primary_th = next((c["name"] for c in unique_candidates if c["language"] == "th"), None)
     primary_en = next((c["name"] for c in unique_candidates if c["language"] == "en"), None)
 
+    # 5. Requested Department / Section extraction (e.g. AX 2012 PO box: "แผนก\nDept.\nฝ่ายขายในประเทศ")
+    departments: List[str] = []
+
+    def _add_department(raw_dept: Optional[str]) -> None:
+        if not raw_dept:
+            return
+        val = re.sub(r"\s+", " ", raw_dept).strip(" .,:;-/|()")
+        # Stop before adjacent PO column headers if two table cells got merged on one line
+        val = re.split(
+            r"(?i)\s+(?:requisitioner|requester|buyer|purchaser|delivery|date|payment|term|currency|page|tax\s*id|ผู้ขอซื้อ|วันที่|กำหนดส่ง|เงื่อนไข)",
+            val,
+            maxsplit=1,
+        )[0].strip(" .,:;-/|()")
+        if not val or len(val) < 2 or len(val) > 85:
+            return
+        low = val.lower().strip(":.")
+        if low in (
+            "dept", "dept.", "department", "แผนก", "section", "division",
+            "date", "วันที่", "no", "no.", "page", "n/a", "-", "--",
+        ):
+            return
+        if re.fullmatch(r"[\d\s.\-/]+", val):
+            return
+        if val not in departments:
+            departments.append(val)
+
+    # 5a. Spatial block inspection: handles both multiline cell blocks ("แผนก\nDept.\nฝ่ายขายในประเทศ")
+    # and stacked/adjacent table cells ("แผนก / Dept." box directly above value box).
+    for box in boxes:
+        raw_box = str(box.get("text") or "").strip()
+        if not raw_box:
+            continue
+        sub_lines = [re.sub(r"\s+", " ", ln).strip() for ln in raw_box.splitlines() if ln.strip()]
+        box_low = " ".join(sub_lines).lower()
+        has_dept_hdr = any(
+            ln.lower().strip(":.") in ("แผนก", "dept", "dept.", "department", "แผนก / dept", "แผนก/dept")
+            or re.match(r"^(?:แผนก|dept\.?|department)\s*[:：\-]", ln, re.IGNORECASE)
+            for ln in sub_lines
+        )
+        if not has_dept_hdr and not (len(box_low) <= 28 and ("แผนก" in box_low or "dept" in box_low)):
+            continue
+
+        # Check lines inside the same block right after the header
+        found_in_block = False
+        for li, ln in enumerate(sub_lines):
+            m_inline = re.match(r"^(?:แผนก|dept\.?|department)\s*[:：\-]\s*(.+)$", ln, re.IGNORECASE)
+            if m_inline:
+                _add_department(m_inline.group(1))
+                found_in_block = True
+                break
+            if ln.lower().strip(":.") in ("แผนก", "dept", "dept.", "department", "แผนก / dept", "แผนก/dept"):
+                for next_ln in sub_lines[li + 1 :]:
+                    nlow = next_ln.lower().strip(":.")
+                    if nlow in ("dept", "dept.", "department", "แผนก"):
+                        continue
+                    _add_department(next_ln)
+                    found_in_block = True
+                    break
+                if found_in_block:
+                    break
+
+        if not found_in_block:
+            below_val = _find_below_adjacent_box(box, boxes)
+            if below_val:
+                _add_department(below_val)
+            else:
+                right_val = _find_right_adjacent_box(box, boxes)
+                if right_val:
+                    _add_department(right_val)
+
+    # 5b. Line-level fallback on raw text (for DOCX / single-column OCR without bounding boxes)
+    for li, ln in enumerate(lines):
+        m_inline = re.match(r"^(?:แผนก|dept\.?|department)\s*[:：]\s*(.+)$", ln, re.IGNORECASE)
+        if m_inline:
+            _add_department(m_inline.group(1))
+        elif ln.lower().strip(":.") in ("แผนก", "dept", "dept.", "department", "แผนก / dept", "แผนก/dept"):
+            for look_ahead in lines[li + 1 : li + 3]:
+                llow = look_ahead.lower().strip(":.")
+                if llow in ("dept", "dept.", "department", "แผนก"):
+                    continue
+                _add_department(look_ahead)
+                break
+
     return {
         "po_numbers": po_numbers,
         "tax_ids": tax_ids,
         "emails": emails,
+        "departments": departments,
         "supplier_candidates": unique_candidates,
         "primary_supplier": unique_candidates[0]["name"] if unique_candidates else None,
         "primary_confidence": unique_candidates[0]["confidence"] if unique_candidates else 0.0,

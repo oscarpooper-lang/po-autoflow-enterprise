@@ -12,6 +12,7 @@ export interface ParsedEntitiesJson {
   po_numbers?: string[];
   tax_ids?: string[];
   emails?: string[];
+  departments?: string[];
   supplier_candidates?: ParsedCandidateJson[];
   primary_supplier?: string | null;
   primary_confidence?: number;
@@ -23,6 +24,7 @@ export interface OcrSummary {
   primaryTh: string | null;
   primaryEn: string | null;
   emails: string[];
+  departments: string[];
   poNumbers: string[];
   taxIds: string[];
   candidates: ParsedCandidateJson[];
@@ -95,6 +97,8 @@ export function summarizeOcrRecords(
   const primaryPoEn: string[] = [];
   const otherTh: string[] = [];
   const otherEn: string[] = [];
+  const primaryPoDepts: string[] = [];
+  const otherDepts: string[] = [];
   const emails: string[] = [];
   const poNumbers: string[] = [];
   const taxIds: string[] = [];
@@ -117,6 +121,11 @@ export function summarizeOcrRecords(
         if (!targetEn.includes(parsed.primary_supplier_en)) {
           targetEn.push(parsed.primary_supplier_en);
         }
+      }
+      for (const d of parsed.departments || []) {
+        if (!d) continue;
+        const targetDept = isAuthoritativePo ? primaryPoDepts : otherDepts;
+        if (!targetDept.includes(d)) targetDept.push(d);
       }
       for (const e of parsed.emails || []) {
         if (e && !emails.includes(e)) emails.push(e);
@@ -149,11 +158,13 @@ export function summarizeOcrRecords(
     (!hasAnyAuthoritativeName ? otherEn[0] : null) ||
     fallbackParsed?.primary_supplier_en ||
     null;
+  const departments = primaryPoDepts.length > 0 ? primaryPoDepts : otherDepts;
 
   return {
     primaryTh,
     primaryEn,
     emails,
+    departments,
     poNumbers,
     taxIds,
     candidates,

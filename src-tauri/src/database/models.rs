@@ -21,6 +21,8 @@ pub struct AppSettings {
     pub google_sheets_tab_name: String,
     #[serde(default)]
     pub google_sheets_ov_tab_name: String,
+    #[serde(default)]
+    pub google_sheets_dept_tab_name: String,
     pub google_drive_folder_id: String,
     pub gas_webhook_url: String,
     pub gas_auth_secret: String,
@@ -177,6 +179,7 @@ impl Default for AppSettings {
             google_sheets_id: "".to_string(),
             google_sheets_tab_name: "Suppliers".to_string(),
             google_sheets_ov_tab_name: "".to_string(),
+            google_sheets_dept_tab_name: "".to_string(),
             google_drive_folder_id: "".to_string(),
             gas_webhook_url: "".to_string(),
             gas_auth_secret: "po-autoflow-enterprise-secret-key".to_string(),
@@ -247,6 +250,10 @@ pub struct Job {
     pub detected_company_raw: Option<String>,
     pub matched_company_name: Option<String>,
     pub matched_email: Option<String>,
+    #[serde(default)]
+    pub matched_department: Option<String>,
+    #[serde(default)]
+    pub department_cc_emails: Option<String>,
     pub match_confidence: Option<f64>,
     pub match_category: Option<String>,
     pub archive_path: Option<String>,
@@ -316,6 +323,14 @@ pub struct CompanyCacheEntry {
     pub notes: Option<String>,
     #[serde(default)]
     pub vendor_group: Option<String>, // "DV" (Domestic), "OV" (Overseas), or source sheet tab
+    pub synced_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DepartmentCcEntry {
+    pub id: String,
+    pub department_name: String,
+    pub emails: String,
     pub synced_at: String,
 }
 

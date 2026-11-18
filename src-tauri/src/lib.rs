@@ -361,6 +361,7 @@ pub fn run() {
             list_transactions,
             get_ocr_results,
             get_companies_cache,
+            get_department_cc_cache,
             sync_companies_from_sheets,
             add_company_alias,
             delete_company_alias,

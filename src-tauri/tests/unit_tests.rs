@@ -338,6 +338,8 @@ fn test_self_learning_memory_and_ngram_matching() {
         detected_company_raw: Some("ธนาคารกสิกรไทย จำกัด".to_string()),
         matched_company_name: None,
         matched_email: None,
+        matched_department: None,
+        department_cc_emails: None,
         match_confidence: Some(0.0),
         match_category: Some("no_match".to_string()),
         archive_path: None,
@@ -831,6 +833,69 @@ fn test_cc_email_normalization() {
         "yuwanit.n@qtc-energy.com, manager@gmail.com"
     );
     assert!(EmailDeliveryClient::normalize_cc_list("valid@gmail.com, not-an-email").is_err());
+
+    assert_eq!(
+        EmailDeliveryClient::merge_cc_lists(&[
+            "yuwanit.n@qtc-energy.com",
+            "sales@qtc-energy.com, YUWANIT.N@QTC-ENERGY.COM",
+            "supervisor@qtc-energy.com"
+        ]),
+        "yuwanit.n@qtc-energy.com, sales@qtc-energy.com, supervisor@qtc-energy.com"
+    );
+}
+
+#[test]
+fn test_department_cc_sheet_parsing_and_exact_matching() {
+    let matrix = vec![
+        vec!["No.".to_string(), "แผนก".to_string(), "Email".to_string()],
+        vec!["11".to_string(), "ส่วนออกแบบ".to_string(), "design1@qtc-energy.com".to_string()],
+        vec![
+            "17".to_string(),
+            "ส่วนออกแบบ".to_string(),
+            "design2@qtc-energy.com, design1@qtc-energy.com".to_string(),
+        ],
+        vec!["38".to_string(), "ธุรกิจโซล่าร์".to_string(), "solar@qtc-energy.com".to_string()],
+        vec![
+            "37".to_string(),
+            "ส่วนสนับสนุนขายธุรกิจโซล่าร์".to_string(),
+            "solarsupport@qtc-energy.com".to_string(),
+        ],
+        vec![
+            "40".to_string(),
+            "ฝ่ายขายในประเทศ".to_string(),
+            "domsales@qtc-energy.com, manager.dom@qtc-energy.com".to_string(),
+        ],
+        vec!["42".to_string(), "ฝ่ายขายต่างประเทศ".to_string(), "exportsales@qtc-energy.com".to_string()],
+        vec![
+            "45".to_string(),
+            "ฝ่ายคลังสินค้า และ Logistic".to_string(),
+            "wh@qtc-energy.com".to_string(),
+        ],
+    ];
+
+    let depts = app_lib::google::sheets::SheetsClient::parse_department_matrix(matrix).unwrap();
+    // Rows 11 and 17 ('ส่วนออกแบบ') merge cleanly into 1 deduplicated entry
+    assert_eq!(depts.len(), 6);
+    let design = depts.iter().find(|d| d.department_name == "ส่วนออกแบบ").unwrap();
+    assert_eq!(design.emails, "design1@qtc-energy.com, design2@qtc-energy.com");
+
+    // Domestic sales must NEVER confuse with overseas sales
+    let (dom_name, dom_cc) =
+        CompanyMatcher::match_department_cc(&["ฝ่ายขายในประเทศ".to_string()], &depts);
+    assert_eq!(dom_name.as_deref(), Some("ฝ่ายขายในประเทศ"));
+    assert_eq!(dom_cc, "domsales@qtc-energy.com, manager.dom@qtc-energy.com");
+
+    // Longer department phrase ('ส่วนสนับสนุนขายธุรกิจโซล่าร์') wins over shorter ('ธุรกิจโซล่าร์')
+    let (solar_sup_name, solar_sup_cc) =
+        CompanyMatcher::match_department_cc(&["ส่วนสนับสนุนขายธุรกิจโซล่าร์".to_string()], &depts);
+    assert_eq!(solar_sup_name.as_deref(), Some("ส่วนสนับสนุนขายธุรกิจโซล่าร์"));
+    assert_eq!(solar_sup_cc, "solarsupport@qtc-energy.com");
+
+    // Spacing differences around 'และ' match cleanly
+    let (wh_name, wh_cc) =
+        CompanyMatcher::match_department_cc(&["ฝ่ายคลังสินค้าและLogistic".to_string()], &depts);
+    assert_eq!(wh_name.as_deref(), Some("ฝ่ายคลังสินค้า และ Logistic"));
+    assert_eq!(wh_cc, "wh@qtc-energy.com");
 }
 
 

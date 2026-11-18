@@ -21,6 +21,7 @@ import type {
   Job,
   PoTransaction,
   CompanyCacheEntry,
+  DepartmentCcEntry,
   CompanyAlias,
   DashboardStats,
   ApplicationEvent,
@@ -43,6 +44,7 @@ export const App: React.FC = () => {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [transactions, setTransactions] = useState<PoTransaction[]>([]);
   const [companies, setCompanies] = useState<CompanyCacheEntry[]>([]);
+  const [departments, setDepartments] = useState<DepartmentCcEntry[]>([]);
   const [aliases, setAliases] = useState<CompanyAlias[]>([]);
   const [events, setEvents] = useState<ApplicationEvent[]>([]);
   const [googleAccount, setGoogleAccount] = useState<GoogleAccountInfo | null>(null);
@@ -81,6 +83,7 @@ export const App: React.FC = () => {
         api.getRecentEvents(50),
         api.isMonitoringActive(),
         api.getGoogleAccount(),
+        api.getDepartmentCcCache(),
       ]);
 
       if (results[0].status === 'fulfilled' && results[0].value) {
@@ -98,6 +101,7 @@ export const App: React.FC = () => {
       if (results[6].status === 'fulfilled' && results[6].value) setEvents(results[6].value);
       if (results[7].status === 'fulfilled') setIsMonitoringActive(results[7].value);
       if (results[8].status === 'fulfilled') setGoogleAccount(results[8].value);
+      if (results[9].status === 'fulfilled' && results[9].value) setDepartments(results[9].value);
     } catch (e) {
       console.error('Failed to load initial data:', e);
     } finally {
@@ -149,14 +153,22 @@ export const App: React.FC = () => {
     setIsSyncingSheets(true);
     try {
       const syncedCount = await api.syncCompaniesFromSheets();
-      const updated = await api.getCompaniesCache();
-      setCompanies(updated);
+      const [updatedCompanies, updatedDepts] = await Promise.all([
+        api.getCompaniesCache(),
+        api.getDepartmentCcCache(),
+      ]);
+      setCompanies(updatedCompanies);
+      setDepartments(updatedDepts);
+      const deptSuffix =
+        updatedDepts.length > 0
+          ? tx(lang, ` + ${updatedDepts.length} dept CC rule(s)`, ` + กฎ CC ตามแผนก ${updatedDepts.length} แผนก`)
+          : '';
       showToast(
         'success',
         tx(
           lang,
-          `Synced ${syncedCount} supplier(s) from Google Sheets.`,
-          `ซิงก์รายชื่อผู้ขาย ${syncedCount} รายจาก Google Sheets สำเร็จ`
+          `Synced ${syncedCount} supplier(s)${deptSuffix} from Google Sheets.`,
+          `ซิงก์รายชื่อผู้ขาย ${syncedCount} ราย${deptSuffix} จาก Google Sheets สำเร็จ`
         )
       );
     } catch (err: unknown) {
@@ -364,6 +376,7 @@ export const App: React.FC = () => {
                 recentJobs={jobs}
                 recentEvents={events}
                 companies={companies}
+                departments={departments}
                 aliases={aliases}
                 settings={settings}
                 onSaveSettings={handleSaveSettings}
@@ -395,6 +408,7 @@ export const App: React.FC = () => {
                 selectedJobId={selectedJobId}
                 jobs={jobs}
                 companies={companies}
+                departments={departments}
                 aliases={aliases}
                 settings={settings}
                 onSelectJob={setSelectedJobId}
@@ -407,6 +421,7 @@ export const App: React.FC = () => {
             {activeTab === 'directory' && (
               <CompanyDirectory
                 companies={companies}
+                departments={departments}
                 aliases={aliases}
                 onRefreshCompanies={loadInitialData}
                 onSyncSheets={handleSyncSheets}
