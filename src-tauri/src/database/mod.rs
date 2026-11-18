@@ -207,6 +207,12 @@ impl Database {
             );
 
             CREATE INDEX IF NOT EXISTS idx_learning_signal ON learning_memory(signal_type, signal_value);
+
+            CREATE TABLE IF NOT EXISTS ui_state (
+                state_key TEXT PRIMARY KEY,
+                state_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             "#,
         )?;
 
@@ -1558,6 +1564,61 @@ impl Database {
         }
 
         Ok(signals_learned)
+    }
+
+    pub fn get_all_ui_state(&self) -> Result<std::collections::HashMap<String, String>, DbError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT state_key, state_json FROM ui_state")?;
+        let rows = stmt.query_map([], |row| {
+            let k: String = row.get(0)?;
+            let v: String = row.get(1)?;
+            Ok((k, v))
+        })?;
+        let mut map = std::collections::HashMap::new();
+        for r in rows {
+            let (k, v) = r?;
+            map.insert(k, v);
+        }
+        Ok(map)
+    }
+
+    pub fn set_ui_state(&self, key: &str, state_json: &str) -> Result<(), DbError> {
+        let trimmed = key.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            r#"
+            INSERT INTO ui_state (state_key, state_json, updated_at)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(state_key) DO UPDATE SET
+                state_json = excluded.state_json,
+                updated_at = excluded.updated_at
+            "#,
+            params![trimmed, state_json, now],
+        )?;
+        Ok(())
+    }
+
+    /// Removes a PO queue item and its derived OCR/file/event rows while keeping
+    /// historical `po_transactions` records so duplicate-send protection remains intact.
+    pub fn delete_job(&self, job_id: &str) -> Result<Option<Job>, DbError> {
+        let existing = self.get_job(job_id)?;
+        let Some(job) = existing else {
+            return Ok(None);
+        };
+
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM application_events WHERE job_id = ?1", params![job_id])?;
+        tx.execute("DELETE FROM ocr_results WHERE job_id = ?1", params![job_id])?;
+        tx.execute("DELETE FROM processed_files WHERE job_id = ?1", params![job_id])?;
+        tx.execute("DELETE FROM jobs WHERE id = ?1", params![job_id])?;
+        tx.commit()?;
+
+        Ok(Some(job))
     }
 }
 

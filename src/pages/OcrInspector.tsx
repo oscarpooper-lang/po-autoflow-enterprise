@@ -23,6 +23,7 @@ import {
   Loader2,
   ExternalLink,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
 import type {
   Job,
@@ -34,6 +35,8 @@ import type {
   PagePreviewResponse,
 } from '../types';
 import { api } from '../services/tauri';
+import { DeleteQueueModal } from '../components/DeleteQueueModal';
+import { usePersistedState, loadPageState } from '../utils/persistedState';
 import { StatusBadge } from './Overview';
 import { tr, tx, type UiLang } from '../i18n';
 import { summarizeOcrRecords, type ParsedEntitiesJson } from '../utils/ocrRecords';
@@ -56,6 +59,7 @@ interface OcrInspectorProps {
   onSelectJob: (id: string) => void;
   onRefreshData?: () => void;
   onRetryJob?: (jobId: string) => Promise<void> | void;
+  onDeleteJob?: (jobId: string, deleteFiles: boolean) => Promise<void> | void;
   onAskAiAboutJob?: (jobId: string, pageNumber?: number, pageImageDataUrl?: string | null) => void;
   lang?: UiLang;
 }
@@ -135,15 +139,28 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   onSelectJob,
   onRefreshData,
   onRetryJob,
+  onDeleteJob,
   onAskAiAboutJob,
   lang = 'en',
 }) => {
   const [manualJobId, setManualJobId] = useState<string>('');
   const [ocrRecords, setOcrRecords] = useState<OcrResultRecord[]>([]);
   const [currentPageIndex, setCurrentPageIndex] = useState<number>(0);
-  const [zoomLevel, setZoomLevel] = useState<number>(100);
-  const [viewMode, setViewMode] = useState<'visual' | 'text' | 'boxes'>('visual');
-  const [showBoundingBoxes, setShowBoundingBoxes] = useState<boolean>(true);
+  const [pageByJob, setPageByJob] = usePersistedState<Record<string, number>>(
+    'inspector.pageByJob',
+    {}
+  );
+  const [zoomLevel, setZoomLevel] = usePersistedState<number>('inspector.zoomLevel', 100);
+  const [viewMode, setViewMode] = usePersistedState<'visual' | 'text' | 'boxes'>(
+    'inspector.viewMode',
+    'visual'
+  );
+  const [showBoundingBoxes, setShowBoundingBoxes] = usePersistedState<boolean>(
+    'inspector.showBoundingBoxes',
+    true
+  );
+  const [jobToDelete, setJobToDelete] = useState<Job | null>(null);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
   const [hoveredBoxText, setHoveredBoxText] = useState<string | null>(null);
 
   // Live visual preview state
@@ -172,6 +189,16 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   const effectiveJobId = manualJobId || selectedJobId || jobs[0]?.id || '';
   const currentJob = jobs.find((j) => j.id === effectiveJobId) || jobs[0];
 
+  const selectPageIndex = (nextIndex: number) => {
+    const maxIdx = Math.max(0, ocrRecords.length - 1);
+    const clamped = Math.max(0, Math.min(nextIndex, maxIdx));
+    setCurrentPageIndex(clamped);
+    if (effectiveJobId) {
+      const kept = Object.entries(pageByJob).slice(-40);
+      setPageByJob({ ...Object.fromEntries(kept), [effectiveJobId]: clamped });
+    }
+  };
+
   useEffect(() => {
     if (!effectiveJobId) return;
     let cancelled = false;
@@ -179,8 +206,11 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
       .getOcrResults(effectiveJobId)
       .then((records) => {
         if (!cancelled) {
-          setOcrRecords(records || []);
-          setCurrentPageIndex(0);
+          const list = records || [];
+          setOcrRecords(list);
+          const savedIdx =
+            loadPageState<Record<string, number>>('inspector.pageByJob', {})[effectiveJobId] ?? 0;
+          setCurrentPageIndex(Math.min(savedIdx, Math.max(0, list.length - 1)));
         }
       })
       .catch((err) => {
@@ -732,6 +762,17 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
               <span>{tr(lang, 'openIncoming')}</span>
             </button>
           )}
+          {currentJob && onDeleteJob && (
+            <button
+              type="button"
+              onClick={() => setJobToDelete(currentJob)}
+              className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-rose-500/20 border border-zinc-700 hover:border-rose-500/40 text-zinc-300 hover:text-rose-300 text-xs font-medium flex items-center gap-1.5"
+              title={tx(lang, 'Remove PO from queue', 'ลบ PO นี้ออกจากคิว')}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>{tx(lang, 'Remove', 'ลบคิว')}</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -746,7 +787,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                 <button
                   key={rec.id}
                   type="button"
-                  onClick={() => setCurrentPageIndex(idx)}
+                  onClick={() => selectPageIndex(idx)}
                   className={`px-2.5 py-1 rounded-md text-xs font-medium whitespace-nowrap border transition-colors ${
                     idx === currentPageIndex
                       ? 'bg-zinc-800 text-white border-zinc-600'
@@ -1026,7 +1067,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
             <button
               type="button"
               disabled={currentPageIndex === 0}
-              onClick={() => setCurrentPageIndex((i) => Math.max(0, i - 1))}
+              onClick={() => selectPageIndex(currentPageIndex - 1)}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 disabled:opacity-40"
             >
               <ChevronLeft className="w-3.5 h-3.5" />
@@ -1040,7 +1081,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
             <button
               type="button"
               disabled={currentPageIndex >= ocrRecords.length - 1}
-              onClick={() => setCurrentPageIndex((i) => i + 1)}
+              onClick={() => selectPageIndex(currentPageIndex + 1)}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 disabled:opacity-40"
             >
               <span>{tx(lang, 'Next Page', 'หน้าถัดไป')}</span>
@@ -1588,6 +1629,24 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
           </div>
         </div>
       </div>
+
+      <DeleteQueueModal
+        job={jobToDelete}
+        isDeleting={isDeleting}
+        onCancel={() => setJobToDelete(null)}
+        onConfirmDelete={async (jobId, deleteFiles) => {
+          if (!onDeleteJob) return;
+          setIsDeleting(true);
+          try {
+            await onDeleteJob(jobId, deleteFiles);
+            setJobToDelete(null);
+            setManualJobId('');
+          } finally {
+            setIsDeleting(false);
+          }
+        }}
+        lang={lang}
+      />
     </div>
   );
 };

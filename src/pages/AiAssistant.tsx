@@ -27,6 +27,7 @@ import type {
   Job,
 } from '../types';
 import { api } from '../services/tauri';
+import { usePersistedState } from '../utils/persistedState';
 import { StatusBadge } from './Overview';
 import { tx, type UiLang } from '../i18n';
 
@@ -34,9 +35,7 @@ interface AiAssistantProps {
   jobs: Job[];
   companies: CompanyCacheEntry[];
   departments: DepartmentCcEntry[];
-  initialFocusJobId?: string;
-  initialAttachedImage?: string | null;
-  initialAttachedPage?: number;
+  transientAttachedImage?: { jobId: string; dataUrl: string } | null;
   onInspectJob: (jobId: string) => void;
   onNavigateTab: (tab: string) => void;
   lang?: UiLang;
@@ -56,24 +55,30 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
   jobs,
   companies,
   departments,
-  initialFocusJobId = '',
-  initialAttachedImage = null,
-  initialAttachedPage = 1,
+  transientAttachedImage = null,
   onInspectJob,
   onNavigateTab,
   lang = 'en',
 }) => {
   const [status, setStatus] = useState<AiChatStatus | null>(null);
-  const [focusJobId, setFocusJobId] = useState<string>(initialFocusJobId);
-  const [includePageImage, setIncludePageImage] = useState<boolean>(Boolean(initialAttachedImage));
-  const [attachedImageUrl, setAttachedImageUrl] = useState<string | null>(initialAttachedImage);
-  const [attachedPage, setAttachedPage] = useState<number>(initialAttachedPage || 1);
-  const [inputText, setInputText] = useState<string>('');
+  const [focusJobId, setFocusJobId] = usePersistedState<string>('assistant.focusJobId', '');
+  const [includePageImage, setIncludePageImage] = usePersistedState<boolean>(
+    'assistant.includePageImage',
+    false
+  );
+  const [manualImageCleared, setManualImageCleared] = useState<boolean>(false);
+  const [attachedPage, setAttachedPage] = usePersistedState<number>('assistant.attachedPage', 1);
+  const [inputText, setInputText] = usePersistedState<string>('assistant.inputText', '');
   const [isSending, setIsSending] = useState<boolean>(false);
   const [isStoppingServer, setIsStoppingServer] = useState<boolean>(false);
-  const [turns, setTurns] = useState<ConversationTurn[]>([]);
+  const [turns, setTurns] = usePersistedState<ConversationTurn[]>('assistant.turns', []);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const scrollEndRef = useRef<HTMLDivElement | null>(null);
+
+  const attachedImageUrl =
+    !manualImageCleared && transientAttachedImage && transientAttachedImage.jobId === focusJobId
+      ? transientAttachedImage.dataUrl
+      : null;
 
   const loadStatus = async () => {
     try {
@@ -107,8 +112,8 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
 
   const handleSelectFocusJob = (nextJobId: string) => {
     setFocusJobId(nextJobId);
-    // Clear cached image whenever switching PO so backend never sends another PO's screenshot
-    setAttachedImageUrl(null);
+    // Clear cached image whenever switching PO or page so backend never sends another PO's screenshot
+    setManualImageCleared(true);
     setAttachedPage(1);
     if (!nextJobId) {
       setIncludePageImage(false);
@@ -158,7 +163,7 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
       content: t.text,
     }));
 
-    setTurns((prev) => [...prev, userTurn]);
+    setTurns((prev) => [...prev, userTurn].slice(-25));
     setInputText('');
     setIsSending(true);
 
@@ -179,20 +184,18 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
         timestamp: new Date().toLocaleTimeString(),
         response,
       };
-      setTurns((prev) => [...prev, assistantTurn]);
+      setTurns((prev) => [...prev, assistantTurn].slice(-25));
       loadStatus();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setTurns((prev) => [
-        ...prev,
-        {
-          id: `err-${Date.now()}`,
-          role: 'assistant',
-          text: '',
-          error: msg,
-          timestamp: new Date().toLocaleTimeString(),
-        },
-      ]);
+      const errTurn: ConversationTurn = {
+        id: `err-${Date.now()}`,
+        role: 'assistant',
+        text: '',
+        error: msg,
+        timestamp: new Date().toLocaleTimeString(),
+      };
+      setTurns((prev) => [...prev, errTurn].slice(-25));
     } finally {
       setIsSending(false);
     }
@@ -386,7 +389,7 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({
                     onChange={(e) => {
                       const val = Math.max(1, parseInt(e.target.value || '1', 10) || 1);
                       setAttachedPage(val);
-                      setAttachedImageUrl(null);
+                      setManualImageCleared(true);
                     }}
                     className="w-11 bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5 text-center font-mono text-zinc-100"
                   />

@@ -1062,3 +1062,116 @@ fn test_ai_procurement_grounding_retrieval() {
     let by_review = gather_procurement_context(&db, "Find POs needing review", None);
     assert!(by_review.matched_jobs.iter().any(|j| j.id == "job-690123"));
 }
+
+#[test]
+fn test_delete_job_and_ui_state_persistence() {
+    use app_lib::commands::is_safe_managed_dir;
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path().join("PO-AutoFlow");
+    let incoming = root.join("Incoming");
+    let review = root.join("Review");
+    let outside = tmp.path().join("OutsideImportant");
+    std::fs::create_dir_all(incoming.join("PO-DEL-001")).unwrap();
+    std::fs::create_dir_all(&review).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+
+    let mut settings = AppSettings::default();
+    settings.root_dir = root.to_string_lossy().to_string();
+    settings.incoming_dir = incoming.to_string_lossy().to_string();
+    settings.processing_dir = root.join("Processing").to_string_lossy().to_string();
+    settings.review_dir = review.to_string_lossy().to_string();
+    settings.failed_dir = root.join("Failed").to_string_lossy().to_string();
+    settings.sent_dir = root.join("Sent").to_string_lossy().to_string();
+    settings.temp_dir = root.join("Temp").to_string_lossy().to_string();
+    std::fs::create_dir_all(&settings.processing_dir).unwrap();
+    std::fs::create_dir_all(&settings.failed_dir).unwrap();
+    std::fs::create_dir_all(&settings.sent_dir).unwrap();
+    std::fs::create_dir_all(&settings.temp_dir).unwrap();
+
+    // Path safety checks: only direct child subfolders under workflow dirs are removable
+    assert!(is_safe_managed_dir(&incoming.join("PO-DEL-001"), &settings));
+    assert!(!is_safe_managed_dir(&incoming, &settings));
+    assert!(!is_safe_managed_dir(&root, &settings));
+    assert!(!is_safe_managed_dir(&outside, &settings));
+
+    let db = Database::new(tmp.path().join("queue_state.db")).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // 1. UI State persistence
+    db.set_ui_state("app.currentTab", "\"assistant\"").unwrap();
+    db.set_ui_state("inspector.pageByJob", "{\"job-1\":2}").unwrap();
+    db.set_ui_state("app.currentTab", "\"ocr-inspector\"").unwrap();
+    let ui_map = db.get_all_ui_state().unwrap();
+    assert_eq!(ui_map.get("app.currentTab").map(String::as_str), Some("\"ocr-inspector\""));
+    assert_eq!(ui_map.get("inspector.pageByJob").map(String::as_str), Some("{\"job-1\":2}"));
+
+    // 2. Deleting a job cleans cascading tables & events while preserving historical transactions
+    db.insert_job(&Job {
+        id: "job-del-1".to_string(),
+        po_folder_name: "PO-DEL-001".to_string(),
+        source_path: incoming.join("PO-DEL-001").to_string_lossy().to_string(),
+        status: "needs_review".to_string(),
+        stage_message: "Needs review".to_string(),
+        po_number: Some("PO-DEL-001".to_string()),
+        detected_company_raw: Some("Demo Vendor".to_string()),
+        matched_company_name: None,
+        matched_email: None,
+        matched_department: None,
+        department_cc_emails: None,
+        match_confidence: Some(60.0),
+        match_category: Some("review".to_string()),
+        archive_path: None,
+        archive_sha256: None,
+        archive_size_bytes: None,
+        drive_file_id: None,
+        drive_web_link: None,
+        email_transaction_id: None,
+        retry_count: 0,
+        error_details: None,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+        completed_at: None,
+    })
+    .unwrap();
+
+    db.record_ocr_result(&OcrResultRecord {
+        id: "ocr-del-1".to_string(),
+        job_id: "job-del-1".to_string(),
+        file_path: "PO.pdf".to_string(),
+        page_number: 1,
+        raw_text: "test".to_string(),
+        normalized_text: "test".to_string(),
+        confidence: 95.0,
+        engine: "native_pdf".to_string(),
+        bounding_boxes_json: "[]".to_string(),
+        detected_entities_json: "{}".to_string(),
+        created_at: now.clone(),
+    })
+    .unwrap();
+
+    db.add_event(Some("job-del-1"), "info", "Queued for test").unwrap();
+    db.record_transaction(&PoTransaction {
+        id: "tx-keep-1".to_string(),
+        job_id: "job-del-1".to_string(),
+        po_number: "PO-DEL-001".to_string(),
+        folder_fingerprint: "fp-del-1".to_string(),
+        archive_sha256: "sha-del-1".to_string(),
+        company_name: "Demo Vendor".to_string(),
+        recipient_email: "vendor@example.com".to_string(),
+        status: "sent".to_string(),
+        gas_execution_id: None,
+        error_message: None,
+        sent_at: now,
+    })
+    .unwrap();
+
+    let deleted = db.delete_job("job-del-1").unwrap();
+    assert!(deleted.is_some());
+    assert!(db.get_job("job-del-1").unwrap().is_none());
+    assert!(db.get_ocr_results_for_job("job-del-1").unwrap().is_empty());
+    assert!(db.get_recent_events(10).unwrap().is_empty());
+    // Duplicate-send ledger record stays intact!
+    assert_eq!(db.list_transactions(10, 0).unwrap().len(), 1);
+    assert!(db.delete_job("non-existent-id").unwrap().is_none());
+}

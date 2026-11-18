@@ -519,6 +519,29 @@ export const api = {
     }
   },
 
+  deleteJob: async (jobId: string, deleteFiles = true): Promise<void> => {
+    if (isTauriEnvironment()) {
+      return await invoke<void>('delete_job', { jobId, deleteFiles });
+    }
+    const idx = mockJobs.findIndex((j) => j.id === jobId);
+    if (idx >= 0) {
+      mockJobs.splice(idx, 1);
+    }
+  },
+
+  getUiState: async (): Promise<Record<string, string>> => {
+    if (isTauriEnvironment()) {
+      return await invoke<Record<string, string>>('get_ui_state');
+    }
+    return {};
+  },
+
+  saveUiState: async (key: string, valueJson: string): Promise<void> => {
+    if (isTauriEnvironment()) {
+      await invoke<void>('save_ui_state', { key, valueJson });
+    }
+  },
+
   approveAndSendJob: async (
     jobId: string,
     companyName: string,

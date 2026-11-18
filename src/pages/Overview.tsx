@@ -19,6 +19,7 @@ import {
   ExternalLink,
   Eye,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
 import type {
   DashboardStats,
@@ -32,6 +33,8 @@ import type {
   PagePreviewResponse,
 } from '../types';
 import { api } from '../services/tauri';
+import { DeleteQueueModal } from '../components/DeleteQueueModal';
+import { usePersistedState, loadPageState } from '../utils/persistedState';
 import { resolveUiLang, tr, tx, type UiLang } from '../i18n';
 import { summarizeOcrRecords } from '../utils/ocrRecords';
 import {
@@ -55,6 +58,7 @@ interface OverviewProps {
   onNavigateTab: (tab: string) => void;
   onSyncSheets: () => void;
   onRetryJob?: (jobId: string) => Promise<void> | void;
+  onDeleteJob?: (jobId: string, deleteFiles: boolean) => Promise<void> | void;
   onRefreshData?: () => Promise<void> | void;
   isSyncingSheets: boolean;
 }
@@ -78,21 +82,34 @@ export const Overview: React.FC<OverviewProps> = ({
   onNavigateTab,
   onSyncSheets,
   onRetryJob,
+  onDeleteJob,
   onRefreshData,
   isSyncingSheets = false,
 }) => {
   const lang: UiLang = resolveUiLang(settings);
   const incomingDir = settings?.incoming_dir || 'C:\\PO-AutoFlow\\Incoming';
-  const [filterTab, setFilterTab] = useState<'all' | 'needs_review' | 'completed' | 'failed'>('all');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedId, setSelectedId] = useState<string>('');
+  const [filterTab, setFilterTab] = usePersistedState<'all' | 'needs_review' | 'completed' | 'failed'>(
+    'overview.filterTab',
+    'all'
+  );
+  const [searchQuery, setSearchQuery] = usePersistedState('overview.searchQuery', '');
+  const [selectedId, setSelectedId] = usePersistedState<string>('overview.selectedId', '');
   const [isScanning, setIsScanning] = useState(false);
 
   // Selected job preview & send state
   const [ocrRecords, setOcrRecords] = useState<OcrResultRecord[]>([]);
   const [activeDocIndex, setActiveDocIndex] = useState(0);
-  const [viewerMode, setViewerMode] = useState<'visual' | 'text'>('visual');
-  const [previewZoom, setPreviewZoom] = useState(100);
+  const [docIndexByJob, setDocIndexByJob] = usePersistedState<Record<string, number>>(
+    'overview.docIndexByJob',
+    {}
+  );
+  const [viewerMode, setViewerMode] = usePersistedState<'visual' | 'text'>(
+    'overview.viewerMode',
+    'visual'
+  );
+  const [previewZoom, setPreviewZoom] = usePersistedState('overview.previewZoom', 100);
+  const [jobToDelete, setJobToDelete] = useState<Job | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [preview, setPreview] = useState<PagePreviewResponse | null>(null);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -143,8 +160,10 @@ export const Overview: React.FC<OverviewProps> = ({
       .getOcrResults(activeJob.id)
       .then((recs) => {
         if (!cancelled) {
-          setOcrRecords(recs || []);
-          setActiveDocIndex(0);
+          const list = recs || [];
+          setOcrRecords(list);
+          const savedIdx = loadPageState<Record<string, number>>('overview.docIndexByJob', {})[activeJob.id] ?? 0;
+          setActiveDocIndex(Math.min(savedIdx, Math.max(0, list.length - 1)));
         }
       })
       .catch(() => {
@@ -668,36 +687,52 @@ export const Overview: React.FC<OverviewProps> = ({
               filteredJobs.map((job) => {
                 const isSelected = activeJob?.id === job.id;
                 return (
-                  <button
+                  <div
                     key={job.id}
-                    type="button"
-                    onClick={() => setSelectedId(job.id)}
-                    className={`w-full text-left p-4 transition-colors ${
+                    className={`flex items-stretch transition-colors ${
                       isSelected ? 'bg-zinc-800/70' : 'hover:bg-zinc-900/80'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold text-zinc-100 truncate">
-                        {job.po_number || job.po_folder_name}
-                      </span>
-                      <StatusBadge status={job.status} lang={lang} />
-                    </div>
-                    <p className="mt-1 text-xs text-zinc-300 truncate">
-                      {job.matched_company_name ||
-                        job.detected_company_raw ||
-                        tx(lang, 'Detecting supplier...', 'กำลังอ่านชื่อผู้ขาย...')}
-                    </p>
-                    <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-zinc-500">
-                      <span className="truncate font-mono">
-                        {job.matched_email || tx(lang, 'No email yet', 'ยังไม่มีอีเมล')}
-                      </span>
-                      {typeof job.match_confidence === 'number' && (
-                        <span className="font-mono text-zinc-400 shrink-0">
-                          {job.match_confidence.toFixed(0)}%
+                    <button
+                      type="button"
+                      onClick={() => setSelectedId(job.id)}
+                      className="flex-1 min-w-0 text-left p-4 pr-2"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-semibold text-zinc-100 truncate">
+                          {job.po_number || job.po_folder_name}
                         </span>
-                      )}
-                    </div>
-                  </button>
+                        <StatusBadge status={job.status} lang={lang} />
+                      </div>
+                      <p className="mt-1 text-xs text-zinc-300 truncate">
+                        {job.matched_company_name ||
+                          job.detected_company_raw ||
+                          tx(lang, 'Detecting supplier...', 'กำลังอ่านชื่อผู้ขาย...')}
+                      </p>
+                      <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-zinc-500">
+                        <span className="truncate font-mono">
+                          {job.matched_email || tx(lang, 'No email yet', 'ยังไม่มีอีเมล')}
+                        </span>
+                        {typeof job.match_confidence === 'number' && (
+                          <span className="font-mono text-zinc-400 shrink-0">
+                            {job.match_confidence.toFixed(0)}%
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                    {onDeleteJob && (
+                      <div className="flex items-center pr-2.5">
+                        <button
+                          type="button"
+                          onClick={() => setJobToDelete(job)}
+                          title={tx(lang, 'Remove from queue', 'ลบออกจากคิว')}
+                          className="p-2 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 );
               })
             )}
@@ -766,6 +801,16 @@ export const Overview: React.FC<OverviewProps> = ({
                     <Maximize2 className="w-3.5 h-3.5" />
                     <span>{tx(lang, 'Full Viewer', 'มุมมองเต็มจอ')}</span>
                   </button>
+                  {onDeleteJob && (
+                    <button
+                      type="button"
+                      onClick={() => setJobToDelete(activeJob)}
+                      title={tx(lang, 'Remove PO from queue', 'ลบ PO นี้ออกจากคิว')}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-rose-500/20 border border-zinc-700 hover:border-rose-500/40 text-xs font-medium text-zinc-300 hover:text-rose-300 transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -777,7 +822,14 @@ export const Overview: React.FC<OverviewProps> = ({
                       <button
                         key={rec.id}
                         type="button"
-                        onClick={() => setActiveDocIndex(idx)}
+                        onClick={() => {
+                          setActiveDocIndex(idx);
+                          const keptEntries = Object.entries(docIndexByJob).slice(-40);
+                          setDocIndexByJob({
+                            ...Object.fromEntries(keptEntries),
+                            [activeJob.id]: idx,
+                          });
+                        }}
                         className={`px-2.5 py-1 rounded-md text-xs font-medium whitespace-nowrap border transition-colors ${
                           idx === activeDocIndex
                             ? 'bg-zinc-800 text-white border-zinc-600'
@@ -1178,6 +1230,23 @@ export const Overview: React.FC<OverviewProps> = ({
           )}
         </div>
       </div>
+
+      <DeleteQueueModal
+        job={jobToDelete}
+        isDeleting={isDeleting}
+        onCancel={() => setJobToDelete(null)}
+        onConfirmDelete={async (jobId, deleteFiles) => {
+          if (!onDeleteJob) return;
+          setIsDeleting(true);
+          try {
+            await onDeleteJob(jobId, deleteFiles);
+            setJobToDelete(null);
+          } finally {
+            setIsDeleting(false);
+          }
+        }}
+        lang={lang}
+      />
     </div>
   );
 };

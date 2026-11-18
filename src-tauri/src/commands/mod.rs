@@ -3213,6 +3213,173 @@ pub async fn install_github_update(
     }
 }
 
+fn normalize_path_key(p: &std::path::Path) -> String {
+    let canonical = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    canonical
+        .to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
+/// Ensures disk folder deletion only targets an actual child subfolder strictly inside one of the
+/// managed PO workflow directories (`Incoming`, `Processing`, `Review`, `Failed`, `Sent`), never
+/// the managed directory itself or arbitrary filesystem paths.
+pub fn is_safe_managed_dir(candidate: &std::path::Path, settings: &AppSettings) -> bool {
+    if !candidate.exists() || !candidate.is_dir() {
+        return false;
+    }
+    let Some(parent) = candidate.parent() else {
+        return false;
+    };
+    let cand_key = normalize_path_key(candidate);
+    let parent_key = normalize_path_key(parent);
+
+    let managed_roots = [
+        &settings.incoming_dir,
+        &settings.processing_dir,
+        &settings.review_dir,
+        &settings.failed_dir,
+        &settings.sent_dir,
+    ];
+
+    for root in managed_roots {
+        if root.trim().is_empty() {
+            continue;
+        }
+        let root_key = normalize_path_key(std::path::Path::new(root));
+        if cand_key == root_key || root_key.is_empty() {
+            return false;
+        }
+        if parent_key == root_key {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_safe_temp_archive(candidate: &std::path::Path, settings: &AppSettings) -> bool {
+    if !candidate.exists() || !candidate.is_file() {
+        return false;
+    }
+    let is_zip = candidate
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("zip"))
+        .unwrap_or(false);
+    if !is_zip {
+        return false;
+    }
+    let cand_key = normalize_path_key(candidate);
+    [&settings.temp_dir, &settings.root_dir].iter().any(|dir| {
+        if dir.trim().is_empty() {
+            return false;
+        }
+        let dir_key = normalize_path_key(std::path::Path::new(dir));
+        !dir_key.is_empty() && cand_key.starts_with(&(dir_key + "\\"))
+    })
+}
+
+#[tauri::command]
+pub fn get_ui_state(
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    state.db.get_all_ui_state().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_ui_state(
+    state: State<'_, AppState>,
+    key: String,
+    value_json: String,
+) -> Result<(), String> {
+    if key.len() > 160 || value_json.len() > 262_144 {
+        return Err("UI state payload exceeds maximum allowed size".to_string());
+    }
+    state
+        .db
+        .set_ui_state(&key, &value_json)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_job(
+    state: State<'_, AppState>,
+    job_id: String,
+    delete_files: Option<bool>,
+) -> Result<(), String> {
+    let settings = state.db.get_settings().map_err(|e| e.to_string())?;
+    let job = state
+        .db
+        .get_job(&job_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "PO queue item not found".to_string())?;
+
+    let mut folder_candidates = Vec::new();
+    if !job.source_path.trim().is_empty() {
+        folder_candidates.push(PathBuf::from(&job.source_path));
+    }
+    for dir in [
+        &settings.incoming_dir,
+        &settings.processing_dir,
+        &settings.review_dir,
+        &settings.failed_dir,
+        &settings.sent_dir,
+    ] {
+        if !dir.trim().is_empty() && !job.po_folder_name.trim().is_empty() {
+            folder_candidates.push(PathBuf::from(dir).join(&job.po_folder_name));
+        }
+    }
+
+    // Release any in-flight pipeline/watcher locks for all candidate folder paths
+    for cand in &folder_candidates {
+        state.coordinator.release_folder(cand);
+    }
+
+    let should_delete_files = delete_files.unwrap_or(false);
+    let mut removed_paths = Vec::new();
+    if should_delete_files {
+        let mut seen = std::collections::HashSet::new();
+        for cand in folder_candidates {
+            if is_safe_managed_dir(&cand, &settings) {
+                let key = normalize_path_key(&cand);
+                if seen.insert(key) {
+                    if let Err(e) = std::fs::remove_dir_all(&cand) {
+                        tracing::warn!("Could not delete PO folder {:?}: {}", cand, e);
+                    } else {
+                        removed_paths.push(cand.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+        if let Some(ref archive_p) = job.archive_path {
+            let arch_path = PathBuf::from(archive_p);
+            if is_safe_temp_archive(&arch_path, &settings) {
+                std::fs::remove_file(&arch_path).ok();
+            }
+        }
+    }
+
+    state.db.delete_job(&job_id).map_err(|e| e.to_string())?;
+    state
+        .db
+        .add_audit_log(
+            "JOB_DELETED",
+            "QUEUE",
+            "USER",
+            &format!(
+                "Removed PO queue '{}' (folder: {}, deleted_files: {}, removed_dirs: {})",
+                job.po_number.as_deref().unwrap_or(&job.po_folder_name),
+                job.po_folder_name,
+                should_delete_files,
+                removed_paths.len(),
+            ),
+        )
+        .ok();
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn get_ai_chat_status(state: State<'_, AppState>) -> Result<AiChatStatus, String> {
     let settings = state.db.get_settings().map_err(|e| e.to_string())?;

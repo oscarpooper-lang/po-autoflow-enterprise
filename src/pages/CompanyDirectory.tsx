@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { usePersistedState } from '../utils/persistedState';
 import {
   Building2,
   RefreshCw,
@@ -32,9 +33,15 @@ export const CompanyDirectory: React.FC<CompanyDirectoryProps> = ({
   isSyncing,
   lang = 'en',
 }) => {
-  const [activeTab, setActiveTab] = useState<'directory' | 'departments' | 'aliases'>('directory');
-  const [groupFilter, setGroupFilter] = useState<'all' | 'DV' | 'OV'>('all');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [activeTab, setActiveTab] = usePersistedState<'directory' | 'departments' | 'aliases'>(
+    'directory.activeTab',
+    'directory'
+  );
+  const [groupFilter, setGroupFilter] = usePersistedState<'all' | 'DV' | 'OV'>(
+    'directory.groupFilter',
+    'all'
+  );
+  const [searchQuery, setSearchQuery] = usePersistedState('directory.searchQuery', '');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newAlias, setNewAlias] = useState('');
   const [newCanonical, setNewCanonical] = useState(companies[0]?.company_name || '');

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { usePersistedState } from '../utils/persistedState';
 import {
   FileText,
   Search,
@@ -20,8 +21,8 @@ interface TransactionsProps {
 }
 
 export const Transactions: React.FC<TransactionsProps> = ({ transactions = [], lang = 'en' }) => {
-  const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
+  const [searchTerm, setSearchTerm] = usePersistedState('transactions.searchTerm', '');
+  const [statusFilter, setStatusFilter] = usePersistedState('transactions.statusFilter', 'all');
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const filtered = transactions.filter((tx) => {

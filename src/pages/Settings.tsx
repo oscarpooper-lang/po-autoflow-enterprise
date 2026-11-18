@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { usePersistedState } from '../utils/persistedState';
 import {
   Settings as SettingsIcon,
   FolderOpen,
@@ -63,7 +64,7 @@ export const Settings: React.FC<SettingsProps> = ({
   onGoogleLogout,
   isLoggingIn,
 }) => {
-  const [activeTab, setActiveTab] = useState('folders');
+  const [activeTab, setActiveTab] = usePersistedState('settings.activeTab', 'folders');
   const [formData, setFormData] = useState<AppSettings>(initialSettings);
   const [showSecret, setShowSecret] = useState(false);
   const [showCustomOAuth, setShowCustomOAuth] = useState(false);
@@ -87,7 +88,10 @@ export const Settings: React.FC<SettingsProps> = ({
   const [selfTestResult, setSelfTestResult] = useState<OcrSelfTestResult | null>(null);
   const [selfTestError, setSelfTestError] = useState<string | null>(null);
   const [showAdvancedEngine, setShowAdvancedEngine] = useState(false);
-  const [packagePref, setPackagePref] = useState<'auto' | 'msi' | 'nsis'>('auto');
+  const [packagePref, setPackagePref] = usePersistedState<'auto' | 'msi' | 'nsis'>(
+    'settings.packagePref',
+    'auto'
+  );
   const lang: UiLang = resolveUiLang(formData);
 
   const handleInstallOpenThai = async () => {

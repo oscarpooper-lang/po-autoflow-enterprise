@@ -16,6 +16,13 @@ import { DeveloperOptions } from './pages/DeveloperOptions';
 import { ModelBenchmark } from './pages/ModelBenchmark';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { api, defaultSettings } from './services/tauri';
+import {
+  usePersistedState,
+  hydrateUiStateFromBackend,
+  cleanupDeletedJobFromPersistedState,
+  savePageState,
+  notifyPageStateSync,
+} from './utils/persistedState';
 import { resolveUiLang, tr, tx } from './i18n';
 import type {
   AppSettings,
@@ -30,11 +37,12 @@ import type {
 } from './types';
 
 export const App: React.FC = () => {
-  const [currentTab, setCurrentTab] = useState<string>('overview');
-  const [selectedJobId, setSelectedJobId] = useState<string>('');
-  const [assistantFocusJobId, setAssistantFocusJobId] = useState<string>('');
-  const [assistantAttachedImage, setAssistantAttachedImage] = useState<string | null>(null);
-  const [assistantAttachedPage, setAssistantAttachedPage] = useState<number>(1);
+  const [currentTab, setCurrentTab] = usePersistedState<string>('app.currentTab', 'overview');
+  const [selectedJobId, setSelectedJobId] = usePersistedState<string>('app.selectedJobId', '');
+  const [assistantAttachedImage, setAssistantAttachedImage] = useState<{
+    jobId: string;
+    dataUrl: string;
+  } | null>(null);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [stats, setStats] = useState<DashboardStats>({
     total_processed: 0,
@@ -77,6 +85,7 @@ export const App: React.FC = () => {
   const loadInitialData = useCallback(async () => {
     setIsRefreshing(true);
     try {
+      await hydrateUiStateFromBackend();
       const results = await Promise.allSettled([
         api.getSettings(),
         api.getDashboardStats(),
@@ -111,7 +120,7 @@ export const App: React.FC = () => {
     } finally {
       setIsRefreshing(false);
     }
-  }, []);
+  }, [setCurrentTab]);
 
   useEffect(() => {
     loadInitialData();
@@ -266,6 +275,21 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleDeleteJob = async (jobId: string, deleteFiles: boolean) => {
+    await api.deleteJob(jobId, deleteFiles);
+    cleanupDeletedJobFromPersistedState(jobId);
+    if (assistantAttachedImage?.jobId === jobId) {
+      setAssistantAttachedImage(null);
+    }
+    await loadInitialData();
+    showToast(
+      'info',
+      deleteFiles
+        ? tx(lang, 'Removed PO from queue and deleted managed PO folder.', 'ลบคิว PO และลบโฟลเดอร์ไฟล์ PO แล้ว')
+        : tx(lang, 'Removed PO entry from queue.', 'ลบรายการออกจากคิวแล้ว')
+    );
+  };
+
   // Tab Header Titles
   const getTabTitle = () => {
     switch (currentTab) {
@@ -390,6 +414,7 @@ export const App: React.FC = () => {
                 onNavigateTab={setCurrentTab}
                 onSyncSheets={handleSyncSheets}
                 onRetryJob={handleRetryJob}
+                onDeleteJob={handleDeleteJob}
                 onRefreshData={loadInitialData}
                 isSyncingSheets={isSyncingSheets}
               />
@@ -401,6 +426,7 @@ export const App: React.FC = () => {
                 events={events}
                 onSelectJob={handleSelectJobForInspection}
                 onRetryJob={handleRetryJob}
+                onDeleteJob={handleDeleteJob}
                 lang={lang}
               />
             )}
@@ -420,10 +446,15 @@ export const App: React.FC = () => {
                 onSelectJob={setSelectedJobId}
                 onRefreshData={loadInitialData}
                 onRetryJob={handleRetryJob}
+                onDeleteJob={handleDeleteJob}
                 onAskAiAboutJob={(jobId, pageNum, pageImg) => {
-                  setAssistantFocusJobId(jobId);
-                  setAssistantAttachedPage(pageNum || 1);
-                  setAssistantAttachedImage(pageImg || null);
+                  savePageState('assistant.focusJobId', jobId, true);
+                  savePageState('assistant.attachedPage', pageNum || 1, true);
+                  savePageState('assistant.includePageImage', true, true);
+                  notifyPageStateSync('assistant.focusJobId');
+                  notifyPageStateSync('assistant.attachedPage');
+                  notifyPageStateSync('assistant.includePageImage');
+                  setAssistantAttachedImage(pageImg ? { jobId, dataUrl: pageImg } : null);
                   setCurrentTab('assistant');
                 }}
                 lang={lang}
@@ -432,13 +463,10 @@ export const App: React.FC = () => {
 
             {activeTab === 'assistant' && (
               <AiAssistant
-                key={`${assistantFocusJobId}:${assistantAttachedPage}:${assistantAttachedImage ? 'img' : 'noimg'}`}
                 jobs={jobs}
                 companies={companies}
                 departments={departments}
-                initialFocusJobId={assistantFocusJobId}
-                initialAttachedImage={assistantAttachedImage}
-                initialAttachedPage={assistantAttachedPage}
+                transientAttachedImage={assistantAttachedImage}
                 onInspectJob={handleSelectJobForInspection}
                 onNavigateTab={setCurrentTab}
                 lang={lang}

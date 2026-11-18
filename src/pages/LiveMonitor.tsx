@@ -13,10 +13,13 @@ import {
   CloudUpload,
   MailCheck,
   Terminal,
-  AlertTriangle
+  AlertTriangle,
+  Trash2,
 } from 'lucide-react';
 import type { Job, ApplicationEvent } from '../types';
 import { StatusBadge } from './Overview';
+import { DeleteQueueModal } from '../components/DeleteQueueModal';
+import { usePersistedState } from '../utils/persistedState';
 import { api } from '../services/tauri';
 import { tx, type UiLang } from '../i18n';
 
@@ -25,6 +28,7 @@ interface LiveMonitorProps {
   events: ApplicationEvent[];
   onSelectJob: (jobId: string) => void;
   onRetryJob: (jobId: string) => void;
+  onDeleteJob?: (jobId: string, deleteFiles: boolean) => Promise<void> | void;
   lang?: UiLang;
 }
 
@@ -44,11 +48,17 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
   events = [],
   onSelectJob,
   onRetryJob,
+  onDeleteJob,
   lang = 'en',
 }) => {
   const PIPELINE_STAGES = getPipelineStages(lang);
-  const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>('all');
-  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [selectedStatusFilter, setSelectedStatusFilter] = usePersistedState<string>(
+    'liveMonitor.statusFilter',
+    'all'
+  );
+  const [searchQuery, setSearchQuery] = usePersistedState<string>('liveMonitor.searchQuery', '');
+  const [jobToDelete, setJobToDelete] = useState<Job | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const activeJob = jobs.find(
     (j) => j.status !== 'completed' && j.status !== 'failed' && j.status !== 'needs_review'
@@ -299,6 +309,16 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
                           <RotateCw className="w-3 h-3 inline mr-1" /> {tx(lang, 'Retry', 'ทำใหม่')}
                         </button>
                       )}
+                      {onDeleteJob && (
+                        <button
+                          type="button"
+                          onClick={() => setJobToDelete(job)}
+                          title={tx(lang, 'Remove from queue', 'ลบออกจากคิว')}
+                          className="px-2 py-1 rounded bg-zinc-800 hover:bg-rose-500/20 text-zinc-400 hover:text-rose-300 border border-zinc-700 text-[11px]"
+                        >
+                          <Trash2 className="w-3 h-3 inline" />
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))
@@ -359,6 +379,23 @@ export const LiveMonitor: React.FC<LiveMonitorProps> = ({
           )}
         </div>
       </div>
+
+      <DeleteQueueModal
+        job={jobToDelete}
+        isDeleting={isDeleting}
+        onCancel={() => setJobToDelete(null)}
+        onConfirmDelete={async (jobId, deleteFiles) => {
+          if (!onDeleteJob) return;
+          setIsDeleting(true);
+          try {
+            await onDeleteJob(jobId, deleteFiles);
+            setJobToDelete(null);
+          } finally {
+            setIsDeleting(false);
+          }
+        }}
+        lang={lang}
+      />
     </div>
   );
 };

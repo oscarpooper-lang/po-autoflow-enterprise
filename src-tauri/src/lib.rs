@@ -417,7 +417,10 @@ pub fn run() {
             list_benchmark_candidates,
             ask_ai_assistant,
             get_ai_chat_status,
-            stop_ai_chat_server
+            stop_ai_chat_server,
+            delete_job,
+            get_ui_state,
+            save_ui_state
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
