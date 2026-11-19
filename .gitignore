@@ -48,3 +48,6 @@ src-tauri/resources/models/
 !.env.example
 err.log
 out.log
+
+# Local motion-graphic showcase renders & 4K video
+showcase/

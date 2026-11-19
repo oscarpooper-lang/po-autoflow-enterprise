@@ -380,7 +380,7 @@ impl OcrManager {
             "command": "render_preview",
             "file_path": file_path.to_string_lossy(),
             "page_number": page_number,
-            "dpi": 150,
+            "dpi": 180,
         });
 
         let mut req_str = serde_json::to_string(&req)?;

@@ -1,4 +1,4 @@
-import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { api, isTauriEnvironment } from '../services/tauri';
 
 const STORAGE_PREFIX = 'po_autoflow_ui:v1:';
@@ -20,6 +20,8 @@ export function savePageState<T>(key: string, value: T, syncBackend = true): voi
   if (typeof window === 'undefined') return;
   try {
     const json = JSON.stringify(value);
+    const prev = window.localStorage.getItem(STORAGE_PREFIX + key);
+    if (prev === json) return;
     window.localStorage.setItem(STORAGE_PREFIX + key, json);
     if (syncBackend && isTauriEnvironment()) {
       const existing = pendingTimers.get(key);
@@ -47,6 +49,11 @@ export function usePersistedState<T>(
   fallback: T
 ): [T, Dispatch<SetStateAction<T>>] {
   const [state, setState] = useState<T>(() => loadPageState<T>(key, fallback));
+  const fallbackRef = useRef<T>(fallback);
+
+  useEffect(() => {
+    fallbackRef.current = fallback;
+  }, [fallback]);
 
   useEffect(() => {
     savePageState(key, state, true);
@@ -56,12 +63,12 @@ export function usePersistedState<T>(
     const handler = (ev: Event) => {
       const custom = ev as CustomEvent<{ key?: string }>;
       if (custom.detail?.key === key) {
-        setState(loadPageState<T>(key, fallback));
+        setState(loadPageState<T>(key, fallbackRef.current));
       }
     };
     window.addEventListener(SYNC_EVENT, handler);
     return () => window.removeEventListener(SYNC_EVENT, handler);
-  }, [key, fallback]);
+  }, [key]);
 
   return [state, setState];
 }

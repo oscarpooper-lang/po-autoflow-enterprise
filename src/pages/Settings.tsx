@@ -328,9 +328,11 @@ export const Settings: React.FC<SettingsProps> = ({
     return () => clearInterval(timer);
   }, [builtInVision?.download?.active]);
 
-  useEffect(() => {
+  const [prevInitialSettings, setPrevInitialSettings] = useState(initialSettings);
+  if (initialSettings !== prevInitialSettings) {
+    setPrevInitialSettings(initialSettings);
     setFormData(initialSettings);
-  }, [initialSettings]);
+  }
 
   const handleChange = (field: keyof AppSettings, value: any) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
@@ -1182,8 +1184,8 @@ export const Settings: React.FC<SettingsProps> = ({
                           badge: tx(lang, 'Fastest (<0.5s)', 'เร็วสุด (<0.5 วิ)'),
                           summary: tx(
                             lang,
-                            'Digital PDF + OpenThai 2.0 OCR only (200 DPI). Vision AI turned off for maximum speed.',
-                            'อ่าน PDF + OpenThai 2.0 เท่านั้น (200 DPI) ปิด Vision AI เพื่อความเร็วสูงสุด'
+                            'Digital PDF + OpenThai 2.0 OCR (300 DPI, 1600px detector). Vision AI off for speed.',
+                            'อ่าน PDF + OpenThai 2.0 (300 DPI, Detector 1600px) ปิด Vision AI เพื่อความเร็วสูงสุด'
                           ),
                         },
                         {
@@ -1192,8 +1194,8 @@ export const Settings: React.FC<SettingsProps> = ({
                           badge: tx(lang, 'Recommended', 'แนะนำ'),
                           summary: tx(
                             lang,
-                            'Digital PDF + OpenThai 2.0 (300 DPI) + Smart Vision AI helper only when confidence < 85%.',
-                            'อ่าน PDF + OpenThai 2.0 (300 DPI) และเรียก Vision AI ช่วยเฉพาะเมื่อความมั่นใจต่ำกว่า 85%'
+                            'Digital PDF + OpenThai 2.0 Full 400 DPI scale (1920px detector) + Smart Vision AI <85%.',
+                            'อ่าน PDF + OpenThai 2.0 ความละเอียดเต็ม 400 DPI (Detector 1920px) + Vision AI เมื่อมั่นใจ <85%'
                           ),
                         },
                         {
@@ -1202,8 +1204,8 @@ export const Settings: React.FC<SettingsProps> = ({
                           badge: tx(lang, 'Deepest (~10s GPU)', 'ละเอียดสุด (~10 วิ GPU)'),
                           summary: tx(
                             lang,
-                            '400 DPI multi-pass OpenThai 2.0 + Always run Vision AI (Qwen2.5-VL-3B on Vulkan GPU).',
-                            'สแกน OpenThai 2.0 ความละเอียด 400 DPI + รัน Vision AI (Qwen2.5-VL-3B Vulkan GPU) ช่วยตรวจทุกใบ'
+                            'Full 400 DPI OpenThai 2.0 (2560px max-detail detector) + Always run Vulkan Vision AI.',
+                            'สแกน OpenThai 2.0 เต็ม 400 DPI (Detector 2560px) + รัน Vision AI Vulkan GPU ช่วยตรวจทุกใบ'
                           ),
                         },
                       ] as const

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   FolderOpen,
   RefreshCw,
@@ -10,7 +10,6 @@ import {
   FileText,
   CheckCircle2,
   AlertTriangle,
-  Loader2,
   Mail,
   Languages,
   ZoomIn,
@@ -34,9 +33,16 @@ import type {
 } from '../types';
 import { api } from '../services/tauri';
 import { DeleteQueueModal } from '../components/DeleteQueueModal';
+import { DocumentPageViewer } from '../components/DocumentPageViewer';
 import { usePersistedState, loadPageState } from '../utils/persistedState';
 import { resolveUiLang, tr, tx, type UiLang } from '../i18n';
 import { summarizeOcrRecords } from '../utils/ocrRecords';
+import {
+  getCachedPreview,
+  setCachedPreview,
+  makePreviewCacheKey,
+  invalidateJobPreviews,
+} from '../utils/previewCache';
 import {
   matchSupplierAgainstDirectory,
   findCompaniesSharingEmail,
@@ -100,6 +106,7 @@ export const Overview: React.FC<OverviewProps> = ({
 
   // Selected job preview & send state
   const [ocrRecords, setOcrRecords] = useState<OcrResultRecord[]>([]);
+  const [ocrRecordsJobId, setOcrRecordsJobId] = useState<string>('');
   const [activeDocIndex, setActiveDocIndex] = useState(0);
   const [docIndexByJob, setDocIndexByJob] = usePersistedState<Record<string, number>>(
     'overview.docIndexByJob',
@@ -128,6 +135,9 @@ export const Overview: React.FC<OverviewProps> = ({
   const [actionMsg, setActionMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(
     null
   );
+  const isFormDirtyRef = useRef(false);
+  const lastFormJobIdRef = useRef('');
+  const lastFormSigRef = useRef('');
 
   const filteredJobs = useMemo(() => {
     return recentJobs.filter((job) => {
@@ -152,45 +162,93 @@ export const Overview: React.FC<OverviewProps> = ({
     filteredJobs[0] ||
     recentJobs[0];
 
+  const activeJobIdForRecords = activeJob?.id || '';
+
   useEffect(() => {
-    if (!activeJob?.id) {
-      setOcrRecords([]);
-      return;
+    if (!activeJobIdForRecords) {
+      let cancelled = false;
+      queueMicrotask(() => {
+        if (!cancelled) {
+          setOcrRecords([]);
+          setOcrRecordsJobId('');
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
     }
     let cancelled = false;
     api
-      .getOcrResults(activeJob.id)
+      .getOcrResults(activeJobIdForRecords)
       .then((recs) => {
         if (!cancelled) {
           const list = recs || [];
           setOcrRecords(list);
-          const savedIdx = loadPageState<Record<string, number>>('overview.docIndexByJob', {})[activeJob.id] ?? 0;
+          setOcrRecordsJobId(activeJobIdForRecords);
+          const savedIdx = loadPageState<Record<string, number>>('overview.docIndexByJob', {})[activeJobIdForRecords] ?? 0;
           setActiveDocIndex(Math.min(savedIdx, Math.max(0, list.length - 1)));
         }
       })
       .catch(() => {
-        if (!cancelled) setOcrRecords([]);
+        if (!cancelled) {
+          setOcrRecords([]);
+          setOcrRecordsJobId(activeJobIdForRecords);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [activeJob?.id]);
+  }, [activeJobIdForRecords]);
 
-  const currentRecord = ocrRecords[activeDocIndex] || ocrRecords[0];
+  const activeRecords = useMemo(
+    () => (ocrRecordsJobId === activeJobIdForRecords ? ocrRecords : []),
+    [ocrRecordsJobId, activeJobIdForRecords, ocrRecords]
+  );
+  const currentRecord = activeRecords[activeDocIndex] || activeRecords[0];
 
   useEffect(() => {
-    if (!activeJob?.id || !currentRecord?.file_path) {
-      setPreview(null);
-      return;
+    if (!activeJobIdForRecords || ocrRecordsJobId !== activeJobIdForRecords || !currentRecord?.file_path) {
+      let cancelled = false;
+      queueMicrotask(() => {
+        if (!cancelled) {
+          setPreview(null);
+          setPreviewError(null);
+          setIsLoadingPreview(false);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
     }
     let cancelled = false;
-    setIsLoadingPreview(true);
-    setPreviewError(null);
+    const pageNum = currentRecord.page_number || 1;
+    const cacheKey = makePreviewCacheKey(activeJobIdForRecords, currentRecord.file_path, pageNum);
+    const cached = getCachedPreview(cacheKey);
+    if (cached) {
+      queueMicrotask(() => {
+        if (!cancelled) {
+          setPreview(cached);
+          setPreviewError(null);
+          setIsLoadingPreview(false);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setIsLoadingPreview(true);
+        setPreviewError(null);
+      }
+    });
     api
-      .getDocumentPagePreview(activeJob.id, currentRecord.file_path, currentRecord.page_number || 1)
+      .getDocumentPagePreview(activeJobIdForRecords, currentRecord.file_path, pageNum)
       .then((res) => {
         if (cancelled) return;
         if (res.status === 'ok' && res.data_url) {
+          setCachedPreview(cacheKey, res);
           setPreview(res);
         } else {
           setPreview(null);
@@ -208,12 +266,12 @@ export const Overview: React.FC<OverviewProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [activeJob?.id, currentRecord?.id, currentRecord?.file_path, currentRecord?.page_number]);
+  }, [activeJobIdForRecords, ocrRecordsJobId, currentRecord?.id, currentRecord?.file_path, currentRecord?.page_number]);
 
   const activeJobFolderName = activeJob?.po_folder_name || '';
 
   const predictions = useMemo(() => {
-    const summary = summarizeOcrRecords(ocrRecords, activeJobFolderName);
+    const summary = summarizeOcrRecords(activeRecords, activeJobFolderName);
     return {
       primaryTh: summary.primaryTh,
       primaryEn: summary.primaryEn,
@@ -221,17 +279,17 @@ export const Overview: React.FC<OverviewProps> = ({
       departments: summary.departments,
       poNums: summary.poNumbers,
     };
-  }, [ocrRecords, activeJobFolderName]);
+  }, [activeRecords, activeJobFolderName]);
 
   const uniqueFiles = useMemo(() => {
     const map = new Map<string, number>();
-    ocrRecords.forEach((rec, idx) => {
+    activeRecords.forEach((rec, idx) => {
       if (!map.has(rec.file_path)) {
         map.set(rec.file_path, idx);
       }
     });
     return Array.from(map.entries());
-  }, [ocrRecords]);
+  }, [activeRecords]);
 
   const activeJobId = activeJob?.id || '';
   const activeJobCompany = activeJob?.matched_company_name || '';
@@ -281,27 +339,53 @@ export const Overview: React.FC<OverviewProps> = ({
     [approveEmail, activeJobEmail, predictions.emails, companies]
   );
 
+  const activeJobUpdatedAt = activeJob?.updated_at || '';
+
   useEffect(() => {
-    setActionMsg(null);
-    const matchedComp =
-      companies.find(
-        (c) =>
-          Boolean(activeJobCompany) &&
-          (c.company_name === activeJobCompany || c.alternative_name === activeJobCompany)
-      ) || jobAutoMatch.company;
-    const defaultComp =
-      matchedComp?.company_name ||
-      activeJobCompany ||
-      predictions.primaryTh ||
-      predictions.primaryEn ||
-      activeJobDetected ||
-      '';
-    setApproveCompany(defaultComp);
-    setApproveEmail(activeJobEmail || matchedComp?.email || predictions.emails[0] || '');
-    setApproveCc(mergeCcLists([settings?.email_cc_default, resolvedDeptCc]));
-    setApprovePo(activeJobPo || predictions.poNums[0] || activeJobFolder || '');
+    const jobChanged = lastFormJobIdRef.current !== activeJobId;
+    const initSig = `${activeJobId}|${activeJobUpdatedAt}|${ocrRecordsJobId}|${activeRecords.length}|${activeJobCompany}|${activeJobEmail}|${resolvedDeptCc}`;
+    if (!jobChanged && (isFormDirtyRef.current || lastFormSigRef.current === initSig)) {
+      return;
+    }
+
+    lastFormJobIdRef.current = activeJobId;
+    lastFormSigRef.current = initSig;
+    if (jobChanged) {
+      isFormDirtyRef.current = false;
+    }
+
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      if (jobChanged) {
+        setActionMsg(null);
+      }
+      const matchedComp =
+        companies.find(
+          (c) =>
+            Boolean(activeJobCompany) &&
+            (c.company_name === activeJobCompany || c.alternative_name === activeJobCompany)
+        ) || jobAutoMatch.company;
+      const defaultComp =
+        matchedComp?.company_name ||
+        activeJobCompany ||
+        predictions.primaryTh ||
+        predictions.primaryEn ||
+        activeJobDetected ||
+        '';
+      setApproveCompany(defaultComp);
+      setApproveEmail(activeJobEmail || matchedComp?.email || predictions.emails[0] || '');
+      setApproveCc(mergeCcLists([settings?.email_cc_default, resolvedDeptCc]));
+      setApprovePo(activeJobPo || predictions.poNums[0] || activeJobFolder || '');
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [
     activeJobId,
+    activeJobUpdatedAt,
+    ocrRecordsJobId,
+    activeRecords.length,
     activeJobCompany,
     activeJobDetected,
     activeJobEmail,
@@ -319,6 +403,7 @@ export const Overview: React.FC<OverviewProps> = ({
       (c) => c.company_name === compName || c.alternative_name === compName
     );
     if (!found) return;
+    isFormDirtyRef.current = true;
     setApproveCompany(found.company_name);
     if (found.email) {
       setApproveEmail(found.email);
@@ -326,6 +411,7 @@ export const Overview: React.FC<OverviewProps> = ({
   };
 
   const handleDetectedSupplierPillClick = (rawName: string) => {
+    isFormDirtyRef.current = true;
     const matched = matchSupplierAgainstDirectory(
       [rawName],
       [approveEmail, ...predictions.emails],
@@ -343,6 +429,7 @@ export const Overview: React.FC<OverviewProps> = ({
   };
 
   const handleDetectedEmailPillClick = (emailVal: string) => {
+    isFormDirtyRef.current = true;
     setApproveEmail(emailVal);
     const sharing = findCompaniesSharingEmail(emailVal, companies);
     if (sharing.length === 1) {
@@ -361,6 +448,7 @@ export const Overview: React.FC<OverviewProps> = ({
   };
 
   const handleApproveCompanyInput = (val: string) => {
+    isFormDirtyRef.current = true;
     setApproveCompany(val);
     const matched = matchSupplierAgainstDirectory(
       [val],
@@ -379,6 +467,7 @@ export const Overview: React.FC<OverviewProps> = ({
   };
 
   const handleApproveEmailInput = (val: string) => {
+    isFormDirtyRef.current = true;
     setApproveEmail(val);
     const sharing = findCompaniesSharingEmail(val, companies);
     if (sharing.length === 1) {
@@ -469,10 +558,14 @@ export const Overview: React.FC<OverviewProps> = ({
     if (!activeJob || !onRetryJob) return;
     setIsRetrying(true);
     setActionMsg(null);
+    invalidateJobPreviews(activeJob.id);
+    isFormDirtyRef.current = false;
+    lastFormSigRef.current = '';
     try {
       await onRetryJob(activeJob.id);
       const recs = await api.getOcrResults(activeJob.id);
       setOcrRecords(recs || []);
+      setOcrRecordsJobId(activeJob.id);
       setActionMsg({
         type: 'info',
         text: tx(lang, 'Re-scanned PO folder and updated supplier match.', 'สแกนโฟลเดอร์ PO และอัปเดตผลจับคู่ผู้ขายใหม่แล้ว'),
@@ -488,10 +581,14 @@ export const Overview: React.FC<OverviewProps> = ({
     if (!activeJob) return;
     setIsDeepScanning(true);
     setActionMsg(null);
+    invalidateJobPreviews(activeJob.id);
+    isFormDirtyRef.current = false;
+    lastFormSigRef.current = '';
     try {
       await api.deepScanJobWithVision(activeJob.id);
       const recs = await api.getOcrResults(activeJob.id);
       setOcrRecords(recs || []);
+      setOcrRecordsJobId(activeJob.id);
       await onRefreshData?.();
       setActionMsg({
         type: 'success',
@@ -823,7 +920,7 @@ export const Overview: React.FC<OverviewProps> = ({
               <div className="p-4 space-y-3 bg-[#09090b]/60">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5 overflow-x-auto">
-                    {ocrRecords.map((rec, idx) => (
+                    {activeRecords.map((rec, idx) => (
                       <button
                         key={rec.id}
                         type="button"
@@ -921,48 +1018,37 @@ export const Overview: React.FC<OverviewProps> = ({
                   </div>
                 </div>
 
-                <div className="h-[380px] rounded-lg border border-zinc-800 bg-zinc-950 overflow-auto p-3">
+                <div className="h-[380px] rounded-lg border border-zinc-800 bg-zinc-950 flex flex-col overflow-hidden">
                   {!currentRecord ? (
-                    <div className="h-full flex flex-col items-center justify-center text-xs text-zinc-500 gap-2">
+                    <div className="h-full flex flex-col items-center justify-center text-xs text-zinc-500 gap-2 p-3">
                       <FileText className="w-7 h-7 text-zinc-700" />
                       <span>{tx(lang, 'No extracted document pages yet. Click Re-Scan above.', 'ยังไม่มีหน้าที่แยกข้อความไว้ กด "สแกนใหม่" ด้านบน')}</span>
                     </div>
                   ) : viewerMode === 'text' ? (
-                    <pre
-                      style={{ fontSize: `${Math.round((12 * previewZoom) / 100)}px` }}
-                      className="font-mono text-zinc-300 whitespace-pre-wrap leading-relaxed select-text"
-                    >
-                      {currentRecord.raw_text || tx(lang, 'No text content', 'ไม่มีข้อความ')}
-                    </pre>
-                  ) : isLoadingPreview ? (
-                    <div className="h-full flex flex-col items-center justify-center text-xs text-zinc-400 gap-2">
-                      <Loader2 className="w-6 h-6 animate-spin text-blue-400" />
-                      <span>{tx(lang, 'Rendering PDF page...', 'กำลังโหลดภาพหน้า PDF...')}</span>
-                    </div>
-                  ) : preview?.data_url ? (
                     <div
-                      className="mx-auto shadow-lg rounded bg-white"
-                      style={{ width: `${previewZoom}%`, minWidth: previewZoom > 100 ? `${previewZoom}%` : undefined }}
+                      style={{ contain: 'layout style paint' }}
+                      className="flex-1 overflow-auto p-3 min-h-0"
                     >
-                      <img
-                        src={preview.data_url}
-                        alt={getBasename(currentRecord.file_path)}
-                        className="w-full h-auto block rounded"
-                      />
-                    </div>
-                  ) : (
-                    <div className="w-full text-left space-y-2 p-2">
-                      {previewError && (
-                        <p className="text-[11px] text-amber-400">
-                          {previewError === '__UNAVAILABLE__'
-                            ? tx(lang, 'Preview not available for this file.', 'ไม่สามารถแสดงพรีวิวของไฟล์นี้ได้')
-                            : previewError}
-                        </p>
-                      )}
-                      <pre className="text-xs font-mono text-zinc-300 whitespace-pre-wrap leading-relaxed">
+                      <pre
+                        style={{ fontSize: `${Math.round((12 * previewZoom) / 100)}px` }}
+                        className="font-mono text-zinc-300 whitespace-pre-wrap leading-relaxed select-text"
+                      >
                         {currentRecord.raw_text || tx(lang, 'No text content', 'ไม่มีข้อความ')}
                       </pre>
                     </div>
+                  ) : (
+                    <DocumentPageViewer
+                      compact
+                      preview={preview}
+                      isLoading={isLoadingPreview}
+                      previewError={previewError}
+                      showBoxes={false}
+                      zoomLevel={previewZoom}
+                      onZoomChange={setPreviewZoom}
+                      fileLabel={getBasename(currentRecord.file_path)}
+                      fallbackText={currentRecord.raw_text || tx(lang, 'No text content', 'ไม่มีข้อความ')}
+                      lang={lang}
+                    />
                   )}
                 </div>
               </div>
@@ -1135,7 +1221,10 @@ export const Overview: React.FC<OverviewProps> = ({
                     <input
                       type="text"
                       value={approvePo}
-                      onChange={(e) => setApprovePo(e.target.value)}
+                      onChange={(e) => {
+                        isFormDirtyRef.current = true;
+                        setApprovePo(e.target.value);
+                      }}
                       placeholder="PO-26004156"
                       className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-blue-500"
                     />
@@ -1148,7 +1237,10 @@ export const Overview: React.FC<OverviewProps> = ({
                     <input
                       type="text"
                       value={approveCc}
-                      onChange={(e) => setApproveCc(e.target.value)}
+                      onChange={(e) => {
+                        isFormDirtyRef.current = true;
+                        setApproveCc(e.target.value);
+                      }}
                       placeholder="yuwanit.n@qtc-energy.com, manager@company.com"
                       className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-blue-500"
                     />

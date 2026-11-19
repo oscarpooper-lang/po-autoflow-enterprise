@@ -1051,12 +1051,115 @@ def _openthaigpt_runtime_backend() -> Optional[str]:
         return None
 
 
-def get_openthaigpt_ocr(root_dir: str = "", relaxed: bool = False):
+def _extract_box_bounds_and_quad(raw_box: Any) -> Optional[tuple]:
+    """Returns (x0, y0, x1, y1, quad_pts) from either a 4-point quad or [x0,y0,x1,y1]."""
+    if not isinstance(raw_box, (list, tuple)) or len(raw_box) < 4:
+        return None
+    if isinstance(raw_box[0], (int, float)):
+        x0, y0, x1, y1 = (
+            float(raw_box[0]),
+            float(raw_box[1]),
+            float(raw_box[2]),
+            float(raw_box[3]),
+        )
+        nx0, nx1 = min(x0, x1), max(x0, x1)
+        ny0, ny1 = min(y0, y1), max(y0, y1)
+        quad = [[nx0, ny0], [nx1, ny0], [nx1, ny1], [nx0, ny1]]
+        return (nx0, ny0, nx1, ny1, quad)
+    if isinstance(raw_box[0], (list, tuple)):
+        pts = [[float(p[0]), float(p[1])] for p in raw_box if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if len(pts) < 4:
+            return None
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        return (min(xs), min(ys), max(xs), max(ys), pts[:4])
+    return None
+
+
+def _unmap_boxes_affine(
+    boxes: List[Dict[str, Any]],
+    forward_M: Optional[np.ndarray],
+    orig_w: float,
+    orig_h: float,
+) -> List[Dict[str, Any]]:
+    """Transforms boxes detected on a deskewed image back onto the original image coordinates."""
+    if forward_M is None or not boxes or orig_w <= 0 or orig_h <= 0:
+        return boxes
+    inv_M = cv2.invertAffineTransform(forward_M)
+    unmapped: List[Dict[str, Any]] = []
+    for item in boxes:
+        copied = dict(item)
+        parsed_box = _extract_box_bounds_and_quad(copied.get("box"))
+        if parsed_box is not None:
+            _, _, _, _, quad = parsed_box
+            pts_np = np.array(quad, dtype=np.float64)
+            ones = np.ones((len(pts_np), 1), dtype=np.float64)
+            transformed = np.hstack([pts_np, ones]) @ inv_M.T
+            copied["box"] = [
+                [
+                    round(float(np.clip(px, 0.0, orig_w)), 2),
+                    round(float(np.clip(py, 0.0, orig_h)), 2),
+                ]
+                for px, py in transformed
+            ]
+        unmapped.append(copied)
+    return unmapped
+
+
+def _normalize_boxes_to_space(
+    boxes: List[Dict[str, Any]],
+    src_w: float,
+    src_h: float,
+    target_w: float,
+    target_h: float,
+) -> List[Dict[str, Any]]:
+    """Scales boxes cleanly into target page space and attaches exact [0..1] norm + space metadata."""
+    if not boxes or src_w <= 0 or src_h <= 0 or target_w <= 0 or target_h <= 0:
+        return boxes
+    sx = float(target_w) / float(src_w)
+    sy = float(target_h) / float(src_h)
+    space_meta = [round(float(target_w), 2), round(float(target_h), 2)]
+    normalized: List[Dict[str, Any]] = []
+    for item in boxes:
+        copied = dict(item)
+        parsed_box = _extract_box_bounds_and_quad(copied.get("box"))
+        if parsed_box is not None:
+            x0, y0, x1, y1, quad = parsed_box
+            cx0 = max(0.0, min(float(src_w), x0))
+            cy0 = max(0.0, min(float(src_h), y0))
+            cx1 = max(0.0, min(float(src_w), x1))
+            cy1 = max(0.0, min(float(src_h), y1))
+            copied["box"] = [
+                [
+                    round(max(0.0, min(float(target_w), px * sx)), 2),
+                    round(max(0.0, min(float(target_h), py * sy)), 2),
+                ]
+                for px, py in quad
+            ]
+            copied["norm"] = [
+                round(cx0 / float(src_w), 5),
+                round(cy0 / float(src_h), 5),
+                round(cx1 / float(src_w), 5),
+                round(cy1 / float(src_h), 5),
+            ]
+            copied["space"] = space_meta
+        normalized.append(copied)
+    return normalized
+
+
+def get_openthaigpt_ocr(
+    root_dir: str = "",
+    relaxed: bool = False,
+    det_limit: int = 1920,
+    v_pad: float = 0.08,
+):
     model_dir = _resolve_openthaigpt_dir(root_dir)
     backend = _openthaigpt_runtime_backend()
     if not model_dir or not backend:
         return None
-    key = (model_dir, bool(relaxed), backend)
+    det_lim_i = int(det_limit)
+    v_pad_f = round(float(v_pad), 3)
+    key = (model_dir, bool(relaxed), backend, det_lim_i, v_pad_f)
     if key in _openthaigpt_cache:
         return _openthaigpt_cache[key]
     try:
@@ -1064,7 +1167,11 @@ def get_openthaigpt_ocr(root_dir: str = "", relaxed: bool = False):
             sys.path.insert(0, model_dir)
         from runtime.line_engine import LineOCR  # type: ignore
 
-        kwargs: Dict[str, Any] = {"threads": 4, "runtime": {"backend": backend}}
+        kwargs: Dict[str, Any] = {
+            "threads": 4,
+            "runtime": {"backend": backend},
+            "det": {"limit": det_lim_i, "v_pad": v_pad_f},
+        }
         if relaxed:
             kwargs["rec"] = {"drop_below": 0.50, "junk_below": 0.65, "junk_invalid": 0.20}
         inst = LineOCR(model_dir, **kwargs)
@@ -1076,8 +1183,14 @@ def get_openthaigpt_ocr(root_dir: str = "", relaxed: bool = False):
         return None
 
 
-def run_openthaigpt_ocr(img_np: np.ndarray, root_dir: str = "", relaxed: bool = False) -> tuple:
-    eng = get_openthaigpt_ocr(root_dir, relaxed=relaxed)
+def run_openthaigpt_ocr(
+    img_np: np.ndarray,
+    root_dir: str = "",
+    relaxed: bool = False,
+    det_limit: int = 1920,
+    v_pad: float = 0.08,
+) -> tuple:
+    eng = get_openthaigpt_ocr(root_dir, relaxed=relaxed, det_limit=det_limit, v_pad=v_pad)
     if eng is None:
         return [], [], 0.0
     res = eng.read(img_np)
@@ -1101,6 +1214,15 @@ def run_openthaigpt_ocr(img_np: np.ndarray, root_dir: str = "", relaxed: bool = 
     return lines, boxes, avg_conf
 
 
+def _openthaigpt_det_params(quality_preset: str) -> tuple:
+    preset = (quality_preset or "balanced").strip().lower()
+    if preset == "fast":
+        return 1600, 0.06
+    if preset == "max_accuracy":
+        return 2560, 0.10
+    return 1920, 0.08
+
+
 def _run_image_ocr_cascade(
     img_np: np.ndarray,
     root_dir: str = "",
@@ -1109,33 +1231,48 @@ def _run_image_ocr_cascade(
 ) -> tuple:
     """Runs offline OCR engines (OpenThai 2.0 OCR-Text -> Tesseract 5 tha+eng -> Windows WinRT)."""
     enhanced_img: Optional[np.ndarray] = None
+    enhanced_matrix: Optional[np.ndarray] = None
+    orig_h, orig_w = img_np.shape[:2]
     is_max = (quality_preset or "balanced").strip().lower() == "max_accuracy"
     pref = (preferred_engine or "auto").strip().lower()
+    ot_det_limit, ot_v_pad = _openthaigpt_det_params(quality_preset)
+
+    def _get_enhanced():
+        nonlocal enhanced_img, enhanced_matrix
+        if enhanced_img is None:
+            enhanced_img, enhanced_matrix = Preprocessor.deskew_and_enhance_with_matrix(img_np)
+        return enhanced_img, enhanced_matrix
 
     def _try_openthaigpt():
-        lines, boxes, conf = run_openthaigpt_ocr(img_np, root_dir, relaxed=False)
+        lines, boxes, conf = run_openthaigpt_ocr(
+            img_np, root_dir, relaxed=False, det_limit=ot_det_limit, v_pad=ot_v_pad
+        )
         if not lines or (is_max and (len(lines) < 4 or conf < 0.85)):
-            r_lines, r_boxes, r_conf = run_openthaigpt_ocr(img_np, root_dir, relaxed=True)
+            r_lines, r_boxes, r_conf = run_openthaigpt_ocr(
+                img_np, root_dir, relaxed=True, det_limit=ot_det_limit, v_pad=ot_v_pad
+            )
             if r_lines and (not lines or len(r_lines) > len(lines)):
                 lines, boxes, conf = r_lines, r_boxes, r_conf
         if not lines or (is_max and len(lines) < 3):
-            nonlocal enhanced_img
-            if enhanced_img is None:
-                enhanced_img = Preprocessor.deskew_and_enhance(img_np)
-            e_lines, e_boxes, e_conf = run_openthaigpt_ocr(enhanced_img, root_dir, relaxed=True)
+            enh, aff_M = _get_enhanced()
+            e_lines, e_boxes, e_conf = run_openthaigpt_ocr(
+                enh, root_dir, relaxed=True, det_limit=ot_det_limit, v_pad=ot_v_pad
+            )
             if e_lines and len(e_lines) > len(lines):
-                lines, boxes, conf = e_lines, e_boxes, e_conf
+                lines = e_lines
+                boxes = _unmap_boxes_affine(e_boxes, aff_M, orig_w, orig_h)
+                conf = e_conf
         return lines, boxes, conf
 
     def _try_tesseract():
         tess_lines, tess_boxes, tess_conf = run_tesseract_ocr(img_np, root_dir)
         if not tess_lines or (is_max and (len(tess_lines) < 4 or tess_conf < 0.72)):
-            nonlocal enhanced_img
-            if enhanced_img is None:
-                enhanced_img = Preprocessor.deskew_and_enhance(img_np)
-            enh_lines, enh_boxes, enh_conf = run_tesseract_ocr(enhanced_img, root_dir)
+            enh, aff_M = _get_enhanced()
+            enh_lines, enh_boxes, enh_conf = run_tesseract_ocr(enh, root_dir)
             if enh_lines and (not tess_lines or len(enh_lines) > len(tess_lines) or enh_conf > tess_conf + 0.03):
-                tess_lines, tess_boxes, tess_conf = enh_lines, enh_boxes, enh_conf
+                tess_lines = enh_lines
+                tess_boxes = _unmap_boxes_affine(enh_boxes, aff_M, orig_w, orig_h)
+                tess_conf = enh_conf
         return tess_lines, tess_boxes, tess_conf
 
     # Honor explicit Tesseract preference if user overrode engine in Advanced settings
@@ -1152,9 +1289,8 @@ def _run_image_ocr_cascade(
     ocr_engine = get_paddle_ocr()
     if ocr_engine is not None:
         try:
-            if enhanced_img is None:
-                enhanced_img = Preprocessor.deskew_and_enhance(img_np)
-            ocr_res = ocr_engine.ocr(enhanced_img, cls=True)
+            enh, aff_M = _get_enhanced()
+            ocr_res = ocr_engine.ocr(enh, cls=True)
             ocr_lines: List[str] = []
             boxes: List[Dict[str, Any]] = []
             total_conf = 0.0
@@ -1171,6 +1307,7 @@ def _run_image_ocr_cascade(
                         "type": "ocr",
                     })
             if ocr_lines:
+                boxes = _unmap_boxes_affine(boxes, aff_M, orig_w, orig_h)
                 return ocr_lines, boxes, (total_conf / len(ocr_lines)), "paddleocr_ppocrv5"
         except Exception as e:
             sys.stderr.write(f"PaddleOCR runtime fallback: {e}\n")
@@ -1243,8 +1380,8 @@ PO_LABELS = [
 
 class Preprocessor:
     @staticmethod
-    def deskew_and_enhance(image_np: np.ndarray) -> np.ndarray:
-        """Auto-rotation/Deskew + CLAHE + Unsharp sharpening."""
+    def deskew_and_enhance_with_matrix(image_np: np.ndarray) -> tuple:
+        """Auto-rotation/Deskew + CLAHE + Unsharp sharpening, returning (image_bgr, affine_2x3)."""
         if len(image_np.shape) == 3:
             gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
         else:
@@ -1255,6 +1392,7 @@ class Preprocessor:
 
         gaussian = cv2.GaussianBlur(enhanced, (0, 0), 2.0)
         sharpened = cv2.addWeighted(enhanced, 1.5, gaussian, -0.5, 0)
+        affine_M: Optional[np.ndarray] = None
 
         try:
             _, thresh = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
@@ -1277,75 +1415,101 @@ class Preprocessor:
                         flags=cv2.INTER_CUBIC,
                         borderMode=cv2.BORDER_REPLICATE,
                     )
+                    affine_M = M
         except Exception:
             pass
 
-        return cv2.cvtColor(sharpened, cv2.COLOR_GRAY2BGR)
+        return cv2.cvtColor(sharpened, cv2.COLOR_GRAY2BGR), affine_M
+
+    @staticmethod
+    def deskew_and_enhance(image_np: np.ndarray) -> np.ndarray:
+        """Auto-rotation/Deskew + CLAHE + Unsharp sharpening."""
+        enhanced, _ = Preprocessor.deskew_and_enhance_with_matrix(image_np)
+        return enhanced
 
 
 def extract_native_pdf_text(pdf_path: str) -> List[Dict[str, Any]]:
     """Extract native digital text, repair AX2012/GDI Thai encoding, and order blocks spatially."""
     results = []
     doc = fitz.open(pdf_path)
-    for page_idx in range(len(doc)):
-        page = doc[page_idx]
-        text_blocks = page.get_text("blocks")
+    try:
+        for page_idx in range(len(doc)):
+            page = doc[page_idx]
+            text_blocks = page.get_text("blocks")
+            ox = float(page.rect.x0)
+            oy = float(page.rect.y0)
+            pw = float(page.rect.width) or 1.0
+            ph = float(page.rect.height) or 1.0
 
-        valid_blocks = []
-        for b in text_blocks:
-            # b: (x0, y0, x1, y1, text, block_no, block_type)
-            if len(b) >= 5 and b[4] and b[4].strip():
-                repaired_block_text = repair_thai_encoding(b[4].strip())
-                valid_blocks.append((float(b[0]), float(b[1]), float(b[2]), float(b[3]), repaired_block_text))
+            valid_blocks = []
+            for b in text_blocks:
+                # b: (x0, y0, x1, y1, text, block_no, block_type)
+                if len(b) >= 5 and b[4] and b[4].strip():
+                    repaired_block_text = repair_thai_encoding(b[4].strip())
+                    bx0 = max(0.0, min(pw, float(b[0]) - ox))
+                    by0 = max(0.0, min(ph, float(b[1]) - oy))
+                    bx1 = max(0.0, min(pw, float(b[2]) - ox))
+                    by1 = max(0.0, min(ph, float(b[3]) - oy))
+                    valid_blocks.append((bx0, by0, bx1, by1, repaired_block_text))
 
-        # Sort blocks top-to-bottom (6pt row bucket), left-to-right for true reading order
-        valid_blocks.sort(key=lambda blk: (round(blk[1] / 6.0), blk[0]))
+            # Sort blocks top-to-bottom (6pt row bucket), left-to-right for true reading order
+            valid_blocks.sort(key=lambda blk: (round(blk[1] / 6.0), blk[0]))
 
-        boxes = []
-        ordered_text_parts = []
-        for x0, y0, x1, y1, block_text in valid_blocks:
-            ordered_text_parts.append(block_text)
-            boxes.append({
-                "box": [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
-                "text": block_text,
-                "confidence": 1.0,
-                "type": "native",
+            boxes = []
+            ordered_text_parts = []
+            space_meta = [round(pw, 2), round(ph, 2)]
+            for x0, y0, x1, y1, block_text in valid_blocks:
+                ordered_text_parts.append(block_text)
+                boxes.append({
+                    "box": [[round(x0, 2), round(y0, 2)], [round(x1, 2), round(y0, 2)], [round(x1, 2), round(y1, 2)], [round(x0, 2), round(y1, 2)]],
+                    "norm": [
+                        round(x0 / pw, 5),
+                        round(y0 / ph, 5),
+                        round(x1 / pw, 5),
+                        round(y1 / ph, 5),
+                    ],
+                    "space": space_meta,
+                    "text": block_text,
+                    "confidence": 1.0,
+                    "type": "native",
+                })
+
+            repaired_text = "\n".join(ordered_text_parts) if ordered_text_parts else repair_thai_encoding(page.get_text("text"))
+
+            results.append({
+                "page_number": page_idx + 1,
+                "raw_text": repaired_text,
+                "has_native_text": len(repaired_text.strip()) > 30,
+                "image_count": len(page.get_images()),
+                "boxes": boxes,
+                "width": pw,
+                "height": ph,
             })
-
-        repaired_text = "\n".join(ordered_text_parts) if ordered_text_parts else repair_thai_encoding(page.get_text("text"))
-
-        results.append({
-            "page_number": page_idx + 1,
-            "raw_text": repaired_text,
-            "has_native_text": len(repaired_text.strip()) > 30,
-            "image_count": len(page.get_images()),
-            "boxes": boxes,
-            "width": page.rect.width,
-            "height": page.rect.height,
-        })
-    doc.close()
+    finally:
+        doc.close()
     return results
 
 
-def render_pdf_page_to_image(pdf_path: str, page_number: int, dpi: int = 200) -> np.ndarray:
+def render_pdf_page_to_image(pdf_path: str, page_number: int, dpi: int = 200, doc=None) -> np.ndarray:
     """Renders PDF page to high-res OpenCV BGR image."""
-    doc = fitz.open(pdf_path)
-    page = doc[page_number - 1]
-    zoom = dpi / 72.0
-    mat = fitz.Matrix(zoom, zoom)
-    pix = page.get_pixmap(matrix=mat, alpha=False)
-    img_data = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
-    doc.close()
-    return cv2.cvtColor(img_data, cv2.COLOR_RGB2BGR)
+    local_doc = doc if doc is not None else fitz.open(pdf_path)
+    try:
+        page = local_doc[page_number - 1]
+        zoom = dpi / 72.0
+        mat = fitz.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        img_data = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
+        return cv2.cvtColor(img_data, cv2.COLOR_RGB2BGR)
+    finally:
+        if doc is None:
+            local_doc.close()
 
 
 def _box_rect(box: Dict[str, Any]) -> Optional[tuple]:
-    coords = box.get("box")
-    if not coords or len(coords) < 4:
+    parsed = _extract_box_bounds_and_quad(box.get("box"))
+    if parsed is None:
         return None
-    xs = [float(p[0]) for p in coords]
-    ys = [float(p[1]) for p in coords]
-    return (min(xs), min(ys), max(xs), max(ys))
+    return parsed[:4]
 
 
 def _find_right_adjacent_box(label_box: Dict[str, Any], all_boxes: List[Dict[str, Any]]) -> Optional[str]:
@@ -1992,7 +2156,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
     quality_preset = str(hints.get("ocr_quality_preset") or "balanced").strip().lower()
     if quality_preset not in ("fast", "balanced", "max_accuracy"):
         quality_preset = "balanced"
-    scan_dpi = 200 if quality_preset == "fast" else (400 if quality_preset == "max_accuracy" else 300)
+    scan_dpi = 300 if quality_preset == "fast" else 400
     neg_phrases = [str(x) for x in (hints.get("negative_phrases") or []) if x]
     pref_y_raw = hints.get("preferred_y_band")
     pref_y = float(pref_y_raw) if pref_y_raw is not None else None
@@ -2014,6 +2178,7 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
     vision_ai_error: Optional[str] = None
     vision_ai_duration_ms: Optional[float] = None
     vision_ai_device: Optional[str] = None
+    pdf_doc = None
 
     try:
         if ext == ".pdf":
@@ -2040,13 +2205,22 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 )
 
                 if needs_ocr:
-                    img = render_pdf_page_to_image(file_path, page_num, dpi=scan_dpi)
+                    if pdf_doc is None:
+                        pdf_doc = fitz.open(file_path)
+                    img = render_pdf_page_to_image(file_path, page_num, dpi=scan_dpi, doc=pdf_doc)
                     if page_num == 1:
                         first_page_img = img
                     ocr_lines, ocr_boxes, ocr_conf, ocr_method = _run_image_ocr_cascade(
                         img, root_dir, quality_preset, ocr_engine_primary
                     )
                     if ocr_lines:
+                        ocr_boxes = _normalize_boxes_to_space(
+                            ocr_boxes,
+                            float(img.shape[1]),
+                            float(img.shape[0]),
+                            float(page_info["width"]),
+                            float(page_info["height"]),
+                        )
                         native_clean = raw_text.strip()
                         ocr_joined = "\n".join(ocr_lines)
                         raw_text = f"{ocr_joined}\n{native_clean}" if native_clean else ocr_joined
@@ -2076,6 +2250,13 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
             first_page_img = img
             ocr_lines, boxes, confidence, ocr_method = _run_image_ocr_cascade(
                 img, root_dir, quality_preset, ocr_engine_primary
+            )
+            boxes = _normalize_boxes_to_space(
+                boxes,
+                float(img.shape[1]),
+                float(img.shape[0]),
+                float(img.shape[1]),
+                float(img.shape[0]),
             )
             raw_text = "\n".join(ocr_lines)
             parsed = parse_supplier_and_po(raw_text, boxes, neg_phrases, pref_y)
@@ -2132,7 +2313,9 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
         if needs_vision_fallback:
             if first_page_img is None and ext == ".pdf":
                 try:
-                    first_page_img = render_pdf_page_to_image(file_path, 1, dpi=180)
+                    if pdf_doc is None:
+                        pdf_doc = fitz.open(file_path)
+                    first_page_img = render_pdf_page_to_image(file_path, 1, dpi=180, doc=pdf_doc)
                 except Exception:
                     first_page_img = None
             if first_page_img is not None:
@@ -2185,6 +2368,12 @@ def process_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
             "message": str(e),
             "traceback": traceback.format_exc(),
         }
+    finally:
+        if pdf_doc is not None:
+            try:
+                pdf_doc.close()
+            except Exception:
+                pass
 
 
 def render_preview_request(request: Dict[str, Any]) -> Dict[str, Any]:
@@ -2460,7 +2649,7 @@ def benchmark_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
     if img_300 is None:
         return {"status": "error", "message": f"Failed to decode page image from: {file_path}"}
 
-    # 1b. OpenThai 2.0 OCR-Text (Standard Balanced)
+    # 1b. OpenThai 2.0 OCR-Text (Full 400 DPI Scale — Balanced Default)
     def bench_openthaigpt_strict():
         ot_dir = _resolve_openthaigpt_dir(root_dir)
         backend = _openthaigpt_runtime_backend()
@@ -2468,35 +2657,37 @@ def benchmark_file_request(request: Dict[str, Any]) -> Dict[str, Any]:
             return {"status": "skipped", "note": "OpenThai 2.0 model not downloaded yet (click 'Install OpenThai 2.0' in Settings)."}
         if not backend:
             return {"status": "skipped", "note": "Missing Python runtime (install onnxruntime + pyclipper)."}
-        lines, boxes, conf = run_openthaigpt_ocr(img_300, root_dir, relaxed=False)
+        target_img = img_400 if img_400 is not None else img_300
+        lines, boxes, conf = run_openthaigpt_ocr(target_img, root_dir, relaxed=False, det_limit=1920, v_pad=0.08)
         raw = "\n".join(lines)
         return {
             "status": "ok" if lines else "error",
             "raw_text": raw,
             "confidence": conf,
             "parsed": parse_supplier_and_po(raw, boxes),
-            "note": f"{len(lines)} lines via OpenThai 2.0 ({backend}) • Recommended #1 for Thai+English scans",
+            "note": f"{len(lines)} lines via OpenThai 2.0 ({backend}, 400 DPI full scale, 1920px det) • Recommended #1",
         }
 
-    results.append(_run_bench_step("openthaigpt_strict", "OpenThai 2.0 OCR-Text (Winner — Balanced)", "Scanned OCR", bench_openthaigpt_strict))
+    results.append(_run_bench_step("openthaigpt_strict", "OpenThai 2.0 OCR-Text (400 DPI Full Scale)", "Scanned OCR", bench_openthaigpt_strict))
 
-    # 1c. OpenThai 2.0 OCR-Text (Faint-Scan Boost)
+    # 1c. OpenThai 2.0 OCR-Text (Max-Detail Faint-Scan Boost)
     def bench_openthaigpt_relaxed():
         ot_dir = _resolve_openthaigpt_dir(root_dir)
         backend = _openthaigpt_runtime_backend()
         if not ot_dir or not backend:
             return {"status": "skipped", "note": "Requires OpenThai 2.0 model + onnxruntime/openvino."}
-        lines, boxes, conf = run_openthaigpt_ocr(img_300, root_dir, relaxed=True)
+        target_img = img_400 if img_400 is not None else img_300
+        lines, boxes, conf = run_openthaigpt_ocr(target_img, root_dir, relaxed=True, det_limit=2560, v_pad=0.10)
         raw = "\n".join(lines)
         return {
             "status": "ok" if lines else "error",
             "raw_text": raw,
             "confidence": conf,
             "parsed": parse_supplier_and_po(raw, boxes),
-            "note": f"{len(lines)} lines with relaxed confidence threshold for faint/blurry scans",
+            "note": f"{len(lines)} lines at 400 DPI (2560px det + relaxed threshold) for faint/small Thai marks",
         }
 
-    results.append(_run_bench_step("openthaigpt_relaxed", "OpenThai 2.0 OCR-Text (Faint-Scan Boost)", "Scanned OCR", bench_openthaigpt_relaxed))
+    results.append(_run_bench_step("openthaigpt_relaxed", "OpenThai 2.0 OCR-Text (400 DPI Max-Detail)", "Scanned OCR", bench_openthaigpt_relaxed))
 
     # 2. PaddleOCR PP-OCRv5
     def bench_paddle():

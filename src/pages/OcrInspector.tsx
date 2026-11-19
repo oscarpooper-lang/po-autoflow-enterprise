@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   ZoomIn,
   ZoomOut,
@@ -20,7 +20,6 @@ import {
   FolderOpen,
   Languages,
   Eye,
-  Loader2,
   ExternalLink,
   Sparkles,
   Trash2,
@@ -36,10 +35,21 @@ import type {
 } from '../types';
 import { api } from '../services/tauri';
 import { DeleteQueueModal } from '../components/DeleteQueueModal';
+import { DocumentPageViewer } from '../components/DocumentPageViewer';
 import { usePersistedState, loadPageState } from '../utils/persistedState';
 import { StatusBadge } from './Overview';
 import { tr, tx, type UiLang } from '../i18n';
 import { summarizeOcrRecords, type ParsedEntitiesJson } from '../utils/ocrRecords';
+import {
+  formatBoxCoords,
+  type BoundingBoxRecord,
+} from '../utils/boxGeometry';
+import {
+  getCachedPreview,
+  setCachedPreview,
+  makePreviewCacheKey,
+  invalidateJobPreviews,
+} from '../utils/previewCache';
 import {
   matchSupplierAgainstDirectory,
   findCompaniesSharingEmail,
@@ -64,69 +74,11 @@ interface OcrInspectorProps {
   lang?: UiLang;
 }
 
-interface BoundingBoxRecord {
-  box?: unknown;
-  text?: string;
-  confidence?: number;
-  type?: string;
-}
-
 const getBasename = (pathStr?: string): string => {
   if (!pathStr) return 'Document';
   const normalized = pathStr.replace(/\\/g, '/');
   const idx = normalized.lastIndexOf('/');
   return idx >= 0 ? normalized.slice(idx + 1) : normalized;
-};
-
-const formatBoxCoords = (box: unknown): string => {
-  if (!Array.isArray(box)) return '—';
-  if (box.length === 4 && typeof box[0] === 'number') {
-    return `[${box.map((n) => Math.round(Number(n))).join(', ')}]`;
-  }
-  if (box.length > 0 && Array.isArray(box[0])) {
-    const first = box[0] as number[];
-    const third = (box[2] as number[]) || first;
-    return `[${Math.round(first[0] ?? 0)}, ${Math.round(first[1] ?? 0)} → ${Math.round(third[0] ?? 0)}, ${Math.round(third[1] ?? 0)}]`;
-  }
-  return JSON.stringify(box);
-};
-
-const extractBoxRect = (
-  b: BoundingBoxRecord,
-  pageW: number,
-  pageH: number
-): { left: number; top: number; width: number; height: number } | null => {
-  if (!b.box || pageW <= 0 || pageH <= 0) return null;
-  let x0 = 0;
-  let y0 = 0;
-  let x1 = 0;
-  let y1 = 0;
-
-  if (Array.isArray(b.box) && b.box.length === 4 && typeof b.box[0] === 'number') {
-    [x0, y0, x1, y1] = b.box as number[];
-  } else if (Array.isArray(b.box) && b.box.length >= 4 && Array.isArray(b.box[0])) {
-    const pts = b.box as number[][];
-    const xs = pts.map((p) => Number(p[0] ?? 0));
-    const ys = pts.map((p) => Number(p[1] ?? 0));
-    x0 = Math.min(...xs);
-    y0 = Math.min(...ys);
-    x1 = Math.max(...xs);
-    y1 = Math.max(...ys);
-  } else {
-    return null;
-  }
-
-  const scaleFactor =
-    b.type === 'ocr' && (x1 > pageW * 1.05 || y1 > pageH * 1.05) ? 200 / 72 : 1;
-  const effW = pageW * scaleFactor;
-  const effH = pageH * scaleFactor;
-
-  const left = Math.max(0, Math.min(100, (x0 / effW) * 100));
-  const top = Math.max(0, Math.min(100, (y0 / effH) * 100));
-  const width = Math.max(0.5, Math.min(100 - left, ((x1 - x0) / effW) * 100));
-  const height = Math.max(0.5, Math.min(100 - top, ((y1 - y0) / effH) * 100));
-
-  return { left, top, width, height };
 };
 
 export const OcrInspector: React.FC<OcrInspectorProps> = ({
@@ -145,6 +97,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
 }) => {
   const [manualJobId, setManualJobId] = useState<string>('');
   const [ocrRecords, setOcrRecords] = useState<OcrResultRecord[]>([]);
+  const [ocrRecordsJobId, setOcrRecordsJobId] = useState<string>('');
   const [currentPageIndex, setCurrentPageIndex] = useState<number>(0);
   const [pageByJob, setPageByJob] = usePersistedState<Record<string, number>>(
     'inspector.pageByJob',
@@ -161,7 +114,6 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   );
   const [jobToDelete, setJobToDelete] = useState<Job | null>(null);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
-  const [hoveredBoxText, setHoveredBoxText] = useState<string | null>(null);
 
   // Live visual preview state
   const [pagePreview, setPagePreview] = useState<PagePreviewResponse | null>(null);
@@ -185,6 +137,9 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   const [isDeepScanning, setIsDeepScanning] = useState<boolean>(false);
   const [actionBanner, setActionBanner] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [copiedText, setCopiedText] = useState<boolean>(false);
+  const isFormDirtyRef = useRef<boolean>(false);
+  const lastFormJobIdRef = useRef<string>('');
+  const lastFormSigRef = useRef<string>('');
 
   const effectiveJobId = manualJobId || selectedJobId || jobs[0]?.id || '';
   const currentJob = jobs.find((j) => j.id === effectiveJobId) || jobs[0];
@@ -208,6 +163,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
         if (!cancelled) {
           const list = records || [];
           setOcrRecords(list);
+          setOcrRecordsJobId(effectiveJobId);
           const savedIdx =
             loadPageState<Record<string, number>>('inspector.pageByJob', {})[effectiveJobId] ?? 0;
           setCurrentPageIndex(Math.min(savedIdx, Math.max(0, list.length - 1)));
@@ -215,31 +171,59 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
       })
       .catch((err) => {
         console.error('Failed to load OCR records:', err);
-        if (!cancelled) setOcrRecords([]);
+        if (!cancelled) {
+          setOcrRecords([]);
+          setOcrRecordsJobId(effectiveJobId);
+        }
       });
     return () => {
       cancelled = true;
     };
   }, [effectiveJobId]);
 
-  const currentRecord = ocrRecords[currentPageIndex] || ocrRecords[0];
   const currentJobId = currentJob?.id || '';
+  const activeRecords = useMemo(
+    () => (ocrRecordsJobId === currentJobId ? ocrRecords : []),
+    [ocrRecordsJobId, currentJobId, ocrRecords]
+  );
+  const currentRecord = activeRecords[currentPageIndex] || activeRecords[0];
   const currentRecordId = currentRecord?.id || '';
   const currentRecordFile = currentRecord?.file_path || '';
   const currentRecordPage = currentRecord?.page_number || 1;
 
-  // Fetch rendered visual page preview whenever selected document page changes
+  // Fetch rendered visual page preview (cached LRU) whenever selected document page changes
   useEffect(() => {
-    if (!currentJobId || !currentRecordFile) return;
+    if (!currentJobId || ocrRecordsJobId !== currentJobId || !currentRecordFile) return;
     let cancelled = false;
-    setIsLoadingPreview(true);
-    setPreviewError(null);
+    const cacheKey = makePreviewCacheKey(currentJobId, currentRecordFile, currentRecordPage);
+    const cached = getCachedPreview(cacheKey);
+
+    if (cached) {
+      queueMicrotask(() => {
+        if (!cancelled) {
+          setPagePreview(cached);
+          setPreviewError(null);
+          setIsLoadingPreview(false);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setIsLoadingPreview(true);
+        setPreviewError(null);
+      }
+    });
 
     api
       .getDocumentPagePreview(currentJobId, currentRecordFile, currentRecordPage)
       .then((resp) => {
         if (cancelled) return;
         if (resp.status === 'ok' && resp.data_url) {
+          setCachedPreview(cacheKey, resp);
           setPagePreview(resp);
         } else {
           setPagePreview(null);
@@ -258,7 +242,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [currentJobId, currentRecordId, currentRecordFile, currentRecordPage]);
+  }, [currentJobId, ocrRecordsJobId, currentRecordId, currentRecordFile, currentRecordPage]);
 
   const parsedEntities: ParsedEntitiesJson = useMemo(() => {
     const rawJson = currentRecord?.detected_entities_json;
@@ -273,8 +257,8 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   const currentJobFolder = currentJob?.po_folder_name || '';
 
   const aggregatedEntities = useMemo(
-    () => summarizeOcrRecords(ocrRecords, currentJobFolder, parsedEntities),
-    [ocrRecords, currentJobFolder, parsedEntities]
+    () => summarizeOcrRecords(activeRecords, currentJobFolder, parsedEntities),
+    [activeRecords, currentJobFolder, parsedEntities]
   );
 
   const currentDetectedRaw = currentJob?.detected_company_raw || '';
@@ -315,13 +299,13 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
 
   const uniqueFiles = useMemo(() => {
     const map = new Map<string, number>();
-    ocrRecords.forEach((rec, idx) => {
+    activeRecords.forEach((rec, idx) => {
       if (!map.has(rec.file_path)) {
         map.set(rec.file_path, idx);
       }
     });
     return Array.from(map.entries());
-  }, [ocrRecords]);
+  }, [activeRecords]);
 
   const jobAutoMatch = useMemo(
     () =>
@@ -400,43 +384,69 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     return undefined;
   }, [selectedCanonical, approveCompany, companies, liveSheetMatch]);
 
+  const currentJobUpdatedAt = currentJob?.updated_at || '';
+
   useEffect(() => {
-    setActionBanner(null);
-    const detectedDefault =
-      currentDetectedRaw ||
-      aggregatedEntities.primaryTh ||
-      aggregatedEntities.primaryEn ||
-      '';
-    setAliasInput(detectedDefault);
+    const jobChanged = lastFormJobIdRef.current !== currentJobId;
+    const initSig = `${currentJobId}|${currentJobUpdatedAt}|${ocrRecordsJobId}|${activeRecords.length}|${currentMatchedName}|${currentMatchedEmail}|${resolvedDeptCc}`;
+    if (!jobChanged && (isFormDirtyRef.current || lastFormSigRef.current === initSig)) {
+      return;
+    }
 
-    const backendMatchedEntry = currentMatchedName
-      ? companies.find(
-          (c) =>
-            c.company_name === currentMatchedName || c.alternative_name === currentMatchedName
-        )
-      : undefined;
-    const autoEntry = backendMatchedEntry || jobAutoMatch.company || undefined;
+    lastFormJobIdRef.current = currentJobId;
+    lastFormSigRef.current = initSig;
+    if (jobChanged) {
+      isFormDirtyRef.current = false;
+    }
 
-    setSelectedCanonical(autoEntry?.company_name || '');
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      if (jobChanged) {
+        setActionBanner(null);
+      }
+      const detectedDefault =
+        currentDetectedRaw ||
+        aggregatedEntities.primaryTh ||
+        aggregatedEntities.primaryEn ||
+        '';
+      setAliasInput(detectedDefault);
 
-    const defaultCompany =
-      autoEntry?.company_name ||
-      currentMatchedName ||
-      aggregatedEntities.primaryTh ||
-      aggregatedEntities.primaryEn ||
-      currentDetectedRaw ||
-      '';
-    setApproveCompany(defaultCompany);
+      const backendMatchedEntry = currentMatchedName
+        ? companies.find(
+            (c) =>
+              c.company_name === currentMatchedName || c.alternative_name === currentMatchedName
+          )
+        : undefined;
+      const autoEntry = backendMatchedEntry || jobAutoMatch.company || undefined;
 
-    setApproveEmail(
-      currentMatchedEmail || autoEntry?.email || aggregatedEntities.emails[0] || ''
-    );
-    setApproveCc(mergeCcLists([settings?.email_cc_default, resolvedDeptCc]));
-    setApprovePo(
-      currentPoNumber || aggregatedEntities.poNumbers[0] || currentJobFolder || ''
-    );
+      setSelectedCanonical(autoEntry?.company_name || '');
+
+      const defaultCompany =
+        autoEntry?.company_name ||
+        currentMatchedName ||
+        aggregatedEntities.primaryTh ||
+        aggregatedEntities.primaryEn ||
+        currentDetectedRaw ||
+        '';
+      setApproveCompany(defaultCompany);
+
+      setApproveEmail(
+        currentMatchedEmail || autoEntry?.email || aggregatedEntities.emails[0] || ''
+      );
+      setApproveCc(mergeCcLists([settings?.email_cc_default, resolvedDeptCc]));
+      setApprovePo(
+        currentPoNumber || aggregatedEntities.poNumbers[0] || currentJobFolder || ''
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [
     currentJobId,
+    currentJobUpdatedAt,
+    ocrRecordsJobId,
+    activeRecords.length,
     currentJobFolder,
     currentDetectedRaw,
     currentMatchedName,
@@ -455,6 +465,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     companyName: string,
     opts?: { syncAliasInput?: string }
   ) => {
+    isFormDirtyRef.current = true;
     if (!companyName) {
       setSelectedCanonical('');
       return;
@@ -505,10 +516,14 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     if (!currentJob || !onRetryJob) return;
     setIsRetrying(true);
     setActionBanner(null);
+    invalidateJobPreviews(currentJob.id);
+    isFormDirtyRef.current = false;
+    lastFormSigRef.current = '';
     try {
       await onRetryJob(currentJob.id);
       const records = await api.getOcrResults(currentJob.id);
       setOcrRecords(records || []);
+      setOcrRecordsJobId(currentJob.id);
       setCurrentPageIndex(0);
       setActionBanner({
         type: 'success',
@@ -534,10 +549,14 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     if (!currentJob) return;
     setIsDeepScanning(true);
     setActionBanner(null);
+    invalidateJobPreviews(currentJob.id);
+    isFormDirtyRef.current = false;
+    lastFormSigRef.current = '';
     try {
       await api.deepScanJobWithVision(currentJob.id);
       const records = await api.getOcrResults(currentJob.id);
       setOcrRecords(records || []);
+      setOcrRecordsJobId(currentJob.id);
       setCurrentPageIndex(0);
       setActionBanner({
         type: 'success',
@@ -598,18 +617,21 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     }
   };
 
-  const handleOpenExternal = async (filePath?: string) => {
-    if (!currentJob) return;
-    setActionBanner(null);
-    try {
-      await api.openJobDocument(currentJob.id, filePath);
-    } catch (err: unknown) {
-      setActionBanner({
-        type: 'error',
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-  };
+  const handleOpenExternal = useCallback(
+    async (filePath?: string) => {
+      if (!currentJobId) return;
+      setActionBanner(null);
+      try {
+        await api.openJobDocument(currentJobId, filePath);
+      } catch (err: unknown) {
+        setActionBanner({
+          type: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    [currentJobId]
+  );
 
   const handleCopyRaw = () => {
     if (currentRecord?.raw_text) {
@@ -620,6 +642,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   };
 
   const handleApproveCompanyInput = (val: string) => {
+    isFormDirtyRef.current = true;
     setApproveCompany(val);
     const matched = matchSupplierAgainstDirectory(
       [val],
@@ -641,6 +664,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   };
 
   const handleApproveEmailInput = (val: string) => {
+    isFormDirtyRef.current = true;
     setApproveEmail(val);
     const sharing = findCompaniesSharingEmail(val, companies);
     if (sharing.length === 1) {
@@ -667,6 +691,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   };
 
   const handleAliasInputChange = (val: string) => {
+    isFormDirtyRef.current = true;
     setAliasInput(val);
     const matched = matchSupplierAgainstDirectory(
       [val],
@@ -682,6 +707,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
   const handleDetectedSupplierTextClick = (rawName: string) => {
     const cleaned = rawName.trim();
     if (!cleaned) return;
+    isFormDirtyRef.current = true;
     setAliasInput(cleaned);
     const matched = matchSupplierAgainstDirectory(
       [cleaned],
@@ -700,6 +726,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
     if (!text) return;
     const cleaned = text.trim();
     if (!cleaned) return;
+    isFormDirtyRef.current = true;
     if (cleaned.includes('@') && cleaned.includes('.')) {
       handleApproveEmailInput(cleaned);
     } else if (/^PO[-\s]?\d{4,}/i.test(cleaned)) {
@@ -708,6 +735,21 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
       handleDetectedSupplierTextClick(cleaned);
     }
   };
+
+  const handleBoxClickRef = useRef(handleBoxClick);
+  useEffect(() => {
+    handleBoxClickRef.current = handleBoxClick;
+  });
+
+  const handleBoxClickStable = useCallback((text: string) => {
+    handleBoxClickRef.current(text);
+  }, []);
+  const handleViewTextFallback = useCallback(() => setViewMode('text'), [setViewMode]);
+  const handleOpenCurrentExternal = useCallback(() => {
+    if (currentRecordFile) {
+      void handleOpenExternal(currentRecordFile);
+    }
+  }, [currentRecordFile, handleOpenExternal]);
 
   return (
     <div className="p-6 space-y-4 max-w-7xl mx-auto">
@@ -781,9 +823,9 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
         {/* Left Pane: Fixed-height clean Document Viewport */}
         <div className="lg:col-span-7 bg-[#121215] border border-zinc-800 rounded-xl flex flex-col overflow-hidden h-[720px]">
           {/* Attached Files Tabs */}
-          {ocrRecords.length > 0 && (
+          {activeRecords.length > 0 && (
             <div className="px-3 py-2 bg-zinc-950 border-b border-zinc-800 flex items-center gap-1.5 overflow-x-auto shrink-0">
-              {ocrRecords.map((rec, idx) => (
+              {activeRecords.map((rec, idx) => (
                 <button
                   key={rec.id}
                   type="button"
@@ -904,16 +946,9 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
             </div>
           </div>
 
-          {/* Hovered Bounding Box Hint Bar */}
-          {viewMode === 'visual' && hoveredBoxText && (
-            <div className="px-4 py-1.5 bg-blue-950/80 border-b border-blue-500/30 text-xs text-blue-200 font-mono truncate shrink-0">
-              {tx(lang, 'Click box to fill form:', 'คลิกกรอบนี้เพื่อกรอกลงฟอร์ม:')} {hoveredBoxText}
-            </div>
-          )}
-
           {/* Main Document Scroll Viewport */}
-          <div className="flex-1 overflow-auto bg-[#09090b] p-4 min-h-0">
-            {!currentRecord ? (
+          {!currentRecord ? (
+            <div className="flex-1 overflow-auto bg-[#09090b] p-4 min-h-0">
               <div className="h-full flex flex-col items-center justify-center text-center text-zinc-500 p-8 space-y-3">
                 <FileText className="w-10 h-10 text-zinc-700" />
                 <p className="text-sm font-medium text-zinc-300">
@@ -935,132 +970,83 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                   </button>
                 )}
               </div>
-            ) : viewMode === 'visual' ? (
-              isLoadingPreview ? (
-                <div className="h-full flex flex-col items-center justify-center text-zinc-400 space-y-2">
-                  <Loader2 className="w-7 h-7 animate-spin text-blue-400" />
-                  <span className="text-xs">{tx(lang, 'Rendering page preview...', 'กำลังโหลดภาพหน้าเอกสาร...')}</span>
-                </div>
-              ) : pagePreview?.data_url ? (
-                <div
-                  className="relative mx-auto shadow-2xl border border-zinc-700 rounded bg-white select-none"
-                  style={{ width: `${zoomLevel}%`, minWidth: zoomLevel > 100 ? `${zoomLevel}%` : undefined }}
+            </div>
+          ) : viewMode === 'visual' ? (
+            <DocumentPageViewer
+              preview={pagePreview}
+              isLoading={isLoadingPreview}
+              previewError={previewError}
+              boxes={boxes}
+              showBoxes={showBoundingBoxes}
+              zoomLevel={zoomLevel}
+              onZoomChange={setZoomLevel}
+              fileLabel={getBasename(currentRecord.file_path)}
+              onBoxClick={handleBoxClickStable}
+              onViewTextFallback={handleViewTextFallback}
+              onOpenExternal={handleOpenCurrentExternal}
+              lang={lang}
+            />
+          ) : (
+            <div
+              style={{ contain: 'layout style paint' }}
+              className="flex-1 overflow-auto bg-[#09090b] p-4 min-h-0"
+            >
+              {viewMode === 'text' ? (
+                <pre
+                  style={{ fontSize: `${Math.round((13 * zoomLevel) / 100)}px` }}
+                  className="font-mono leading-relaxed text-zinc-200 whitespace-pre-wrap select-text bg-[#121215] p-4 rounded-lg border border-zinc-800"
                 >
-                  <img
-                    src={pagePreview.data_url}
-                    alt={getBasename(currentRecord.file_path)}
-                    className="w-full h-auto block rounded"
-                  />
-                  {showBoundingBoxes &&
-                    pagePreview.page_width &&
-                    pagePreview.page_height &&
-                    boxes.map((b, idx) => {
-                      const rect = extractBoxRect(
-                        b,
-                        pagePreview.page_width!,
-                        pagePreview.page_height!
-                      );
-                      if (!rect) return null;
-                      return (
-                        <button
-                          key={idx}
-                          type="button"
-                          onMouseEnter={() => setHoveredBoxText(b.text || null)}
-                          onMouseLeave={() => setHoveredBoxText(null)}
-                          onClick={() => handleBoxClick(b.text)}
-                          title={b.text || ''}
-                          style={{
-                            left: `${rect.left}%`,
-                            top: `${rect.top}%`,
-                            width: `${rect.width}%`,
-                            height: `${rect.height}%`,
-                          }}
-                          className="absolute border border-blue-500/60 bg-blue-500/10 hover:bg-emerald-500/25 hover:border-emerald-400 transition-colors cursor-pointer"
-                        />
-                      );
-                    })}
-                </div>
+                  {currentRecord.raw_text || tx(lang, '(No text layer extracted from this page)', '(ไม่พบข้อความที่อ่านได้จากหน้านี้)')}
+                </pre>
               ) : (
-                <div className="p-6 rounded-xl bg-[#121215] border border-zinc-800 text-center space-y-3 max-w-md mx-auto my-8">
-                  <AlertTriangle className="w-8 h-8 text-amber-400 mx-auto" />
-                  <p className="text-xs text-zinc-300 font-medium">
-                    {previewError === '__UNAVAILABLE__'
-                      ? tx(lang, 'Visual preview unavailable for this file.', 'ไม่สามารถแสดงภาพตัวอย่างของไฟล์นี้ได้')
-                      : previewError || tx(lang, 'Could not render live page preview.', 'ไม่สามารถแสดงภาพตัวอย่างของหน้านี้ได้')}
-                  </p>
-                  <div className="flex justify-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setViewMode('text')}
-                      className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium"
-                    >
-                      {tx(lang, 'View Extracted Text', 'ดูข้อความที่อ่านได้')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleOpenExternal(currentRecord.file_path)}
-                      className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium"
-                    >
-                      {tx(lang, 'Open PDF Externally', 'เปิด PDF ภายนอก')}
-                    </button>
-                  </div>
-                </div>
-              )
-            ) : viewMode === 'text' ? (
-              <pre
-                style={{ fontSize: `${Math.round((13 * zoomLevel) / 100)}px` }}
-                className="font-mono leading-relaxed text-zinc-200 whitespace-pre-wrap select-text bg-[#121215] p-4 rounded-lg border border-zinc-800"
-              >
-                {currentRecord.raw_text || tx(lang, '(No text layer extracted from this page)', '(ไม่พบข้อความที่อ่านได้จากหน้านี้)')}
-              </pre>
-            ) : (
-              <div className="rounded-lg border border-zinc-800 overflow-hidden bg-[#121215]">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-zinc-900 text-zinc-400 border-b border-zinc-800">
-                    <tr>
-                      <th className="py-2 px-3">#</th>
-                      <th className="py-2 px-3">{tx(lang, 'Detected Text', 'ข้อความที่ตรวจพบ')}</th>
-                      <th className="py-2 px-3">{tx(lang, 'Type', 'ประเภท')}</th>
-                      <th className="py-2 px-3">{tx(lang, 'Confidence', 'ความมั่นใจ')}</th>
-                      <th className="py-2 px-3">{tx(lang, 'Coordinates', 'พิกัด')}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-zinc-800/70">
-                    {boxes.length === 0 ? (
+                <div className="rounded-lg border border-zinc-800 overflow-hidden bg-[#121215]">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-zinc-900 text-zinc-400 border-b border-zinc-800">
                       <tr>
-                        <td colSpan={5} className="py-8 text-center text-zinc-500">
-                          {tx(lang, 'No bounding boxes stored for this page.', 'ไม่มีข้อมูลตำแหน่งกรอบข้อความในหน้านี้')}
-                        </td>
+                        <th className="py-2 px-3">#</th>
+                        <th className="py-2 px-3">{tx(lang, 'Detected Text', 'ข้อความที่ตรวจพบ')}</th>
+                        <th className="py-2 px-3">{tx(lang, 'Type', 'ประเภท')}</th>
+                        <th className="py-2 px-3">{tx(lang, 'Confidence', 'ความมั่นใจ')}</th>
+                        <th className="py-2 px-3">{tx(lang, 'Coordinates', 'พิกัด')}</th>
                       </tr>
-                    ) : (
-                      boxes.map((b, idx) => (
-                        <tr
-                          key={idx}
-                          onClick={() => handleBoxClick(b.text)}
-                          className="hover:bg-zinc-800/50 cursor-pointer"
-                          title={tx(lang, 'Click row to copy into form', 'คลิกแถวเพื่อเติมลงฟอร์ม')}
-                        >
-                          <td className="py-2 px-3 font-mono text-zinc-500">{idx + 1}</td>
-                          <td className="py-2 px-3 text-zinc-200 font-medium">{b.text || '—'}</td>
-                          <td className="py-2 px-3 font-mono text-[11px] text-blue-400">
-                            {b.type || 'block'}
-                          </td>
-                          <td className="py-2 px-3 font-mono text-[11px] text-emerald-400">
-                            {typeof b.confidence === 'number'
-                              ? `${(b.confidence <= 1 ? b.confidence * 100 : b.confidence).toFixed(1)}%`
-                              : '—'}
-                          </td>
-                          <td className="py-2 px-3 font-mono text-[11px] text-zinc-400">
-                            {formatBoxCoords(b.box)}
+                    </thead>
+                    <tbody className="divide-y divide-zinc-800/70">
+                      {boxes.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="py-8 text-center text-zinc-500">
+                            {tx(lang, 'No bounding boxes stored for this page.', 'ไม่มีข้อมูลตำแหน่งกรอบข้อความในหน้านี้')}
                           </td>
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+                      ) : (
+                        boxes.map((b, idx) => (
+                          <tr
+                            key={idx}
+                            onClick={() => handleBoxClick(b.text)}
+                            className="hover:bg-zinc-800/50 cursor-pointer"
+                            title={tx(lang, 'Click row to copy into form', 'คลิกแถวเพื่อเติมลงฟอร์ม')}
+                          >
+                            <td className="py-2 px-3 font-mono text-zinc-500">{idx + 1}</td>
+                            <td className="py-2 px-3 text-zinc-200 font-medium">{b.text || '—'}</td>
+                            <td className="py-2 px-3 font-mono text-[11px] text-blue-400">
+                              {b.type || 'block'}
+                            </td>
+                            <td className="py-2 px-3 font-mono text-[11px] text-emerald-400">
+                              {typeof b.confidence === 'number'
+                                ? `${(b.confidence <= 1 ? b.confidence * 100 : b.confidence).toFixed(1)}%`
+                                : '—'}
+                            </td>
+                            <td className="py-2 px-3 font-mono text-[11px] text-zinc-400">
+                              {formatBoxCoords(b.box)}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Pagination Footer */}
           <div className="px-4 py-2.5 bg-zinc-950 border-t border-zinc-800 flex items-center justify-between text-xs text-zinc-400 shrink-0">
@@ -1075,7 +1061,7 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
             </button>
 
             <span className="font-mono text-zinc-300">
-              {tx(lang, 'Page', 'หน้า')} {ocrRecords.length === 0 ? 0 : currentPageIndex + 1} {tx(lang, 'of', 'จาก')} {ocrRecords.length}
+              {tx(lang, 'Page', 'หน้า')} {activeRecords.length === 0 ? 0 : currentPageIndex + 1} {tx(lang, 'of', 'จาก')} {activeRecords.length}
             </span>
 
             <button
@@ -1478,7 +1464,10 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                     <input
                       type="text"
                       value={approvePo}
-                      onChange={(e) => setApprovePo(e.target.value)}
+                      onChange={(e) => {
+                        isFormDirtyRef.current = true;
+                        setApprovePo(e.target.value);
+                      }}
                       placeholder="PO-26004156"
                       className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-2.5 py-2 font-mono"
                     />
@@ -1492,7 +1481,10 @@ export const OcrInspector: React.FC<OcrInspectorProps> = ({
                   <input
                     type="text"
                     value={approveCc}
-                    onChange={(e) => setApproveCc(e.target.value)}
+                    onChange={(e) => {
+                      isFormDirtyRef.current = true;
+                      setApproveCc(e.target.value);
+                    }}
                     placeholder="yuwanit.n@qtc-energy.com, manager@company.com"
                     className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-lg px-2.5 py-2 font-mono"
                   />

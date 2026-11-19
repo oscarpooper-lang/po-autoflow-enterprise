@@ -106,9 +106,36 @@ export const DeveloperOptions: React.FC<DeveloperOptionsProps> = ({
   }, []);
 
   useEffect(() => {
-    fetchDiagnostics();
-    const timer = setInterval(fetchSnapshot, 3000);
-    return () => clearInterval(timer);
+    let cancelled = false;
+    let inFlight = false;
+    const initTimer = setTimeout(() => {
+      if (!cancelled) void fetchDiagnostics();
+    }, 0);
+
+    const runSnapshot = async () => {
+      if (document.hidden || inFlight || cancelled) return;
+      inFlight = true;
+      try {
+        await fetchSnapshot();
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (!document.hidden && !cancelled) {
+        void runSnapshot();
+      }
+    };
+
+    const timer = setInterval(runSnapshot, 3000);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      cancelled = true;
+      clearTimeout(initTimer);
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [fetchDiagnostics, fetchSnapshot]);
 
   useEffect(() => {

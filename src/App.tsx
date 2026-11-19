@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { CheckCircle2, AlertTriangle, Info, X } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
@@ -17,6 +17,7 @@ import { ModelBenchmark } from './pages/ModelBenchmark';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { api, defaultSettings } from './services/tauri';
 import { setCurrentUiTabForAiStore, useAiChatState } from './utils/aiChatStore';
+import { invalidateJobPreviews } from './utils/previewCache';
 import {
   usePersistedState,
   hydrateUiStateFromBackend,
@@ -83,6 +84,15 @@ export const App: React.FC = () => {
     return () => clearTimeout(t);
   }, [appToast]);
 
+  const pollInFlightRef = useRef(false);
+  const lastPollHashRef = useRef({
+    stats: '',
+    jobs: '',
+    events: '',
+    txs: '',
+    monitoring: null as boolean | null,
+  });
+
   // Load all initial data from backend with safe decoupled fallbacks
   const loadInitialData = useCallback(async () => {
     setIsRefreshing(true);
@@ -108,13 +118,28 @@ export const App: React.FC = () => {
           setCurrentTab('setup-wizard');
         }
       }
-      if (results[1].status === 'fulfilled' && results[1].value) setStats(results[1].value);
-      if (results[2].status === 'fulfilled' && results[2].value) setJobs(results[2].value);
-      if (results[3].status === 'fulfilled' && results[3].value) setTransactions(results[3].value);
+      if (results[1].status === 'fulfilled' && results[1].value) {
+        lastPollHashRef.current.stats = JSON.stringify(results[1].value);
+        setStats(results[1].value);
+      }
+      if (results[2].status === 'fulfilled' && results[2].value) {
+        lastPollHashRef.current.jobs = JSON.stringify(results[2].value);
+        setJobs(results[2].value);
+      }
+      if (results[3].status === 'fulfilled' && results[3].value) {
+        lastPollHashRef.current.txs = JSON.stringify(results[3].value);
+        setTransactions(results[3].value);
+      }
       if (results[4].status === 'fulfilled' && results[4].value) setCompanies(results[4].value);
       if (results[5].status === 'fulfilled' && results[5].value) setAliases(results[5].value);
-      if (results[6].status === 'fulfilled' && results[6].value) setEvents(results[6].value);
-      if (results[7].status === 'fulfilled') setIsMonitoringActive(results[7].value);
+      if (results[6].status === 'fulfilled' && results[6].value) {
+        lastPollHashRef.current.events = JSON.stringify(results[6].value);
+        setEvents(results[6].value);
+      }
+      if (results[7].status === 'fulfilled') {
+        lastPollHashRef.current.monitoring = results[7].value;
+        setIsMonitoringActive(results[7].value);
+      }
       if (results[8].status === 'fulfilled') setGoogleAccount(results[8].value);
       if (results[9].status === 'fulfilled' && results[9].value) setDepartments(results[9].value);
     } catch (e) {
@@ -125,12 +150,17 @@ export const App: React.FC = () => {
   }, [setCurrentTab]);
 
   useEffect(() => {
-    loadInitialData();
+    const timer = setTimeout(() => {
+      void loadInitialData();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [loadInitialData]);
 
-  // Periodic polling for live monitoring and real-time event updates
+  // Periodic polling with visibility-awareness, overlap guard, and diff skip
   useEffect(() => {
-    const timer = setInterval(async () => {
+    const runPoll = async () => {
+      if (document.hidden || pollInFlightRef.current) return;
+      pollInFlightRef.current = true;
       try {
         const results = await Promise.allSettled([
           api.getDashboardStats(),
@@ -139,16 +169,57 @@ export const App: React.FC = () => {
           api.isMonitoringActive(),
           api.listTransactions(100),
         ]);
-        if (results[0].status === 'fulfilled' && results[0].value) setStats(results[0].value);
-        if (results[1].status === 'fulfilled' && results[1].value) setJobs(results[1].value);
-        if (results[2].status === 'fulfilled' && results[2].value) setEvents(results[2].value);
-        if (results[3].status === 'fulfilled') setIsMonitoringActive(results[3].value);
-        if (results[4].status === 'fulfilled' && results[4].value) setTransactions(results[4].value);
+        if (results[0].status === 'fulfilled' && results[0].value) {
+          const next = JSON.stringify(results[0].value);
+          if (next !== lastPollHashRef.current.stats) {
+            lastPollHashRef.current.stats = next;
+            setStats(results[0].value);
+          }
+        }
+        if (results[1].status === 'fulfilled' && results[1].value) {
+          const next = JSON.stringify(results[1].value);
+          if (next !== lastPollHashRef.current.jobs) {
+            lastPollHashRef.current.jobs = next;
+            setJobs(results[1].value);
+          }
+        }
+        if (results[2].status === 'fulfilled' && results[2].value) {
+          const next = JSON.stringify(results[2].value);
+          if (next !== lastPollHashRef.current.events) {
+            lastPollHashRef.current.events = next;
+            setEvents(results[2].value);
+          }
+        }
+        if (results[3].status === 'fulfilled' && results[3].value !== lastPollHashRef.current.monitoring) {
+          lastPollHashRef.current.monitoring = results[3].value;
+          setIsMonitoringActive(results[3].value);
+        }
+        if (results[4].status === 'fulfilled' && results[4].value) {
+          const next = JSON.stringify(results[4].value);
+          if (next !== lastPollHashRef.current.txs) {
+            lastPollHashRef.current.txs = next;
+            setTransactions(results[4].value);
+          }
+        }
       } catch (e) {
         console.error('Poll update failed', e);
+      } finally {
+        pollInFlightRef.current = false;
       }
-    }, 3000);
-    return () => clearInterval(timer);
+    };
+
+    const onVisibilityChange = () => {
+      if (!document.hidden) {
+        void runPoll();
+      }
+    };
+
+    const timer = setInterval(runPoll, 3000);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, []);
 
   // Handle monitoring toggle
@@ -269,6 +340,7 @@ export const App: React.FC = () => {
 
   const handleRetryJob = async (jobId: string) => {
     try {
+      invalidateJobPreviews(jobId);
       await api.retryJob(jobId);
       await loadInitialData();
       showToast(
@@ -288,6 +360,7 @@ export const App: React.FC = () => {
   };
 
   const handleDeleteJob = async (jobId: string, deleteFiles: boolean) => {
+    invalidateJobPreviews(jobId);
     await api.deleteJob(jobId, deleteFiles);
     cleanupDeletedJobFromPersistedState(jobId);
     if (assistantAttachedImage?.jobId === jobId) {

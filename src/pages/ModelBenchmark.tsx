@@ -125,8 +125,8 @@ export const ModelBenchmark: React.FC<ModelBenchmarkProps> = ({ settings, jobs, 
             <p className="text-zinc-300 leading-relaxed">
               {tx(
                 lang,
-                '0.26s–1.17s/page • 93%–98% Thai+EN. Cleanly reads Thai diacritics and mixed English headers at 4.2 MB, 5–10x faster and cleaner than Tesseract 5.',
-                '0.26–1.17 วินาที/หน้า • แม่นยำไทย+อังกฤษ 93%–98% อ่านสระวรรณยุกต์ไทยและหัวตารางอังกฤษได้คมชัด ขนาดเพียง 4.2 MB เร็วกว่า Tesseract 5 ถึง 5–10 เท่า'
+                '0.4s–0.9s/page • 93%–99% Thai+EN at full 400 DPI scale (1920px detector). Cleanly reads Thai diacritics and mixed English headers at 4.2 MB, 5–10x faster and cleaner than Tesseract 5.',
+                '0.4–0.9 วินาที/หน้า • แม่นยำไทย+อังกฤษ 93%–99% ที่ความละเอียดเต็ม 400 DPI อ่านสระวรรณยุกต์ไทยและหัวตารางอังกฤษได้คมชัด ขนาดเพียง 4.2 MB เร็วกว่า Tesseract 5 ถึง 5–10 เท่า'
               )}
             </p>
           </div>

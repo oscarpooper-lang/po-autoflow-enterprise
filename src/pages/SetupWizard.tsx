@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   CheckCircle2,
   ArrowRight,
@@ -63,19 +63,23 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({
   const STEPS = getSteps(lang);
   const [currentStep, setCurrentStep] = useState(1);
   const [settings, setSettings] = useState<AppSettings>(initialSettings);
-  const [testEmailRecipient, setTestEmailRecipient] = useState('');
+  const [prevInitialSettings, setPrevInitialSettings] = useState<AppSettings>(initialSettings);
+  const [testEmailRecipient, setTestEmailRecipient] = useState(
+    () => initialSettings.google_account?.email || ''
+  );
   const [testLog, setTestLog] = useState<{
     [key: number]: { loading: boolean; success?: boolean; message?: string };
   }>({});
   const [isFinishing, setIsFinishing] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
-  useEffect(() => {
+  if (initialSettings !== prevInitialSettings) {
+    setPrevInitialSettings(initialSettings);
     setSettings(initialSettings);
     if (!testEmailRecipient && initialSettings.google_account?.email) {
       setTestEmailRecipient(initialSettings.google_account.email);
     }
-  }, [initialSettings, testEmailRecipient]);
+  }
 
   const updateSetting = <K extends keyof AppSettings>(key: K, val: AppSettings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: val }));
